@@ -1,0 +1,7 @@
+- [] Define problem interface
+- [] Develop adapter-layer and/or generator for acados/CasADi problems
+- [] Write simple test for problem interface using a simple example from the acados repo: test discrete time simulation of model and evaluation of cost and constraint functions, output as csv file
+- [] Reimplement acados SQP solver with HPIPM SQ solver
+- [] Test acados reimplementation with simple example from acados repo
+- [] Define a continuous time problem interface and implement explicit and implicit RK solver/integrator as a wrapper to form discrete time problems from continuous time problems
+- [] Test more examples from acados repo
