@@ -1,0 +1,17 @@
+# acados reference
+acados
+
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+compile_commands.json
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store

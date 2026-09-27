@@ -1,0 +1,32 @@
+cmake_minimum_required(VERSION 3.16)
+project(ocp-plus-plus CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# Eigen3 (header-only)
+find_package(Eigen3 3.3 QUIET NO_MODULE)
+if(Eigen3_FOUND AND NOT EIGEN3_INCLUDE_DIR)
+  # the Eigen3 config package exposes a target but not EIGEN3_INCLUDE_DIR
+  if(TARGET Eigen3::Eigen)
+    get_target_property(EIGEN3_INCLUDE_DIR Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+  endif()
+endif()
+if(NOT EIGEN3_INCLUDE_DIR)
+  find_path(EIGEN3_INCLUDE_DIR Eigen/Dense
+    PATHS /usr/local/include
+          /usr/local/include/eigen3
+          /usr/include/eigen3
+          /usr/include)
+endif()
+if(NOT EIGEN3_INCLUDE_DIR)
+  message(FATAL_ERROR "Eigen3 not found")
+endif()
+
+add_executable(double_integrator examples/double_integrator/main.cpp)
+target_include_directories(double_integrator PRIVATE include ${EIGEN3_INCLUDE_DIR})
+target_compile_options(double_integrator PRIVATE -Wall -Wextra -Werror)

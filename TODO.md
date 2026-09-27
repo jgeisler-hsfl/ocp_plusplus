@@ -1,5 +1,5 @@
-- [] Define problem interface
-- [] Develop adapter-layer and/or generator for acados/CasADi problems
+- [x] Define problem interface
+- [] Port selected acados problems to new interface for comparisons
 - [] Write simple test for problem interface using a simple example from the acados repo: test discrete time simulation of model and evaluation of cost and constraint functions, output as csv file
 - [] Reimplement acados SQP solver with HPIPM SQ solver
 - [] Test acados reimplementation with simple example from acados repo
