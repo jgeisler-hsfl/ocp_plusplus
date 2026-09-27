@@ -30,3 +30,7 @@ endif()
 add_executable(double_integrator examples/double_integrator/main.cpp)
 target_include_directories(double_integrator PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(double_integrator PRIVATE -Wall -Wextra -Werror)
+
+add_executable(mass_spring examples/mass_spring/main.cpp)
+target_include_directories(mass_spring PRIVATE include ${EIGEN3_INCLUDE_DIR})
+target_compile_options(mass_spring PRIVATE -Wall -Wextra -Werror)
