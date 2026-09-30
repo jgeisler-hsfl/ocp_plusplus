@@ -34,3 +34,17 @@ target_compile_options(double_integrator PRIVATE -Wall -Wextra -Werror)
 add_executable(mass_spring examples/mass_spring/main.cpp)
 target_include_directories(mass_spring PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mass_spring PRIVATE -Wall -Wextra -Werror)
+
+# ---- tests ----
+add_executable(qp_dim tests/qp_dim/main.cpp)
+target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(qp_dim PRIVATE -Wall -Wextra -Werror)
+
+# ---- documentation (Doxygen, optional) ----
+find_package(Doxygen QUIET)
+if (Doxygen_FOUND)
+  set(DOXYGEN_NO_DOT YES)
+  doxygen_add_docs(ocp_docs
+    include/ocp
+    COMMENT "Generate Doxygen documentation")
+endif()
