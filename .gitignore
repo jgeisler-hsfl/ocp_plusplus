@@ -8,6 +8,9 @@ build/
 *.so
 compile_commands.json
 
+# Simulation / test data artifacts
+*.csv
+
 # IDE / editors
 .vscode/
 .idea/
