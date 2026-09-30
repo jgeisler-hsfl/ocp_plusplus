@@ -36,7 +36,7 @@ target_include_directories(mass_spring PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mass_spring PRIVATE -Wall -Wextra -Werror)
 
 # ---- tests ----
-add_executable(qp_dim tests/qp_dim/main.cpp)
+add_executable(qp_dim tests/hpipm/qp_dim.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE -Wall -Wextra -Werror)
 
