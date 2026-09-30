@@ -28,9 +28,15 @@ there). Every acados C function maps to exactly one C++ method (see §10).
 
 Standing defaults (not separately discussed):
 
-- **Homogeneous `QpStage`** over stages 0..N; absent rows (e.g. terminal
-  control box) masked via `d_mask` (HPIPM's infinite-bound mechanism) →
-  single Riccati code path.
+- **Stage-type layout** (revised 2026-09-30; replaces the homogeneous
+  slot design): the horizon splits into three compile-time stage types —
+  first (k = 0), path (k = 1..N-1), term (k = N) — each with its own
+  exact row/side/variable layout (`QpDim::nrow_*` / `nside_*` / `nvar_*`,
+  `side_lo_*` / `side_hi_*`). A fixed x_0 is pinned by `nx` equality rows
+  over **all** states (HPIPM `idxe` analogue), not just the box-constrained
+  ones; the stage-0 state box is dropped (redundant), the terminal carries
+  no control (`nu[N] = 0`, as in HPIPM). Absent *sides* (e.g. a missing hi
+  bound) are still masked via `d_mask` within a stage type.
 - HPIPM v1 is **minimal**: `lq_fact=0` (Cholesky only), `itref_*_max=0`,
   `split_step=0`, `abs_form=0`, `var_init_scheme=1`, `warm_start` driven by
   SQP options; LQ fallback / refinement / split-step / abs-form join in
@@ -42,10 +48,16 @@ Standing defaults (not separately discussed):
   (diagnostics, future RTI).
 - Acados quirks are **verified against source at implementation time and
   matched as-is**: `res_comp` sign (doc 02 ambiguity: code adds `tau_min`),
-  slack-penalty factor (HPIPM's slack objective is `sᵀs + 0.5 sᵀZs`, our
-  contract says `0.5·w·s²` ⇒ slack Hessian diagonal `w`, `Z = w − 2`), exact
-  `d`/`d_mask`/`lam`/`t`/`idx*` layouts (doc: `d` holds bound *offsets*, not
-  distances; `lam` = `[λ_lower(rows); λ_upper(rows)]`).
+  exact `d`/`d_mask`/`lam`/`t`/`idx*` layouts (`d` holds bound *offsets*,
+  not distances; `lam`/`t` are per one-sided side:
+  `[lo sides; hi sides; slack sides]`).
+- **Slack penalty (verified 2026-09-30)**: HPIPM's slack objective is
+  `0.5·sᵀZ·s + r_sᵀs` — *no* implicit `sᵀs` (checked `x_ocp_qp_res.c` and
+  `COND_SLACKS_FACT`, which uses `1/(Z + reg_prim + Gamma)`). Our contract
+  `0.5·w·s²` ⇒ slack Hessian diagonal = `w` (Z = w), slack part of `grad` = 0.
+  Soft rows in `DC` (our natural-orientation Jacobian; HPIPM's `DCt` is its
+  transpose, general constraints only): +1 (lo side) / −1 (hi side),
+  verified in `ocp_nlp_constraints_bgp.c`.
 
 ## 3. Problem interface extension (`problem.hpp`)
 
@@ -93,7 +105,7 @@ Notes:
 
 ```
 include/ocp/problem.hpp           extended: Status codes + HVP contract
-include/ocp/qp.hpp                QpDim<P>, Qp<P>, QpSol<P>  (pure data)
+include/ocp/qp.hpp                QpDim<P>, Qp<P,NH>, QpSol<P,NH>, QpRes<P,NH>  (pure data)
 include/ocp/solver/hpipm.hpp      HpipmOptions, HpipmStatistics, HpipmQpSolver<P>
 include/ocp/solver/regularize.hpp GlmRegularizer<P>, NoRegularizer<P>
 include/ocp/solver/globalize.hpp  GlobOptions, MeritBacktracking<P>, Funnel<P>, apply_sqp_step()
@@ -108,61 +120,103 @@ No cycle.
 
 ## 5. QP data model (`include/ocp/qp.hpp`)
 
+The horizon splits into three compile-time **stage types**, each with its
+own exact row groups, side layout, and variable vector (full conventions
+and the HPIPM translation table live in the `qp.hpp` header):
+
+| type  | stages    | row groups (in order)                    | variables |
+|-------|-----------|------------------------------------------|-----------|
+| first | k = 0     | pin, bx*, bu, ineq, eq, lin              | (u; x; s) |
+| path  | k = 1..N-1| bx, bu, ineq, eq, lin                    | (u; x; s) |
+| term  | k = N     | bx (terminal), ineq, eq, lin             | (x; s)    |
+
+\* **pin**: `nx` equality rows (lo == hi == x_0) pinning the fixed initial
+state — one per state, *all* states, not just the box-constrained ones
+(HPIPM `idxe` analogue; `idx_x0` = the pinned variable indices `[nu, ...,
+nu+nx-1]` inside (u; x; s)). When x_0 is fixed the stage-0 state box is
+dropped (redundant) along with its slacks. Ineq/lin rows at the first
+stage are allowed; the assembly must check the (linearized) row Jacobian
+w.r.t. (u_0; s_0) is nonzero (degenerate rows, phase 2).
+
+`detail::QpLayout` = (per-group row counts, nslack) with `nrow()`,
+`nside()`, `group_of(r)`, `side_lo(r)`, `side_hi(r)`:
+
 ```cpp
 template <class P>
 struct QpDim
 {
-    static constexpr int NX = P::nx, NU = P::nu;
-    static constexpr int NGEN  = P::ng + 2 * P::ne + P::nl;          // general rows, stage
-    static constexpr int NIN   = P::nbx + P::nbu + NGEN;             // two-sided rows, stage k
-    static constexpr int NIN_T = P::nbx_t + P::ng_t + 2 * P::ne_t + P::nl_t;
-    static constexpr int NROW  = (NIN > NIN_T) ? NIN : NIN_T;        // homogeneous
-    static constexpr int NS    = P::nbx_soft + P::nbu_soft + P::ng_soft + P::ne_soft + P::nl_soft;
-    static constexpr int NS_T  = P::nbx_t_soft + P::ng_t_soft + P::ne_t_soft + P::nl_t_soft;
-    static constexpr int NSLACK = (NS > NS_T) ? NS : NS_T;
-    static constexpr int NV    = NU + NX + 2 * NSLACK;               // (u; x; slacks)
-    static constexpr int NCT   = 2 * (NROW + NSLACK);                // lam/t: (lower; upper) per row
-    // compile-time stand-ins for HPIPM's runtime index sets:
-    static constexpr std::array<int, /*nb*/> idxb     = /*...*/;      // box var index in (u;x)
-    static constexpr std::array<int, /*2*NSLACK*/> idxs_rev = /*...*/; // slack pair <-> row (phase 3 use)
-    static constexpr std::array<int, /*nbx if fixed x0*/> idxe = /*...*/;
+    // ... nx, nu; row counts nbx/nbu/ng/ne/nl (+ _t); nslack_first/path/term ...
+    static constexpr detail::QpLayout lay_first;  // {pin, bx, nbu, ng, ne, nl}
+    static constexpr detail::QpLayout lay_path;   // {0, nbx, nbu, ng, ne, nl}
+    static constexpr detail::QpLayout lay_term;   // {0, nbx_t, 0, ng_t, ne_t, nl_t}
+
+    // per-type totals (no slot padding, no max over groups)
+    static constexpr int nvar_first = nu + nx + nslack_first;  // (u; x; s)
+    static constexpr int nvar_path  = nu + nx + nslack_path;   // (u; x; s)
+    static constexpr int nvar_term  = nx + nslack_term;        // (x; s), no control
+    static constexpr int nrow_first = lay_first.nrow();        // etc.
+    static constexpr int nside_first = lay_first.nside();      // etc.
+
+    // side maps: side_lo_first/side_hi_first, ..._path, ..._term (6 functions)
+
+    // box-row -> variable index (terminal vector is (x; s): no +nu offset)
+    static constexpr std::array<int, nbx_first + nbu> idxb_first;
+    static constexpr std::array<int, nbx + nbu>       idxb_path;
+    static constexpr std::array<int, nbx_t>           idxb_term;
+    static constexpr std::array<int, fixed ? nx : 0>  idx_x0;  // = nu + j
+    // soft row -> slack column in z (HPIPM idxs / idxs_rev analogue),
+    // per stage type: idxs_lo_first/path/term, idxs_hi_first/path/term
 };
 ```
 
-Row order (convention, documented):
-`[state box; control box; ineq; eq (2 per row); lin]`.
+Row/side conventions (unchanged from the earlier draft): box / equality /
+linear rows are two-sided (equality: **one row** with `lo == hi`, both
+sides active — an equality is *not* doubled into two one-sided rows;
+verified against the acados QP assembly where equality rows carry both
+sides in `d`/`d_mask`); ineq rows are one-sided (`g <= 0`, hi side only).
+Per-type side-vector layout (`d`/`d_mask`/`m`/`lam`/`t`, length
+`nside_<type>`): `[lo block: one per two-sided row, group order |
+hi block: one per row | slack block]`. `d` holds bound offsets (lo: `lo`,
+hi: `-hi`); pin rows: `d_lo = x_0`, `d_hi = -x_0` (runtime). Slacks: one
+per soft side, order `[bx lo; bx hi; bu lo; bu hi; ineq hi; eq lo; eq hi;
+lin lo; lin hi]` (absent groups contribute nothing).
+
+Stage data (three structs, sized per type):
 
 ```cpp
-template <class P>
-struct QpStage
-{
-    using D = QpDim<P>;  using S = typename P::scalar_t;
-    Eigen::Matrix<S, D::NV, D::NV>  hess{};  // "RSQrq", over (u;x;slacks); slack diag = w (soft rows)
-    Eigen::Matrix<S, D::NV, 1>      grad{};  // "rqz"; slack part = w ∘ s_k (current slacks)
-    Eigen::Matrix<S, D::NX, D::NU + D::NX> BAbt{};  // [B | A], stages 0..N-1
-    Eigen::Matrix<S, D::NX, 1>      b{};           // dynamics rhs, stages 0..N-1
-    Eigen::Matrix<S, D::NROW, D::NV> DCt{};        // [D | C] general rows, incl. ±1 slack cols
-    Eigen::Matrix<S, 2 * D::NROW, 1> d{};          // (lower; upper) bound offsets
-    Eigen::Matrix<S, 2 * D::NROW, 1> d_mask{};     // 0 = infinite/absent side
-};
+template <class P> struct QpStageFirst;  // hess, grad, BA, b, DC, d, d_mask, m
+template <class P> struct QpStagePath;   // same members, path-sized
+template <class P> struct QpStageTerm;   // no BA/b (terminal has no dynamics), (x; s)-sized
 
-template <class P>
+template <class P, int NH = Eigen::Dynamic>
 struct Qp
 {
-    Trajectory<QpStage<P>, Eigen::Dynamic> stage;  // N + 1 (sized at solve())
+    int N;
+    QpStageFirst<P> first;                                  // k = 0
+    Trajectory<QpStagePath<P>, detail::traj_extent<NH, -1>()> path;  // k = 1..N-1
+    QpStageTerm<P> term;                                    // k = N
+    // ctor(int) / resize(int); NH >= 1 or Dynamic (N = 0 unsupported)
 };
 
-template <class P>
-struct QpSol
+template <class P, int NH = Eigen::Dynamic>
+struct QpSol   // mixed convention exactly as HPIPM: ux = primal STEP; pi/lam/t = ABSOLUTE
 {
-    using D = QpDim<P>;  using S = typename P::scalar_t;
-    // mixed convention exactly as HPIPM: ux = primal STEP; pi/lam/t = ABSOLUTE iterates
-    Trajectory<Eigen::Matrix<S, D::NV,  1>, Eigen::Dynamic> ux;   // N + 1  (du; dx; ds)
-    Trajectory<Eigen::Matrix<S, D::NX,  1>, Eigen::Dynamic> pi;   // N      dynamics multipliers
-    Trajectory<Eigen::Matrix<S, D::NCT, 1>, Eigen::Dynamic> lam;  // N + 1
-    Trajectory<Eigen::Matrix<S, D::NCT, 1>, Eigen::Dynamic> t;    // N + 1  slacks
+    int N;
+    // ux_first / ux_path (N-1) / ux_term        step over (u;x;s) / (x;s)
+    // pi (N)                                    dynamics multipliers
+    // lam_first / lam_path (N-1) / lam_term     multipliers per side
+    // t_first  / t_path  (N-1) / t_term         IPM slacks, same layout as lam
 };
+
+template <class P, int NH = Eigen::Dynamic>
+struct QpRes   // res_g_* (per stage-type var vector), res_b (N stages),
+               // res_d_* / res_m_* (per stage-type side vector),
+               // res_*_max, res_mu, obj, dual_gap
+{ };
 ```
+
+NH follows the `Solution<P, NH>` pattern (see AGENTS.md): runtime horizon
+by default, fixed-extent `std::array` storage for `NH >= 1`.
 
 ## 6. HPIPM solver (`solver/hpipm.hpp`)
 
@@ -302,9 +356,11 @@ inclusive):
    `hess_k = permute(stage_cost_hessian)` + LM·I; if `compute_hess`:
    += dynamics HVP matrix (built from `nx+nu` HVP calls with
    `w = sol.lambda_dyn[k]`, `v` = unit vectors) += constraint HVP terms with
-   net multipliers from the current iterate; `b_k = dynamics_next_state −
-   x_{k+1}`; `grad` = permuted cost gradient + `w∘s_k`; `d`/`d_mask` from
-   the constraint specs; fixed `x_0` pinned via `idxe` rows)
+    net multipliers from the current iterate; `b_k = dynamics_next_state −
+    x_{k+1}`; `grad` = permuted cost gradient (slack part 0; H·s enters the
+    stationarity residual in the relative-form IPM); `d`/`d_mask` from the
+    constraint specs (lo sides store `lo`, hi sides store `−hi`, offsets at
+    the current iterate); fixed `x_0` pinned via `idxe` rows)
 2. `compute_nlp_residuals` (4 norms, doc 02 §8; first-order adjoints
    `−[A;B]ᵀπ` + π carry, `Cᵀλ_net`; signs verified in phase 2 against the
    source) → stats row
@@ -370,10 +426,26 @@ acados examples.
 
 ## 12. Open items (verify at implementation time, not design decisions)
 
-1. Exact `d`/`d_mask`/`lam`/`t`/`idxb`/`idxs_rev`/`idxe` semantics vs HPIPM
-   headers (phase 0).
+1. ~~Exact `d`/`d_mask`/`lam`/`t`/`idxb`/`idxs_rev`/`idxe` semantics vs
+   HPIPM headers.~~ **Resolved (phase 0, 2026-09-30)**: layouts implemented
+   in `qp.hpp` (row/side offsets, `side_lo`/`side_hi`, `idxb`/`idxb_term`/
+   `idxe`); `d` holds bound offsets (lo = `lo`, hi = `−hi`), `lam`/`t` are
+   per one-sided side `[lo; hi; slacks]`; equality rows are single rows with
+   both sides active (verified: acados copies both `d` halves for equality
+   rows, `x_ocp_qp_res.c` residuals `d + t − v` / `d + t + v`).
 2. `res_comp` sign — match the source's actual behavior (adds `tau_min`).
-3. Slack Hessian factor — expected `H_slack_diag = w`, `Z = w − 2` (HPIPM's
-   `sᵀs + 0.5 sᵀZs` formulation vs our `0.5 w s²` contract); confirm `Z`'s
-   role in factorization (`COND_SLACKS_FACT`).
+3. ~~Slack Hessian factor.~~ **Resolved (2026-09-30)**: HPIPM's slack
+   objective is `0.5·sᵀZ·s + r_sᵀs` with **no** implicit `sᵀs` (verified in
+   `x_ocp_qp_res.c`; `COND_SLACKS_FACT` uses `1/(Z + reg_prim + Gamma)`, no
+   `+2`). ⇒ slack Hessian diagonal = `w` (Z = w), `grad` slack part = 0.
 4. `dual_gap_max` default value (not in the doc's preset table).
+
+## 13. Future extensions (not in v1 scope)
+
+1. **Expose the linear soft penalties to the problem formulation.** Today
+   the box / linear soft-penalty weights live in the per-stage specs
+   (`BoxSpec::soft_penalty`, `LinearSpec::soft_penalty`), while the
+   nonlinear groups carry theirs in the problem interface
+   (`*_constr_soft_penalty`). Plan: lift the linear ones to first-class
+   problem-formulation quantities (design to be settled: compile-time in
+   `Dims` vs. problem methods, mirroring the nonlinear interface).

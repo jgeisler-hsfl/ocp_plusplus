@@ -36,7 +36,9 @@ No other dependencies. C++17 required.
   stage index `k` is `0..N-1`, terminal stage is `k = N`. By default `N` is
   a runtime quantity (set via `Solution(int)` / `resize`, heap trajectories);
   `Solution<P, NH>` (non-negative `NH`) fixes the horizon at compile time and
-  switches the trajectories to fixed-extent `std::array` storage.
+  switches the trajectories to fixed-extent `std::array` storage. The same
+  `NH` pattern applies to `ocp::Qp<P, NH>`, `ocp::QpSol<P, NH>`,
+  `ocp::QpRes<P, NH>` in `qp.hpp` (default `NH = Eigen::Dynamic`).
 - Extents: `x` has N+1 stages, `u` / dynamics / stage constraints have N,
   terminal quantities have 1.
 - Box constraints: only the active rows (const index sets in `Dims`) are
