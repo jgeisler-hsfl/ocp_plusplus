@@ -19,10 +19,11 @@ checkpoints. **Protocol for every sub-step:**
   QpStageFirst/Path/Term, Qp, QpSol, QpRes), `problem.hpp` Status enum
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
-- Phase 1: sub-step 1a (scaffolding) done — `include/ocp/solvers/hpipm/hpipm.hpp`
-  (`HpipmOptions`, `HpipmIteration`, `HpipmStatistics`,
-  `HpipmQpSolver<P, NH>` shell) + `tests/qp_unit`. Sub-steps 1b..1i
-  pending.
+- Phase 1: sub-steps 1a (scaffolding) and 1b (residuals) done —
+  `include/ocp/solvers/hpipm/hpipm.hpp` (`HpipmOptions`, `HpipmIteration`,
+  `HpipmStatistics`, `HpipmQpSolver<P, NH>` shell + `compute_residuals`).
+  Tests live in `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`,
+  `residuals_1b.cpp`). Sub-steps 1c..1i pending.
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -165,7 +166,7 @@ No `idxs_rev` coupling code in v1 (plan Q6).
   exit test §1; statistics; fast path: no active inequality sides at all →
   single unconstrained KKT solve, iter = 0, kSolved). Test: end-to-end
   convergence on the synthetic QPs (all §1 tolerances).
-- **1i test suite**: `tests/qp_unit/` — (1) staged LQR-like QP with known
+- **1i test suite**: `tests/hpipm/` — (1) staged LQR-like QP with known
   analytic solution (hard constraints only, double-integrator-like data),
   (2) soft rows + slacks (verify optimum satisfies weighted-slack KKT),
   (3) fixed x_0 pin rows, (4) terminal ineq/eq/lin + terminal box,
@@ -251,3 +252,78 @@ this level (the acados SQP driver re-invokes the QP solver). To resolve in
 1e: mirror the HPIPM behavior (single factorization attempt per iteration,
 Cholesky failure → report failure status; reg growth only if we choose a
 more robust policy).
+
+### 1b — residuals (2026-09-30)
+
+Sources re-read:
+- `x_ocp_qp_res.c:345-531` — `OCP_QP_RES_COMPUTE`: SYMV_L `beta = 2.0`
+  objective trick (`:431-438`, then `AXPY -1` on grad → `res_g = H z + g`);
+  `−π_{k−1}` on the x-part (`:440`); `tmp_nbgM = λ_hi − λ_lo` (`:444`); box
+  sparse add + extract (`:452-456`); general rows: one GEMV for both
+  `res_g += DCtᵀ(λ_hi − λ_lo)` and `v = DCt·z` (`:458`);
+  `res_d = d + t − v (lo) / d + t + v (hi)` (`:460-466`); slack block:
+  `GEMV_DIAG` (`:469`), `−λ_s` (`:485`), `idxs_rev` loop:
+  `res_g(s_lo) −= λ_lo`, `res_g(s_hi) −= λ_hi`,
+  `res_d(lo) −= s_lo`, `res_d(hi) −= s_hi` (`:487-493`),
+  `res_d(slack) = d + t − s` (`:495`); `dual_gap −= dᵀ(λ∘mask)` (`:497`);
+  dynamics: `res_b = BA z + b − x_next`, `res_g += BAᵀπ_k`,
+  `dual_gap −= bᵀπ_k` (`:505-510`); `res_m = (λ∘t − m)∘d_mask`
+  (`:513-516`); inf-norms + `res_mu` in a separate pass
+  (`OCP_QP_RES_COMPUTE_INF_NORM`, `:689`).
+- `x_core_qp_ipm_aux.c:59-133, 137-162, 164-189` — `COMPUTE_GGAMMA_QP` /
+  `COMPUTE_GAMMA_QP`: `γ = (res_m − λ res_d)/t`, `Γ = λ/t` (with
+  `t_lam_min`/`lam_min` clamping); `COMPUTE_LAM_T_QP`:
+  `δλ = −t⁻¹(res_m + λ·Δv_σ − λ·res_d)`, then `dt −= res_d` (the applied
+  t-step).
+- `x_ocp_qp_kkt.c:1866-1886` — signed constraint-value change `Δv_σ`
+  before `COMPUTE_LAM_T_QP`: `+DC·δz` on the lo half, sign-flipped copy on
+  the hi half, slack expansion after.
+
+Implemented:
+- `hpipm.hpp`: public `compute_residuals(const Qp<P, NH>&, const
+  QpSol<P, NH>&, QpRes<P, NH>&)` + private `stage_residuals` (per stage)
+  + private static `inf_norm` helper. Per-stage: `res_g = H z + g`,
+  multiplier coupling `res_g.head(nux) += DC_noxᵀ(λ_hi − λ_lo)`
+  (masked), per-side slack-column coupling via `D::idxs_lo_*/idxs_hi_*`
+  (`−λ_lo`, `−λ_hi`) and `−λ_s` per slack side, `res_b = BA z + b − x_next`,
+  `res_g += BAᵀπ_k` (u;x part) and `−pin(π_{k−1})` (x part);
+  `res_d` per side (`d + t − v_lo` / `d + t + v_hi`, `d + t − s`), masked;
+  `res_m = d_mask ∘ (λ ∘ t − m)`; `obj = Σ 0.5 zᵀHz + gᵀz`;
+  `dual_gap = Σ zᵀ(Hz + g) − dᵀ(λ∘d_mask) − Σ_{k<N} bᵀπ_k`;
+  `res_mu = Σ|res_m|·mask / Σmask`; `res_*_max` inf-norms over the fully
+  coupled stage residuals (separate pass, as in HPIPM).
+- Test reorg (user request): all HP solver tests moved into a single flat
+  `tests/hpipm/` directory (mirroring `include/ocp/solvers/hpipm/`);
+  `main.cpp` files renamed to their target name.
+- `tests/hpipm/residuals_1b.cpp`: zero-iterate case with hand-computed
+  expectations (N = 1) + random-data/random-iterate cases against an
+  independent element-looped reference (`ref_residuals`); DI N = 1, 2
+  (soft ineq → slacks) and MS N = 1, 2 + MS NH = 2 (no slacks,
+  fixed-extent).
+
+Tests: `qp_unit` (all 1b checks, tol 1e-10), `qp_dim`, `double_integrator`,
+`mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- §1 `res_g` formula `DC_kᵀ(σ∘λ_k)` assumed HPIPM's full per-side DC (lo
+  rows sign-flipped). In our compact storage (one hi-oriented DC row per
+  constraint) the (u;x) coupling is `DC_noxᵀ(λ_hi − λ_lo)` and the
+  slack-column coupling is explicit: `res_g(s_lo) −= λ_lo`,
+  `res_g(s_hi) −= λ_hi`, `res_g(s_j) −= λ_s`. The stored DC slack columns
+  (+1 lo / −1 hi) are NOT used in the residual; they enter only the KKT
+  matrix `M_k` (1e). `nux = nvar − nslack`; the coupling touches
+  `res_g.head(nux)` only.
+- §1 `dual_gap` resolved (was OPEN): `Σ_k z_kᵀ(H z_k + g_k)
+  − Σ_k d_kᵀ(λ_k ∘ d_mask_k) − Σ_{k<N} b_kᵀπ_k`
+  (`x_ocp_qp_res.c:439, :497, :508`).
+- §1 `m_safe` OPEN resolved: `res_m` uses `m` (not `m_safe`)
+  (`x_ocp_qp_res.c:513-516`); `m_safe` matters only in centering (1g).
+- §2 closed form `δλ_i = γ_i − Γ_i·σ_i DC[r(i)] δz` is wrong (sign of the
+  γ term, and Δv/δt conflation). Verified:
+  `δλ_i = −γ_i − Γ_i·Δv_{σ,i}` where `Δv_{σ,i} = σ_i·(side value)_i change`
+  (`σ_lo = +1`, `σ_hi = −1`), equivalently
+  `δλ_i = −γ_i − Γ_i·δt_i − Γ_i·res_d_i` with the applied t-step
+  `δt_i = Δv_{σ,i} − res_d_i` (`x_core_qp_ipm_aux.c:181-182`,
+  `x_ocp_qp_kkt.c:1866-1884`).
+- Plan §6 listed `compute_residuals` as private; made it public for
+  testability (also needed by 1c/1h).

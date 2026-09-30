@@ -109,12 +109,15 @@ void check_solver_shell(const char* name)
 
 }  // namespace
 
+int run_residuals_1b_tests();
+
 int main()
 {
     check_options_defaults();
     check_solver_shell<DoubleIntegrator>("DoubleIntegrator (N dynamic)");
     check_solver_shell<MassSpring>("MassSpring (N dynamic)");
     check_solver_shell<MassSpring, 5>("MassSpring (NH = 5, fixed-extent)");
+    failures += run_residuals_1b_tests();
 
     if (failures == 0)
     {

@@ -113,7 +113,7 @@ include/ocp/solvers/hpipm/hpipm.hpp HpipmOptions, HpipmStatistics, HpipmQpSolver
 include/ocp/solvers/regularize.hpp GlmRegularizer<P>, NoRegularizer<P>
 include/ocp/solvers/globalize.hpp  GlobOptions, MeritBacktracking<P>, Funnel<P>, apply_sqp_step()
 include/ocp/solvers/sqp.hpp        SqpOptions, SqpStatistics, SqpSolver<P, QpSolver, Regularizer, Globalizer>
-tests/qp_unit/…                   phase 1: synthetic staged QPs
+tests/hpipm/…                     phase 1: synthetic staged QPs
 tests/sqp_double_integrator/…     phase 2: end-to-end
 tests/sqp_mass_spring/…           phase 2/4: end-to-end + reference diff
 ```

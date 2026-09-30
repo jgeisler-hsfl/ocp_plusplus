@@ -40,7 +40,7 @@ add_executable(qp_dim tests/hpipm/qp_dim.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE -Wall -Wextra -Werror)
 
-add_executable(qp_unit tests/qp_unit/main.cpp)
+add_executable(qp_unit tests/hpipm/qp_unit.cpp tests/hpipm/residuals_1b.cpp)
 target_include_directories(qp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_unit PRIVATE -Wall -Wextra -Werror)
 

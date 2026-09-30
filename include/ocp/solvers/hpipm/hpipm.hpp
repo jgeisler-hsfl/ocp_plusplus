@@ -33,6 +33,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <vector>
 
@@ -181,6 +182,7 @@ public:
     using Pb_path_t  = Eigen::Matrix<S, D::nx, D::nvar_path>;
     using Pb_term_t  = Eigen::Matrix<S, D::nx, D::nvar_term>;
     using Pi_t        = Eigen::Matrix<S, D::nx, 1>;
+    using Ba_t        = Eigen::Matrix<S, D::nx, D::nu + D::nx>;
 
     /// Horizon-sized solver workspace (internal state; sized in solve()).
     ///
@@ -311,6 +313,138 @@ public:
         return Status::kAborted;
     }
 
+    /// KKT residuals of a primal-dual iterate (HPIPM `OCP_QP_RES_COMPUTE`,
+    /// x_ocp_qp_res.c:345-531). Pure function of the QP data and the
+    /// solution (no workspace needed); used by the IPM loop each iteration
+    /// (worklog 1h) and directly by the phase-1 tests.
+    ///
+    /// Residual conventions (worklog sec. 1; multiplier signs verified
+    /// against x_ocp_qp_res.c in the 1b checkpoint). Per row r, v_r is the
+    /// row value on the (u;x) part of z; a soft lo side sees v_r + s_lo, a
+    /// soft hi side v_r − s_hi:
+    ///   res_g_k = H_k z_k + g_k + DC_noxᵀ(λ_hi − λ_lo)
+    ///             − Σ soft sides λ · e_{slack col} − Σ_j λ_{s_j} e_{s_j}
+    ///             + BA_kᵀ π_k − pin(π_{k−1})
+    ///   res_b_k = BA_k z_k + b_k − x_{k+1}
+    ///   res_d_i = d_i + t_i − σ_i v_{row(i)}   (masked by d_mask)
+    ///   res_m_i = λ_i t_i − m_i                (masked by d_mask)
+    /// where σ_i = +1 (lo / slack sides), −1 (hi sides).
+    ///
+    /// @param in   staged QP data (HPIPM `qp`)
+    /// @param sol  primal STEP (ux_*) + ABSOLUTE duals (pi, lam, t)
+    /// @param[out] res  KKT residuals + obj, dual_gap, res_mu
+    void compute_residuals(const Qp<P, NH>& in, const QpSol<P, NH>& sol,
+                           QpRes<P, NH>& res) const
+    {
+        const int N = in.N;
+        assert(sol.N == N && res.N == N);
+
+        S obj = 0.0;
+        S dual_gap = 0.0;
+
+        // first stage (k = 0)
+        {
+            Pi_t x1;
+            if (N > 1)
+            {
+                x1 = sol.ux_path[0].segment(D::nu, D::nx);
+            }
+            else
+            {
+                x1 = sol.ux_term.head(D::nx);
+            }
+            stage_residuals(in.first.hess, in.first.grad, in.first.DC,
+                            in.first.d, in.first.d_mask, in.first.m,
+                            sol.ux_first, sol.lam_first, sol.t_first,
+                            /*pi_prev*/ nullptr, &sol.pi[0], &x1,
+                            &in.first.BA, &in.first.b, D::lay_first,
+                            D::idxs_lo_first, D::idxs_hi_first,
+                            res.res_g_first, res.res_d_first,
+                            res.res_m_first, &res.res_b[0], obj, dual_gap);
+        }
+
+        // path stages (k = 1..N-1)
+        for (int k = 1; k < N; ++k)
+        {
+            const int i = k - 1;
+            Pi_t x_next;
+            if (k + 1 < N)
+            {
+                x_next = sol.ux_path[k].segment(D::nu, D::nx);
+            }
+            else
+            {
+                x_next = sol.ux_term.head(D::nx);
+            }
+            stage_residuals(in.path[i].hess, in.path[i].grad, in.path[i].DC,
+                            in.path[i].d, in.path[i].d_mask, in.path[i].m,
+                            sol.ux_path[i], sol.lam_path[i], sol.t_path[i],
+                            &sol.pi[k - 1], &sol.pi[k], &x_next,
+                            &in.path[i].BA, &in.path[i].b, D::lay_path,
+                            D::idxs_lo_path, D::idxs_hi_path,
+                            res.res_g_path[i], res.res_d_path[i],
+                            res.res_m_path[i], &res.res_b[k], obj, dual_gap);
+        }
+
+        // terminal stage (k = N)
+        stage_residuals(in.term.hess, in.term.grad, in.term.DC,
+                        in.term.d, in.term.d_mask, in.term.m,
+                        sol.ux_term, sol.lam_term, sol.t_term,
+                        &sol.pi[N - 1], /*pi_cur*/ nullptr,
+                        /*x_next*/ nullptr, /*ba*/ nullptr, /*b*/ nullptr,
+                        D::lay_term, D::idxs_lo_term, D::idxs_hi_term,
+                        res.res_g_term, res.res_d_term,
+                        res.res_m_term, /*res_b*/ nullptr, obj, dual_gap);
+
+        // inf-norm maxima across all stages (HPIPM
+        // OCP_QP_RES_COMPUTE_INF_NORM, x_ocp_qp_res.c:689)
+        res.res_g_max = inf_norm(res.res_g_first);
+        res.res_d_max = inf_norm(res.res_d_first);
+        res.res_m_max = inf_norm(res.res_m_first);
+        res.res_b_max = inf_norm(res.res_b[0]);
+        for (int k = 1; k < N; ++k)
+        {
+            res.res_g_max = std::max(res.res_g_max,
+                inf_norm(res.res_g_path[k - 1]));
+            res.res_d_max = std::max(res.res_d_max,
+                inf_norm(res.res_d_path[k - 1]));
+            res.res_m_max = std::max(res.res_m_max,
+                inf_norm(res.res_m_path[k - 1]));
+            res.res_b_max = std::max(res.res_b_max,
+                inf_norm(res.res_b[k]));
+        }
+        res.res_g_max = std::max(res.res_g_max,
+            inf_norm(res.res_g_term));
+        res.res_d_max = std::max(res.res_d_max,
+            inf_norm(res.res_d_term));
+        res.res_m_max = std::max(res.res_m_max,
+            inf_norm(res.res_m_term));
+
+        // res_mu = masked mean of |res_m| (HPIPM x_ocp_qp_res.c:520-527)
+        res.res_mu_sum = res.res_m_first.cwiseAbs().sum();
+        int nc_mask = 0;
+        for (int i = 0; i < D::nside_first; ++i)
+        {
+            nc_mask += (in.first.d_mask(i) > 0.5) ? 1 : 0;
+        }
+        for (int k = 1; k < N; ++k)
+        {
+            res.res_mu_sum += res.res_m_path[k - 1].cwiseAbs().sum();
+            for (int i = 0; i < D::nside_path; ++i)
+            {
+                nc_mask += (in.path[k - 1].d_mask(i) > 0.5) ? 1 : 0;
+            }
+        }
+        res.res_mu_sum += res.res_m_term.cwiseAbs().sum();
+        for (int i = 0; i < D::nside_term; ++i)
+        {
+            nc_mask += (in.term.d_mask(i) > 0.5) ? 1 : 0;
+        }
+        res.res_mu = (nc_mask > 0) ? res.res_mu_sum / nc_mask : 0.0;
+        res.obj = obj;
+        res.dual_gap = dual_gap;
+    }
+
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
 
@@ -319,11 +453,148 @@ private:
     HpipmStatistics stat_;
     Workspace ws_;
 
+    /// Infinity norm of a vector (0 for an empty vector).
+    template <class V>
+    static S inf_norm(const V& v)
+    {
+        return v.size() > 0 ? v.cwiseAbs().maxCoeff() : S(0);
+    }
+
+    /// One stage of compute_residuals (x_ocp_qp_res.c:424-523).
+    ///
+    /// Multiplier / constraint-value convention (x_ocp_qp_res.c:442-492):
+    /// the constraint value v of a row is evaluated on the (u;x) part of z
+    /// only (HPIPM's DCt covers (u;x); the stored slack columns of DC are
+    /// NOT used here). Per-side slack coupling is explicit:
+    ///   v_lo = v + s_lo,  v_hi = v − s_hi   (soft sides via idxs_lo / idxs_hi)
+    /// and res_g picks up −λ_lo·e_{s_lo} − λ_hi·e_{s_hi} per soft side, plus
+    /// −λ_slack at each slack column (x_ocp_qp_res.c:477, 480-488).
+    ///
+    /// @param pi_prev  π_{k−1} (nullptr at k = 0)
+    /// @param pi_cur   π_k (nullptr at the terminal stage)
+    /// @param x_next   x-part of z_{k+1} (nullptr at the terminal stage)
+    /// @param ba       BA_k (nullptr at the terminal stage)
+    /// @param b        b_k (nullptr at the terminal stage)
+    /// @param idxs_lo / idxs_hi  per-row slack column (−1 if the side is not
+    ///                           soft), matching the DC row layout
+    /// @param res_b    res_b_k (nullptr at the terminal stage)
+    template <class H, class G, class DC, class DV, class ZV, class LV,
+              class Rg, class Rd, class Rm>
+    void stage_residuals(const H& hess, const G& grad, const DC& dc,
+                         const DV& d, const DV& d_mask, const DV& m,
+                         const ZV& z, const LV& lam, const LV& t,
+                         const Pi_t* pi_prev, const Pi_t* pi_cur,
+                         const Pi_t* x_next, const Ba_t* ba, const Pi_t* b,
+                         detail::QpLayout lay,
+                         const std::array<int, DC::RowsAtCompileTime>& idxs_lo,
+                         const std::array<int, DC::RowsAtCompileTime>& idxs_hi,
+                         Rg& res_g, Rd& res_d, Rm& res_m, Pi_t* res_b,
+                         S& obj, S& dual_gap) const
+    {
+        const int nvar = static_cast<int>(z.size());
+        const int nrow = static_cast<int>(dc.rows());
+        const int lo = lay.lo_size();
+        const int nslack = static_cast<int>(d.size()) - lo - nrow;
+        const int s0 = nvar - nslack;  // first slack column in z
+        const int xoff = nvar - nslack - D::nx;  // x-part column offset
+        const int nux = nvar - nslack;  // (u;x)-part width
+
+        const auto lam_m = d_mask.cwiseProduct(lam);
+
+        res_g = hess * z + grad;
+        const auto Hz = hess * z;
+        obj += 0.5 * z.dot(Hz) + z.dot(grad);
+        dual_gap += z.dot(Hz) + z.dot(grad);
+        dual_gap -= d.transpose() * lam_m;  // x_ocp_qp_res.c:497
+
+        // Multiplier part of the stationarity (x_ocp_qp_res.c:442-462):
+        // res_g += (λ_hi − λ_lo)ᵀ DC_nox_row (masked sides contribute 0).
+        if (nrow > 0)
+        {
+            Eigen::Matrix<S, DC::RowsAtCompileTime, 1> w;
+            for (int r = 0; r < nrow; ++r)
+            {
+                const int sh = lay.side_hi(r);
+                const int sl = lay.side_lo(r);
+                w(r) = lam_m(sh) - (sl >= 0 ? lam_m(sl) : 0.0);
+            }
+            res_g.head(nux) += dc.leftCols(nux).transpose() * w;
+        }
+        // Slack coupling of the row multipliers (x_ocp_qp_res.c:480-488):
+        // res_g[s_lo col] −= λ_lo, res_g[s_hi col] −= λ_hi.
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int cl = idxs_lo[r];
+            if (cl >= 0)
+            {
+                res_g(cl) -= lam_m(lay.side_lo(r));
+            }
+            const int ch = idxs_hi[r];
+            if (ch >= 0)
+            {
+                res_g(ch) -= lam_m(lay.side_hi(r));
+            }
+        }
+        // Slack-side multipliers (x_ocp_qp_res.c:477): res_g[s_j] −= λ_sj.
+        for (int j = 0; j < nslack; ++j)
+        {
+            res_g(s0 + j) -= lam_m(lo + nrow + j);
+        }
+
+        // res_d = d + t − σ·v, masked (x_ocp_qp_res.c:452-466, 491-492);
+        // v evaluated on (u;x), per-side slack added / removed.
+        auto v = dc.leftCols(nux) * z.head(nux);
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int sh = lay.side_hi(r);
+            const int sl = lay.side_lo(r);
+            S v_hi = v(r);
+            const int ch = idxs_hi[r];
+            if (ch >= 0)
+            {
+                v_hi -= z(ch);
+            }
+            res_d(sh) = d(sh) + t(sh) + v_hi;
+            if (sl >= 0)
+            {
+                S v_lo = v(r);
+                const int cl = idxs_lo[r];
+                if (cl >= 0)
+                {
+                    v_lo += z(cl);
+                }
+                res_d(sl) = d(sl) + t(sl) - v_lo;
+            }
+        }
+        for (int j = 0; j < nslack; ++j)
+        {
+            const int si = lo + nrow + j;
+            res_d(si) = d(si) + t(si) - z(s0 + j);
+        }
+        res_d = d_mask.cwiseProduct(res_d);
+
+        // res_m = d_mask ∘ (λ ∘ t − m) (x_ocp_qp_res.c:513-516)
+        res_m = d_mask.cwiseProduct(lam.cwiseProduct(t) - m);
+
+        // Dynamics coupling (x_ocp_qp_res.c:440, 505-510)
+        if (ba != nullptr)
+        {
+            res_g.head(D::nu + D::nx) += ba->transpose() * (*pi_cur);
+            *res_b = (*ba) * z.head(D::nu + D::nx) + (*b) - (*x_next);
+            dual_gap -= (*b).transpose() * (*pi_cur);  // x_ocp_qp_res.c:508
+        }
+        if (pi_prev != nullptr)
+        {
+            for (int i = 0; i < D::nx; ++i)
+            {
+                res_g(xoff + i) -= (*pi_prev)(i);
+            }
+        }
+    }
+
     // 1:1 translations of the HPIPM macros, implemented in the owning
     // sub-step (SQP_PHASE1_WORKLOG.md sec. 4):
     //   void init_point(const Qp<P, NH>&, QpSol<P, NH>&);       // 1c
-    //   void compute_residuals(const Qp<P, NH>&, const QpSol<P, NH>&,
-    //                          QpRes<P, NH>&);                 // 1b
     //   void fact_solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,
     //                       QpRes<P, NH>&);                    // 1e
     //   void solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,
