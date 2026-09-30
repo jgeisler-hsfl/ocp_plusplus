@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <utility>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -445,6 +446,117 @@ public:
         res.dual_gap = dual_gap;
     }
 
+    /// Interior-point initialization (HPIPM `OCP_QP_INIT_VAR`,
+    /// x_ocp_qp_ipm.c:1632-2049; v1: warm_start = 0, var_init_scheme = 1,
+    /// t0_init = 2).
+    ///
+    /// Zeros the primal (u;x;s) steps and the dynamics multipliers, then
+    /// fills an interior (t, lam) pair: slacks s_j start at thr0 with
+    /// t_j = thr0; every bound side gets t_j = distance from the bound at
+    /// the current iterate (clipped to >= thr0, repairing the decision
+    /// variable of a bound row when both sides are violated); finally
+    /// lam_j = mu0 / t_j, so that lam_j * t_j = mu0 on every active side
+    /// (res_mu = mu0 at the initial iterate, m = 0 in v1).
+    ///
+    /// Made public for the phase-1 tests (plan sec. 6 lists it private).
+    void init_point(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    {
+        const int N = in.N;
+        assert(out.N == N);
+
+        // cold start (warm_start = 0): zero the primal steps, pi, lam, t
+        out.ux_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.ux_path[k - 1].setZero();
+        }
+        out.ux_term.setZero();
+        for (int k = 0; k < N; ++k)
+        {
+            out.pi[k].setZero();
+        }
+        out.lam_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.lam_path[k - 1].setZero();
+        }
+        out.lam_term.setZero();
+        out.t_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.t_path[k - 1].setZero();
+        }
+        out.t_term.setZero();
+
+        const S thr0 = 1e-1;  // x_ocp_qp_ipm.c:1655
+        const S mu0 = opts_.mu0;
+
+        // first stage (k = 0): pin rows (g_pin) + state/control box rows
+        {
+            const auto& lay = D::lay_first;
+            std::vector<std::pair<int, int>> bound;
+            if (P::fixed_initial_state)
+            {
+                for (int j = 0; j < D::nx; ++j)
+                {
+                    bound.emplace_back(j, D::idx_x0[j]);
+                }
+            }
+            const int nbxf = D::nbx_first;
+            for (int j = 0; j < nbxf; ++j)
+            {
+                bound.emplace_back(lay.row_off(detail::g_bx) + j,
+                                   D::idxb_first[j]);
+            }
+            for (int j = 0; j < D::nbu; ++j)
+            {
+                bound.emplace_back(lay.row_off(detail::g_bu) + j,
+                                   D::idxb_first[nbxf + j]);
+            }
+            init_stage(out.ux_first, out.lam_first, out.t_first, in.first.d,
+                       in.first.DC, lay, D::idxs_lo_first, D::idxs_hi_first,
+                       bound, D::nu + D::nx, D::nslack_first, thr0, mu0);
+        }
+
+        // path stages (k = 1..N-1)
+        {
+            const auto& lay = D::lay_path;
+            std::vector<std::pair<int, int>> bound;
+            for (int j = 0; j < D::nbx; ++j)
+            {
+                bound.emplace_back(lay.row_off(detail::g_bx) + j,
+                                   D::idxb_path[j]);
+            }
+            for (int j = 0; j < D::nbu; ++j)
+            {
+                bound.emplace_back(lay.row_off(detail::g_bu) + j,
+                                   D::idxb_path[D::nbx + j]);
+            }
+            for (int k = 1; k < N; ++k)
+            {
+                const int i = k - 1;
+                init_stage(out.ux_path[i], out.lam_path[i], out.t_path[i],
+                           in.path[i].d, in.path[i].DC, lay, D::idxs_lo_path,
+                           D::idxs_hi_path, bound, D::nu + D::nx,
+                           D::nslack_path, thr0, mu0);
+            }
+        }
+
+        // terminal stage (k = N): state box rows only
+        {
+            const auto& lay = D::lay_term;
+            std::vector<std::pair<int, int>> bound;
+            for (int j = 0; j < D::nbx_t; ++j)
+            {
+                bound.emplace_back(lay.row_off(detail::g_bx) + j,
+                                   D::idxb_term[j]);
+            }
+            init_stage(out.ux_term, out.lam_term, out.t_term, in.term.d,
+                       in.term.DC, lay, D::idxs_lo_term, D::idxs_hi_term,
+                       bound, D::nx, D::nslack_term, thr0, mu0);
+        }
+    }
+
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
 
@@ -592,9 +704,124 @@ private:
         }
     }
 
+    /// One stage of init_point (HPIPM OCP_QP_INIT_VAR, var_init_scheme = 1,
+    /// t0_init = 2; x_ocp_qp_ipm.c:1905-2040).
+    ///
+    /// Order (as in HPIPM): (1) slack variables / their sides, (2) box-type
+    /// rows (pin / bx / bu) from the variable values, with bound repair of
+    /// the decision variable, (3) general rows (ineq / eq / lin) from the
+    /// row value v = DC z_(u;x), (4) lam = mu0 / t on every side. Absent
+    /// sides (d_mask = 0) are computed like present ones; they are masked
+    /// out in the residuals.
+    ///
+    /// @param z       variable vector (u; x; s) / (x; s), mutated in place
+    ///                 (slack values, bound repair)
+    /// @param lam     [out] multipliers, one per side
+    /// @param t       [out] IPM slacks, one per side
+    /// @param d       bound offsets (lo: lo, hi: -hi, slack: 0)
+    /// @param dc      constraint Jacobian over z (natural orientation)
+    /// @param lay     side/row layout of this stage type
+    /// @param idxs_lo / idxs_hi  per-row slack column in z (-1 if not soft)
+    /// @param bound   (row, varidx) pairs of the box-type rows
+    /// @param nux     width of the (u;x) part of z
+    /// @param nslack  number of slack variables
+    template <class Z, class Lam, class T, class DV, class DC, class IdxLo,
+              class IdxHi>
+    void init_stage(Z& z, Lam& lam, T& t, const DV& d, const DC& dc,
+                    detail::QpLayout lay, const IdxLo& idxs_lo,
+                    const IdxHi& idxs_hi,
+                    const std::vector<std::pair<int, int>>& bound, int nux,
+                    int nslack, S thr0, S mu0) const
+    {
+        const int nrow = static_cast<int>(dc.rows());
+        const int lo = lay.lo_size();
+        const int nside = static_cast<int>(t.size());
+        const int s0 = static_cast<int>(z.size()) - nslack;
+
+        // (1) slacks: t_s = -d_s + s (d_s = 0), repair s
+        for (int j = 0; j < nslack; ++j)
+        {
+            const int side = lo + nrow + j;
+            S ts = -d(side) + z(s0 + j);
+            if (ts < thr0)
+            {
+                ts = thr0;
+                z(s0 + j) = d(side) + thr0;
+            }
+            t(side) = ts;
+        }
+
+        // (2) box-type rows (pin / bx / bu)
+        for (const auto& br : bound)
+        {
+            const int row = br.first;
+            const int varidx = br.second;
+            const int sl = lay.side_lo(row);
+            const int sh = lay.side_hi(row);
+            S val = z(varidx);
+            const S slo = (idxs_lo[row] >= 0) ? z(idxs_lo[row]) : S(0);
+            const S shi = (idxs_hi[row] >= 0) ? z(idxs_hi[row]) : S(0);
+            S tl = val + slo - d(sl);
+            S th = -val + shi - d(sh);
+            if (tl < thr0)
+            {
+                if (th < thr0)
+                {
+                    z(varidx) = 0.5 * (d(sl) - d(sh));
+                    tl = thr0;
+                    th = thr0;
+                }
+                else
+                {
+                    tl = thr0;
+                    z(varidx) = d(sl) + thr0;
+                }
+            }
+            else if (th < thr0)
+            {
+                th = thr0;
+                z(varidx) = -d(sh) - thr0;
+            }
+            t(sl) = tl;
+            t(sh) = th;
+        }
+
+        // (3) general rows (ineq / eq / lin)
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g != detail::g_ineq && g != detail::g_eq && g != detail::g_lin)
+            {
+                continue;
+            }
+            S v = 0.0;
+            for (int j = 0; j < nux; ++j)
+            {
+                v += dc(r, j) * z(j);
+            }
+            const S slo = (idxs_lo[r] >= 0) ? z(idxs_lo[r]) : S(0);
+            const S shi = (idxs_hi[r] >= 0) ? z(idxs_hi[r]) : S(0);
+            const int sl = lay.side_lo(r);
+            const int sh = lay.side_hi(r);
+            S th = -v + shi - d(sh);
+            t(sh) = (th < thr0) ? thr0 : th;
+            if (sl >= 0)
+            {
+                S tl = v + slo - d(sl);
+                t(sl) = (tl < thr0) ? thr0 : tl;
+            }
+        }
+
+        // (4) multipliers: lam = mu0 / t (every side; masked sides are
+        // ignored by the residuals)
+        for (int i = 0; i < nside; ++i)
+        {
+            lam(i) = mu0 / t(i);
+        }
+    }
+
     // 1:1 translations of the HPIPM macros, implemented in the owning
     // sub-step (SQP_PHASE1_WORKLOG.md sec. 4):
-    //   void init_point(const Qp<P, NH>&, QpSol<P, NH>&);       // 1c
     //   void fact_solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,
     //                       QpRes<P, NH>&);                    // 1e
     //   void solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,

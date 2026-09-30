@@ -19,11 +19,12 @@ checkpoints. **Protocol for every sub-step:**
   QpStageFirst/Path/Term, Qp, QpSol, QpRes), `problem.hpp` Status enum
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
-- Phase 1: sub-steps 1a (scaffolding) and 1b (residuals) done —
+- Phase 1: sub-steps 1a (scaffolding), 1b (residuals), 1c (init point) done —
   `include/ocp/solvers/hpipm/hpipm.hpp` (`HpipmOptions`, `HpipmIteration`,
-  `HpipmStatistics`, `HpipmQpSolver<P, NH>` shell + `compute_residuals`).
-  Tests live in `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`,
-  `residuals_1b.cpp`). Sub-steps 1c..1i pending.
+  `HpipmStatistics`, `HpipmQpSolver<P, NH>` shell + `compute_residuals` +
+  `init_point`). Tests live in `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`,
+  `residuals_1b.cpp`, `init_1c.cpp`). Sub-steps 1e..1i pending (1d merged
+  into 1e per plan).
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -327,3 +328,53 @@ Deviations / corrections to this file:
   `x_ocp_qp_kkt.c:1866-1884`).
 - Plan §6 listed `compute_residuals` as private; made it public for
   testability (also needed by 1c/1h).
+
+### 1c — init point (2026-09-30)
+
+Sources re-read:
+- `x_ocp_qp_ipm.c:1632-2049` — `OCP_QP_INIT_VAR`: hot-start (warm_start
+  >= 3: clip lam/t to lam0_min/t0_min) and warm-start-2 (clip to thr0 =
+  1e-1) branches are out of v1 scope (warm_start = 0). Cold start zeros
+  `ux` (`:1697-1708`) and `pi` (`:1725-1732`). `t0_init = 0/1` set
+  lam = t = sqrt(mu0) / (mu0, 1.0) uniformly (`:1734-1760`); v1 uses
+  `t0_init = 2` (heuristic, `:1761-2042`).
+- `x_ocp_qp_ipm.c:1905-2040` — the heuristic branch used by acados
+  (var_init_scheme = 1): per stage, in order —
+  1. slacks: `t_s = -d_s + s` (`AXPY :1936`), clip `t_s < thr0` →
+     `t_s = thr0`, `s = d_s + thr0` (`:1937-1949`);
+  2. box rows: `t_lb = x[idxb] + s_lo(soft) - d_lb`,
+     `t_ub = -x[idxb] + s_hi(soft) - d_ub` (`:1954-1967`); repair
+     (`:1970-1997`): both violated → `x = 0.5*(d_lb - d_ub)`,
+     both `t = thr0`; only lo → `t_lb = thr0`, `x = d_lb + thr0`; only
+     hi → `t_ub = thr0`, `x = -d_ub - thr0`;
+  3. general rows: `t_lg = C x + s_lo(soft) - d_lg`,
+     `t_ug = -C x + s_hi(soft) - d_ub`... (exact: `t_ug = -v + s_hi - d_ug`,
+     `:2003-2030`), clipped to `max(thr0, t)` (no variable repair);
+  4. `lam = mu0 / t` on every side (`:2035-2036`).
+
+Implemented:
+- `hpipm.hpp`: public `init_point(const Qp<P, NH>&, QpSol<P, NH>&)` (zeros
+  the cold-start primal + pi, then per stage-type calls private
+  `init_stage` with the box-type (row, varidx) list: pin rows via
+  `idx_x0` (first stage only), bx/bu via `idxb_*`; terminal only bx via
+  `idxb_term`). `init_stage` implements the 4-step heuristic above with
+  thr0 = 1e-1 (`x_ocp_qp_ipm.c:1655`).
+- `tests/hpipm/init_1c.cpp` (linked into `qp_unit`): feasible [-1, 1]
+  synthetic data (hess = I, DC = 0, d = -1 on lo / hi sides, d = 0 on
+  ineq hi and slack sides, d_mask with every 5th side = 0); checks
+  t > 0 and lam > 0 finite on all sides, t >= thr0, finite decision
+  variables, and `res_mu == mu0` (1e-12) after `compute_residuals`.
+  Cases: DI N = 1, 2 (soft ineq → slacks), MS N = 1, 2 + MS NH = 2
+  (no slacks, fixed-extent).
+
+Tests: `qp_unit` (all 1a+1b+1c checks), `qp_dim`, `double_integrator`,
+`mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- Plan §6 listed `init_point` as private; made it public for testability
+  (the 1c test calls it directly, same precedent as 1b's
+  `compute_residuals`).
+- Sec. 3 said "re-read exact λ/t initialization" for 1c — done: the exact
+  heuristic is recorded above; note the both-violated repair sets
+  `x = 0.5*(d_lo - d_hi)` (midpoint of the bound interval, since
+  d_lo = lo, d_hi = -hi), matching `x_ocp_qp_ipm.c:1978`.

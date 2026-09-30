@@ -110,6 +110,7 @@ void check_solver_shell(const char* name)
 }  // namespace
 
 int run_residuals_1b_tests();
+int run_init_1c_tests();
 
 int main()
 {
@@ -118,6 +119,7 @@ int main()
     check_solver_shell<MassSpring>("MassSpring (N dynamic)");
     check_solver_shell<MassSpring, 5>("MassSpring (NH = 5, fixed-extent)");
     failures += run_residuals_1b_tests();
+    failures += run_init_1c_tests();
 
     if (failures == 0)
     {
