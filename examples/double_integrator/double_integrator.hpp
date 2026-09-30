@@ -39,6 +39,8 @@ struct DoubleIntegratorDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [1; 0.5] given
+    static constexpr bool has_dynamics_hess_prod = true;  // HVP implemented (zero; linear map)
+    static constexpr bool has_constr_hess_prod   = true;  // HVPs implemented (zero; linear maps)
     static constexpr std::array<int, 2> state_box_idx   = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -95,6 +97,15 @@ public:
         df_dx(0, 1) = Ts_;
         df_du.setZero();
         df_du(1, 0) = Ts_;
+    }
+
+    void dynamics_hess_prod(int, const state_t&, const control_t&,
+                            const state_t&, const state_t&, const control_t&,
+                            state_t& hv_x, control_t& hv_u) const
+    {
+        // linear dynamics map: Hessian is zero
+        hv_x.setZero();
+        hv_u.setZero();
     }
 
     // ---------------------------------------------------------------
@@ -168,6 +179,16 @@ public:
         g_du.setZero();
     }
 
+    void stage_inequality_constr_hess_prod(int, const state_t&, const control_t&,
+                                           const ineq_t&, const state_t&,
+                                           const control_t&, state_t& hv_x,
+                                           control_t& hv_u) const
+    {
+        // linear constraint: Hessian is zero
+        hv_x.setZero();
+        hv_u.setZero();
+    }
+
     ineq_pen_t stage_inequality_constr_soft_penalty(int) const
     {
         ineq_pen_t pen;
@@ -234,6 +255,13 @@ public:
         e_dx.setZero();
         e_dx(0, 0) = 1.0;
         e_dx(0, 1) = 1.0;
+    }
+
+    void terminal_equality_constr_hess_prod(const state_t&, const eq_term_t&,
+                                            const state_t&, state_t& hv) const
+    {
+        // linear constraint: Hessian is zero
+        hv.setZero();
     }
 
     // nl_t == 0: terminal_linear_constr stays unimplemented.

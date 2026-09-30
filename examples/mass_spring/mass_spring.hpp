@@ -45,6 +45,8 @@ struct MassSpringDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [2.5, 2.5, 0, ...]'
+    static constexpr bool has_dynamics_hess_prod = true;  // HVP implemented (zero; linear map)
+    static constexpr bool has_constr_hess_prod   = true;  // no nonlinear constraints (vacuously true)
     static constexpr std::array<int, 8> state_box_idx   = {0, 1, 2, 3, 4, 5, 6, 7};
     static constexpr std::array<int, 3> control_box_idx = {0, 1, 2};
     static constexpr std::array<int, 8> terminal_state_box_idx = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -128,6 +130,15 @@ public:
     {
         df_dx = A_;
         df_du = B_;
+    }
+
+    void dynamics_hess_prod(int, const state_t&, const control_t&,
+                            const state_t&, const state_t&, const control_t&,
+                            state_t& hv_x, control_t& hv_u) const
+    {
+        // linear dynamics map: Hessian is zero
+        hv_x.setZero();
+        hv_u.setZero();
     }
 
     // ---------------------------------------------------------------

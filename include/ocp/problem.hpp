@@ -22,6 +22,12 @@
 //            static constexpr bool fixed_initial_state = true;  // false: x_0 is a
 //                                                               // decision variable
 //                                                               // (e.g. MHE)
+//            static constexpr bool has_dynamics_hess_prod = true; // false: dynamics
+//                                                                 // map is linear, the
+//                                                                 // HVP is not provided
+//            static constexpr bool has_constr_hess_prod   = true; // false: constraint
+//                                                                 // maps are linear,
+//                                                                 // the HVPs not provided
 //            static constexpr std::array<int, 1> state_box_idx   = {0};
 //            static constexpr std::array<int, 1> control_box_idx = {0};
 //            static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -256,6 +262,10 @@ struct TerminalLinearSpec
 ///                                 const control_t& u) const;
 ///     void dynamics_jacobian(int k, const state_t& x, const control_t& u,
 ///                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const;
+///     void dynamics_hess_prod(int k, const state_t& x, const control_t& u,
+///                              const state_t& w, const state_t& v_x,
+///                              const control_t& v_u, state_t& hv_x,
+///                              control_t& hv_u) const;
 ///
 ///   stage cost (k = 0..N-1)
 ///     Scalar stage_cost_value(int k, const state_t& x,
@@ -283,6 +293,20 @@ struct TerminalLinearSpec
 ///                                         const control_t& u,
 ///                                         eq_de_dx_t& e_dx,
 ///                                         eq_de_du_t& e_du) const;
+///     void stage_inequality_constr_hess_prod(int k, const state_t& x,
+///                                           const control_t& u,
+///                                           const ineq_t& lam,
+///                                           const state_t& v_x,
+///                                           const control_t& v_u,
+///                                           state_t& hv_x,
+///                                           control_t& hv_u) const;
+///     void stage_equality_constr_hess_prod(int k, const state_t& x,
+///                                          const control_t& u,
+///                                          const eq_t& lam,
+///                                          const state_t& v_x,
+///                                          const control_t& v_u,
+///                                          state_t& hv_x,
+///                                          control_t& hv_u) const;
 ///     stage_linear_t stage_linear_constr(int k) const;
 ///     state_box_t stage_state_box_constr(int k) const;        // rows: state_box_idx
 ///     control_box_t stage_control_box_constr(int k) const;    // rows: control_box_idx
@@ -297,6 +321,14 @@ struct TerminalLinearSpec
 ///     eq_term_t terminal_equality_constr(const state_t& x) const;      // e == 0
 ///     void terminal_equality_constr_jacobian(const state_t& x,
 ///                                            eq_term_de_dx_t& e_dx) const;
+///     void terminal_inequality_constr_hess_prod(const state_t& x,
+///                                              const ineq_term_t& lam,
+///                                              const state_t& v,
+///                                              state_t& hv) const;
+///     void terminal_equality_constr_hess_prod(const state_t& x,
+///                                             const eq_term_t& lam,
+///                                             const state_t& v,
+///                                             state_t& hv) const;
 ///     term_linear_t terminal_linear_constr() const;
 ///     ineq_term_pen_t terminal_inequality_constr_soft_penalty() const; // rows: terminal_ineq_soft_idx
 ///     eq_term_pen_t   terminal_equality_constr_soft_penalty() const;   // rows: terminal_eq_soft_idx
@@ -320,10 +352,18 @@ struct TerminalLinearSpec
 ///   methods; box and linear groups carry their weights in the returned
 ///   spec's `soft_penalty` field. The slack variables themselves are
 ///   solver-internal.
+/// - Hessian-vector products of the dynamics map (`dynamics_hess_prod`)
+///   and of the constraint maps (`*_constr_hess_prod`) support
+///   exact-Lagrangian Hessian assembly in the solver. Two independent
+///   flags, `Dims::has_dynamics_hess_prod` and `Dims::has_constr_hess_prod`,
+///   tell the solver whether these methods exist: when a flag is false the
+///   corresponding methods must not be called and the solver omits the
+///   corresponding Hessian term — valid only if the map is linear
+///   (Hessian identically zero), or if the user accepts the resulting
+///   approximate QP Hessian.
 /// - Extensions anticipated beyond this draft (not yet part of the
-///   contract): Hessian-vector products of the dynamics and constraints
-///   (needed for exact-Lagrangian Hessian mode), parameter sensitivities,
-///   and algebraic (eliminated) variables.
+///   contract): parameter sensitivities, and algebraic (eliminated)
+///   variables.
 
 template <class Dims, class Scalar = double>
 class Problem
@@ -344,6 +384,16 @@ public:
     // true: x_0 is a fixed given via initial_state(); false: x_0 is a
     // decision variable (e.g. MHE) and initial_state() is not available
     static constexpr bool fixed_initial_state = Dims::fixed_initial_state;
+
+    // true: dynamics_hess_prod is implemented and may be used for
+    // exact-Lagrangian Hessian assembly; false: the dynamics map is linear,
+    // do not call the HVP (the dynamics Hessian term is identically zero)
+    static constexpr bool has_dynamics_hess_prod = Dims::has_dynamics_hess_prod;
+
+    // true: the *_constr_hess_prod methods are implemented and may be used;
+    // false: the constraint maps are linear, do not call the HVPs (the
+    // constraint Hessian terms are identically zero)
+    static constexpr bool has_constr_hess_prod = Dims::has_constr_hess_prod;
 
     // active box-constraint rows: the const index sets select which
     // state/control components are bounded; their size *is* the number of
@@ -478,14 +528,29 @@ public:
         return {};
     }
     void dynamics_jacobian(int /*k*/, const state_t& /*x*/,
-                           const control_t& /*u*/,
-                           dyn_df_dx_t& /*df_dx*/,
-                           dyn_df_du_t& /*df_du*/) const
+                            const control_t& /*u*/,
+                            dyn_df_dx_t& /*df_dx*/,
+                            dyn_df_du_t& /*df_du*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
             "'void dynamics_jacobian(int k, const state_t&, const control_t&, "
             "dyn_df_dx_t&, dyn_df_du_t&) const' in the concrete problem.");
+    }
+    void dynamics_hess_prod(int /*k*/, const state_t& /*x*/,
+                            const control_t& /*u*/,
+                            const state_t& /*w*/,
+                            const state_t& /*v_x*/,
+                            const control_t& /*v_u*/,
+                            state_t& /*hv_x*/,
+                            control_t& /*hv_u*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void dynamics_hess_prod(int k, const state_t&, const control_t&, "
+            "const state_t& w, const state_t& v_x, const control_t& v_u, "
+            "state_t& hv_x, control_t& hv_u) const' in the concrete problem "
+            "(bilinear Hessian contraction of the dynamics map).");
     }
 
     // stage cost (k = 0..N-1)
@@ -590,6 +655,34 @@ public:
             "'void stage_equality_constr_jacobian(int k, const state_t&, const control_t&, "
             "eq_de_dx_t&, eq_de_du_t&) const' in the concrete problem.");
     }
+    void stage_inequality_constr_hess_prod(int /*k*/, const state_t& /*x*/,
+                                           const control_t& /*u*/,
+                                           const ineq_t& /*lam*/,
+                                           const state_t& /*v_x*/,
+                                           const control_t& /*v_u*/,
+                                           state_t& /*hv_x*/,
+                                           control_t& /*hv_u*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void stage_inequality_constr_hess_prod(int k, const state_t&, const control_t&, "
+            "const ineq_t&, const state_t&, const control_t&, state_t&, control_t&) const' "
+            "in the concrete problem, or set ng to 0.");
+    }
+    void stage_equality_constr_hess_prod(int /*k*/, const state_t& /*x*/,
+                                         const control_t& /*u*/,
+                                         const eq_t& /*lam*/,
+                                         const state_t& /*v_x*/,
+                                         const control_t& /*v_u*/,
+                                         state_t& /*hv_x*/,
+                                         control_t& /*hv_u*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void stage_equality_constr_hess_prod(int k, const state_t&, const control_t&, "
+            "const eq_t&, const state_t&, const control_t&, state_t&, control_t&) const' "
+            "in the concrete problem, or set ne to 0.");
+    }
     stage_linear_t stage_linear_constr(int /*k*/) const
     {
         static_assert(false,
@@ -679,6 +772,30 @@ public:
             "'void terminal_equality_constr_jacobian(const state_t&, eq_term_de_dx_t&) const' "
             "in the concrete problem.");
     }
+    void terminal_inequality_constr_hess_prod(const state_t& /*x*/,
+                                              const ineq_term_t& /*lam*/,
+                                              const state_t& /*v*/,
+                                              state_t& /*hv*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void terminal_inequality_constr_hess_prod(const state_t&, "
+            "const ineq_term_t&, const state_t&, state_t&) const' in the "
+            "concrete problem (net-multiplier Hessian-vector product, "
+            "state only), or set ng_t to 0.");
+    }
+    void terminal_equality_constr_hess_prod(const state_t& /*x*/,
+                                            const eq_term_t& /*lam*/,
+                                            const state_t& /*v*/,
+                                            state_t& /*hv*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void terminal_equality_constr_hess_prod(const state_t&, "
+            "const eq_term_t&, const state_t&, state_t&) const' in the "
+            "concrete problem (net-multiplier Hessian-vector product, "
+            "state only), or set ne_t to 0.");
+    }
     term_linear_t terminal_linear_constr() const
     {
         static_assert(false,
@@ -721,7 +838,12 @@ enum class Status
     kSolved,         // converged to an (approximate) KKT point
     kMaxIterations,  // iteration limit reached without convergence
     kInfeasible,     // (in)feasibility / unboundedness detected
-    kAborted         // internal solver error
+    kQpFailure,      // inner QP solve failed
+    kMinStep,        // step length fell below minimum threshold
+    kUnbounded,      // problem detected as unbounded
+    kNanDetected,    // NaN encountered during iteration
+    kAborted,        // internal solver error
+    kTimeout         // wall-clock timeout reached
 };
 
 /// Solver-independent solution (and warm-start) container.
