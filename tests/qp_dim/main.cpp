@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "ocp/qp.hpp"
+#include "ocp/solvers/hpipm/qp.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 #include "../../examples/mass_spring/mass_spring.hpp"

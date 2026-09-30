@@ -1,4 +1,4 @@
-// ocp/solver/hpipm.hpp
+// ocp/solvers/hpipm/hpipm.hpp
 //
 // HPIPM-style primal-dual interior-point solver for the staged QP data model
 // of qp.hpp. Port of the HPIPM OCP-QP IPM (relative formulation, Mehrotra
@@ -38,7 +38,7 @@
 
 #include <Eigen/Dense>
 
-#include "../qp.hpp"
+#include "qp.hpp"
 
 namespace ocp
 {

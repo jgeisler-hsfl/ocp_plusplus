@@ -1,4 +1,4 @@
-# Phase 1 worklog: HPIPM QP solver (`include/ocp/solver/hpipm.hpp`)
+# Phase 1 worklog: HPIPM QP solver (`include/ocp/solvers/hpipm/hpipm.hpp`)
 
 Companion to `SQP_PLAN.md` (§5, §6, §11 Phase 1). This file is the running
 record: verified facts, the derived Newton system, sub-step plan, and
@@ -6,7 +6,7 @@ checkpoints. **Protocol for every sub-step:**
 
 1. Re-read the HPIPM functions listed for the sub-step (fresh; note line
    numbers in the checkpoint).
-2. Implement in `include/ocp/solver/hpipm.hpp` (header-only).
+2. Implement in `include/ocp/solvers/hpipm/hpipm.hpp` (header-only).
 3. Build (`cmake --build build`), run tests, warning-free under
    `-Wall -Wextra -Werror`.
 4. Append a checkpoint entry below: what was done, test results, any
@@ -15,11 +15,11 @@ checkpoints. **Protocol for every sub-step:**
 
 ## 0. State
 
-- Phase 0 done (commits `2e311bd`..`479fb90`): `include/ocp/qp.hpp` (QpDim,
+- Phase 0 done (commits `2e311bd`..`479fb90`): `include/ocp/solvers/hpipm/qp.hpp` (QpDim,
   QpStageFirst/Path/Term, Qp, QpSol, QpRes), `problem.hpp` Status enum
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
-- Phase 1: sub-step 1a (scaffolding) done — `include/ocp/solver/hpipm.hpp`
+- Phase 1: sub-step 1a (scaffolding) done — `include/ocp/solvers/hpipm/hpipm.hpp`
   (`HpipmOptions`, `HpipmIteration`, `HpipmStatistics`,
   `HpipmQpSolver<P, NH>` shell) + `tests/qp_unit`. Sub-steps 1b..1i
   pending.
@@ -208,7 +208,7 @@ Sources re-read:
   (residual tolerances unchanged).
 
 Implemented:
-- `include/ocp/solver/hpipm.hpp`: `HpipmOptions` (defaults = BALANCE +
+- `include/ocp/solvers/hpipm/hpipm.hpp`: `HpipmOptions` (defaults = BALANCE +
   acados overrides + v1 minimal flags per plan §2), `HpipmIteration`
   (21 fields, doc 05 §5.3 order), `HpipmStatistics` (`stat_max + 1` rows,
   HPIPM stat-matrix semantics), `HpipmQpSolver<P>` shell: per-stage-type
@@ -223,6 +223,12 @@ Implemented:
 
 Tests: `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all build
 warning-free and pass.
+
+Refactor (user request 2026-09-30): `include/ocp/solver/` renamed to
+`solvers/` (more solver families planned); `hpipm.hpp` and the
+HPIPM-specific `qp.hpp` now live together in `solvers/hpipm/`
+(`include/ocp/solvers/hpipm/{qp,hpipm}.hpp`); include paths in the tests
+and all plan/worklog/AGENTS references updated.
 
 Refinement (same sub-step, user request 2026-09-30): path-wise workspace
 quantities now use the `Trajectory` mechanism instead of plain

@@ -21,6 +21,10 @@ No other dependencies. C++17 required.
 ## Layout
 - `include/ocp/problem.hpp` — the problem interface (central contract): `Problem<Dims, Scalar>`,
   `Trajectory<T, NSlots>`, `Solution<P, NH>`, `BoxSpec` / `LinearSpec` / `TerminalLinearSpec`.
+- `include/ocp/solvers/` — solver implementations, one subdirectory per solver
+  family. `solvers/hpipm/` holds the HPIPM QP solver (`hpipm.hpp`) and its
+  staged QP data model (`qp.hpp`: `QpDim<P>`, `Qp<P,NH>`, `QpSol<P,NH>`,
+  `QpRes<P,NH>`).
 - `examples/double_integrator/` — minimal concrete problem + finite-difference sanity test.
 - `acados/` — reference only.
 

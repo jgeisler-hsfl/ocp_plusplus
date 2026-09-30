@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solver/hpipm.hpp"
+#include "ocp/solvers/hpipm/hpipm.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 #include "../../examples/mass_spring/mass_spring.hpp"

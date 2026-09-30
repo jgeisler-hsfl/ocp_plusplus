@@ -108,20 +108,21 @@ Notes:
 
 ```
 include/ocp/problem.hpp           extended: Status codes + HVP contract
-include/ocp/qp.hpp                QpDim<P>, Qp<P,NH>, QpSol<P,NH>, QpRes<P,NH>  (pure data)
-include/ocp/solver/hpipm.hpp      HpipmOptions, HpipmStatistics, HpipmQpSolver<P>
-include/ocp/solver/regularize.hpp GlmRegularizer<P>, NoRegularizer<P>
-include/ocp/solver/globalize.hpp  GlobOptions, MeritBacktracking<P>, Funnel<P>, apply_sqp_step()
-include/ocp/solver/sqp.hpp        SqpOptions, SqpStatistics, SqpSolver<P, QpSolver, Regularizer, Globalizer>
+include/ocp/solvers/hpipm/qp.hpp  QpDim<P>, Qp<P,NH>, QpSol<P,NH>, QpRes<P,NH>  (pure data)
+include/ocp/solvers/hpipm/hpipm.hpp HpipmOptions, HpipmStatistics, HpipmQpSolver<P,NH>
+include/ocp/solvers/regularize.hpp GlmRegularizer<P>, NoRegularizer<P>
+include/ocp/solvers/globalize.hpp  GlobOptions, MeritBacktracking<P>, Funnel<P>, apply_sqp_step()
+include/ocp/solvers/sqp.hpp        SqpOptions, SqpStatistics, SqpSolver<P, QpSolver, Regularizer, Globalizer>
 tests/qp_unit/…                   phase 1: synthetic staged QPs
 tests/sqp_double_integrator/…     phase 2: end-to-end
 tests/sqp_mass_spring/…           phase 2/4: end-to-end + reference diff
 ```
 
-`qp.hpp` → `problem.hpp`; solver headers → `qp.hpp`; `sqp.hpp` → all.
+`hpipm/qp.hpp` → `problem.hpp`; `hpipm/hpipm.hpp` → `hpipm/qp.hpp`;
+`solvers/*.hpp` → all.
 No cycle.
 
-## 5. QP data model (`include/ocp/qp.hpp`)
+## 5. QP data model (`include/ocp/solvers/hpipm/qp.hpp`)
 
 The horizon splits into three compile-time **stage types**, each with its
 own exact row groups, side layout, and variable vector (full conventions
@@ -221,7 +222,7 @@ struct QpRes   // res_g_* (per stage-type var vector), res_b (N stages),
 NH follows the `Solution<P, NH>` pattern (see AGENTS.md): runtime horizon
 by default, fixed-extent `std::array` storage for `NH >= 1`.
 
-## 6. HPIPM solver (`solver/hpipm.hpp`)
+## 6. HPIPM solver (`solvers/hpipm/hpipm.hpp`)
 
 ```cpp
 struct HpipmOptions;   // d_ocp_qp_ipm_arg fields; defaults = BALANCE preset + acados overrides
@@ -266,7 +267,7 @@ Mechanics (doc 05): backward pass
 `σ = (mu_aff/mu)³` with conditional pure-centering; exit on
 `iter < iter_max && α > alpha_min && residuals ≤ tol && dual_gap ≤ dual_gap_max`.
 
-## 7. Regularization (`solver/regularize.hpp`)
+## 7. Regularization (`solvers/regularize.hpp`)
 
 Duck-typed 2-method contract (mirrors `ocp_nlp_reg_config` minus RTI-only
 `lhs`/`rhs`):
@@ -281,7 +282,7 @@ void correct_dual_sol(Qp<P>&, QpSol<P>&) const;
   (α = |tmp|+ε if tmp<0 else ε); `correct_dual_sol` no-op.
 - `NoRegularizer<P>`: both no-ops.
 
-## 8. Globalization (`solver/globalize.hpp`)
+## 8. Globalization (`solvers/globalize.hpp`)
 
 ```cpp
 struct GlobOptions { double alpha_min = 0.05, alpha_reduction = 0.7,
@@ -311,7 +312,7 @@ struct Funnel            { /* state: funnel_width, penalty_parameter,
   repeated solves on the same solver object — the acados `nlp_out` slack
   analogue).
 
-## 9. SQP driver (`solver/sqp.hpp`)
+## 9. SQP driver (`solvers/sqp.hpp`)
 
 ```cpp
 struct SqpOptions { int max_iter = 20; double tol_stat = 1e-8, tol_eq = 1e-8,

@@ -1,4 +1,4 @@
-// ocp/qp.hpp
+// ocp/solvers/hpipm/qp.hpp
 //
 // Staged QP data model for the HPIPM-based solver.
 //
@@ -115,7 +115,7 @@
 
 #include <Eigen/Dense>
 
-#include "problem.hpp"
+#include "../../problem.hpp"
 
 namespace ocp
 {
