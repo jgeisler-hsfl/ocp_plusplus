@@ -40,6 +40,10 @@ add_executable(qp_dim tests/qp_dim/main.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE -Wall -Wextra -Werror)
 
+add_executable(qp_unit tests/qp_unit/main.cpp)
+target_include_directories(qp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(qp_unit PRIVATE -Wall -Wextra -Werror)
+
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
 if (Doxygen_FOUND)

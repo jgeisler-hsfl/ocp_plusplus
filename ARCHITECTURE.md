@@ -122,6 +122,8 @@ rather than defining trajectories directly as Eigen matrices.
 
 A trajectory represents a sequence of stage-wise quantities. Its physical storage is an implementation detail.
 
+Horizon-dependent quantities internal to a solver (per-stage workspace data such as factors, steps and multipliers) shall use the same trajectory representation, and shall support both a runtime horizon and a compile-time fixed horizon selected by a template parameter (as in `HpipmQpSolver<P, NH>`).
+
 Stage-wise access should be natural, for example:
 
 ```cpp

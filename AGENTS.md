@@ -39,6 +39,11 @@ No other dependencies. C++17 required.
   switches the trajectories to fixed-extent `std::array` storage. The same
   `NH` pattern applies to `ocp::Qp<P, NH>`, `ocp::QpSol<P, NH>`,
   `ocp::QpRes<P, NH>` in `qp.hpp` (default `NH = Eigen::Dynamic`).
+- Per-stage (path-wise) quantities inside solvers use the same
+  `Trajectory<T, NSlots>` mechanism: runtime-extent by default, fixed-extent
+  `std::array` when `NH` is a compile-time horizon. Solvers are therefore
+  templated over the horizon too (e.g. `HpipmQpSolver<P, NH>`), and their
+  workspace `resize(N)` allocates only in dynamic mode.
 - Extents: `x` has N+1 stages, `u` / dynamics / stage constraints have N,
   terminal quantities have 1.
 - Box constraints: only the active rows (const index sets in `Dims`) are

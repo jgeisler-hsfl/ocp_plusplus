@@ -42,7 +42,10 @@ Standing defaults (not separately discussed):
   SQP options; LQ fallback / refinement / split-step / abs-form join in
   phase 3.
 - **Internal solver storage is runtime-extent** (sized at `solve()`); only
-  user-facing `Solution<P, NH>` uses fixed-extent mode.
+  user-facing `Solution<P, NH>` uses fixed-extent mode. (Revised 2026-09-30:
+  per-stage workspace quantities use the `Trajectory` NH mechanism instead —
+  runtime-extent by default, fixed-extent for a compile-time `NH`;
+  `HpipmQpSolver<P, NH>`, see the phase-1 worklog.)
 - **Header-only** (no new `.cpp`), per project convention.
 - `SqpSolver` exposes const `last_qp()` / `last_qp_sol()` accessors
   (diagnostics, future RTI).
