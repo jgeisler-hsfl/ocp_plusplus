@@ -54,6 +54,18 @@ add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE -Wall -Wextra -Werror)
 
+add_executable(sqp_double_integrator
+               tests/sqp_double_integrator/sqp_double_integrator.cpp)
+target_include_directories(sqp_double_integrator
+                           PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_double_integrator PRIVATE -Wall -Wextra -Werror)
+
+add_executable(sqp_mass_spring
+               tests/sqp_mass_spring/sqp_mass_spring.cpp)
+target_include_directories(sqp_mass_spring
+                           PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_mass_spring PRIVATE -Wall -Wextra -Werror)
+
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
 if (Doxygen_FOUND)

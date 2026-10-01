@@ -928,6 +928,48 @@ written; §1 conventions signed off in the checkpoints.
   DegProbe -> kInfeasible (2f.6 degeneracy via the driver);
   duck-typed FailQp -> kQpFailure and ZeroStepQp -> kMinStep driver
   paths.
-- Build: warning-free under `-Wall -Wextra -Werror`.
-  `./build/sqp_unit` passes (2a-2g); `double_integrator`,
-  `mass_spring`, `qp_dim`, `qp_unit` all still pass.
+ - Build: warning-free under `-Wall -Wextra -Werror`.
+   `./build/sqp_unit` passes (2a-2g); `double_integrator`,
+   `mass_spring`, `qp_dim`, `qp_unit` all still pass.
+
+ ### 2h — end-to-end tests + CMake
+
+ - The plan's "three new targets" predates the 2a-2g work, which already
+   created the bundled `sqp_unit` target; 2h therefore adds two standalone
+   executables, `sqp_double_integrator` and `sqp_mass_spring`, plus their
+   CMake entries (`include` + `examples` include dirs,
+   `-Wall -Wextra -Werror`).
+ - `tests/sqp_double_integrator/sqp_double_integrator.cpp` (N = 10, default
+   `SqpSolver<DoubleIntegrator>`, GLM + merit, `print_level = 1`):
+   warm start = `x[0] = initial_state()`, forward simulation with the
+   constant control `a = (1 - (q0+v0) - Ts*N*v0) / (Ts^2*N*(N-1)/2 + Ts*N)`
+   that makes the terminal equality `q_N + v_N = 1` exactly feasible (the
+   plan's "adjust if infeasible start stalls the merit line search"; with
+   `u = 0` the equality is violated by 1.0). Checks: `kSolved` (both return
+   and `sol.status`); independently recomputed dynamics gap, hard-constraint
+   violations (state/terminal box, control box, linear row, terminal eq) all
+   < 1e-8; complementarity `|lam * positive-violation|` < 1e-8 with the
+   solution multipliers; **stationarity via a finite-difference Lagrangian
+   gradient** (central diff, h = 1e-5) over all free primals
+   (`u_k`, `x_k` for k = 1..N, x_0 pinned) < 1e-5 — the sec. 1.3
+   sign-convention gate; `x[0]` preserved; terminal eq; control box; soft
+   row `v <= v_max + slack` (slack bound from `cost_value - raw cost`);
+   writes `sqp_double_integrator.csv` (header + row count checked).
+ - `tests/sqp_mass_spring/sqp_mass_spring.cpp` (N = 20, box-only): same
+   structure; warm start `u = 0`; checks `kSolved`, dynamics gap / box
+   violations / complementarity / FD Lagrangian gradient; writes
+   `sqp_mass_spring.csv`.
+ - **Deviation (wins):** the FD stationarity check compares the FD
+   gradient against ~0 (not against an analytically recomputed gradient),
+   which is the stronger sec. 1.3 gate; a wrong multiplier sign shows up
+   as an O(1) gradient. Getting this right required fixing the lo-side
+   box term to `+lam_lo (lo - w)` (the KKT stationarity is
+   `grad - lam_lo + lam_hi`).
+ - Result: both reach `kSolved` in 2 iterations (full steps, alpha = 1);
+   all four NLP residual norms below the option tolerances at the final
+   iterate (DI res_stat 2.5e-11 / res_eq 2.2e-13 / res_ineq 6.0e-14 /
+   res_comp 1e-16; MS res_stat 8.3e-14 / res_eq 8.9e-16 / res_ineq 0 /
+   res_comp 1e-16). Both CSVs written.
+ - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_double_
+   integrator` and `./build/sqp_mass_spring` pass; `double_integrator`,
+   `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit` all still pass.
