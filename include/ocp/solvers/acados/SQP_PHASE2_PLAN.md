@@ -529,3 +529,53 @@ written; §1 conventions signed off in the checkpoints.
 - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
   passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
   still pass.
+
+### 2b — globalize.hpp (GlobOptions, SqpSlacks, dual mapping, apply_sqp_step)
+
+- Re-read `ocp_nlp_globalization_common.h:82-90` (GlobOptions defaults) and
+  `ocp_nlp_common.c:3355-3414` (`ocp_nlp_update_variables_sqp`: per-stage
+  `daxpy` over the whole (u;x;s) block for the primal, `dveccp` / `daxpby`
+  for the duals).
+- Implemented `include/ocp/solvers/acados/globalize.hpp`:
+  - `GlobOptions` — `alpha_min = 0.05`, `alpha_reduction = 0.7`,
+    `eps_sufficient_descent = 1e-4`, `full_step_dual = false` (defaults
+    match acados).
+  - `SqpSlacks<P, NH>` — solver-internal slack storage (first / path /
+    term), `resize(int)` (dynamic: allocate path; fixed: consistency
+    check), `setZero()`.
+  - `detail::map_qp_duals_to_solution<P, NH>` — zeros every NLP multiplier
+    field, then fills from the QP per-side `lam` (dynamics sign flip
+    `lambda_dyn = -pi`, ineq `side_hi`, eq / lin `side_hi - side_lo`, box
+    lower ↔ `side_lo` / upper ↔ `side_hi`), per the §1.3 table. A generic
+    `map_group` lambda handles ineq/eq/lin with explicit group row counts
+    (the terminal stage uses the `*_t` counts).
+  - `apply_sqp_step<P, NH>` — primal: `dest.u[k] = start.u[k] + α·(u part
+    of step.ux_k)`, `dest.x[k] = start.x[k] + α·(x part of step.ux_k)`
+    (explicit per-stage branches — a cross-type `?:` over `ux_first` /
+    `ux_path` / `ux_term` fails to compile because the three are different
+    fixed-size Eigen types); duals: full (`dest.lambda_* = mapped`) or
+    relaxed (`(1-α)·start + α·mapped`). Slacks are not touched (the driver
+    updates them).
+- **Deviation (wins):** plan §2b wrote `dest.x[k+1] = start.x[k+1] +
+  α·(x part of step.ux_k)`. That is an off-by-one: the x-part of the
+  stage-k step `step.ux_k` is δx_k (the increment to x_k), not δx_{k+1} —
+  confirmed by `compute_residuals` in `hpipm.hpp` and by acados's per-stage
+  `daxpy` over the whole (u;x;s) block. Implemented as `dest.x[k] =
+  start.x[k] + α·(x part of step.ux_k)`.
+- **Deviation (wins):** terminal state-box rows. `Solution::
+  lambda_box_state[N]` is always sized `2·nbx` (not `2·nbx_t`), so the
+  `nbx_t` terminal rows map into the first `nbx_t` of each half (lower →
+  `[0..nbx_t-1]`, upper → `[nbx..nbx+nbx_t-1]`). Requires `nbx_t ≤ nbx`
+  (holds for both examples).
+- Test: `tests/sqp/apply_step_2b.cpp` (custom `MapProb` with every
+  constraint group active, no soft rows, `fixed_initial_state = false`):
+  GlobOptions defaults; SqpSlacks sizing / resize / setZero (MapProb
+  zero-slack + DoubleIntegrator); the full §1.3 mapping on hand-computed QP
+  duals (first / path / terminal, dynamics sign flip, ineq hi, eq/lin net,
+  box lower/upper); primal interpolation at α=0.5; relaxed vs full dual
+  update; fixed-x_0 sanity (DI: the pinned x_0 step is 0, so x[0] is
+  preserved exactly). Both dynamic and fixed-horizon (`NH=2`)
+  instantiations.
+- Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
+  passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
+  still pass.

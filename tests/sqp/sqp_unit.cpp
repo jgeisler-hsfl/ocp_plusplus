@@ -8,10 +8,12 @@
 #include <cstdio>
 
 int run_regularize_2a_tests();
+int run_apply_step_2b_tests();
 
 int main()
 {
     int failures = run_regularize_2a_tests();
+    failures += run_apply_step_2b_tests();
 
     if (failures == 0)
     {
