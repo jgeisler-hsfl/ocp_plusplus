@@ -94,7 +94,9 @@ public:
                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
         df_dx.setZero();
+        df_dx(0, 0) = 1.0;
         df_dx(0, 1) = Ts_;
+        df_dx(1, 1) = 1.0;
         df_du.setZero();
         df_du(1, 0) = Ts_;
     }

@@ -131,7 +131,10 @@ int main()
         DoubleIntegrator::state_t f_m = problem.dynamics_next_state(k, xf, u);
         check_close("dyn A(0,1) fd", A(0, 1), (f_p(0) - f_m(0)) / (2.0 * h), 1e-5);
         check_close("dyn A(0,1)", A(0, 1), problem.Ts_, 1e-12);
+        check_close("dyn A(0,0)", A(0, 0), 1.0, 1e-12);
+        check_close("dyn A(1,1)", A(1, 1), 1.0, 1e-12);
         check_close("dyn A(1,0)", A(1, 0), 0.0, 1e-12);
+        check_close("dyn B(0,0)", B(0, 0), 0.0, 1e-12);
         check_close("dyn B(1,0)", B(1, 0), problem.Ts_, 1e-12);
     }
 

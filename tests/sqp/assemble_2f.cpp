@@ -391,13 +391,13 @@ void check_double_integrator()
         for (int i = 0; i < 4; ++i)
             check_close(s.grad(i), g_exp[i], "DI first grad");
         // BA = [B | A], b = f(x_0, u_0) - x_1
-        // BA = [B | A]: B = [0; Ts], A = [[0, Ts], [0, 0]]
+        // B = [0; Ts], A = [[1, Ts], [0, 1]]
         check_close(s.BA(0, 0), 0.0, "DI first BA(0,0)");
-        check_close(s.BA(0, 1), 0.0, "DI first BA(0,1)");
+        check_close(s.BA(0, 1), 1.0, "DI first BA(0,1)");
         check_close(s.BA(0, 2), 0.1, "DI first BA(0,2)");
         check_close(s.BA(1, 0), 0.1, "DI first BA(1,0)");
         check_close(s.BA(1, 1), 0.0, "DI first BA(1,1)");
-        check_close(s.BA(1, 2), 0.0, "DI first BA(1,2)");
+        check_close(s.BA(1, 2), 1.0, "DI first BA(1,2)");
         check_close(s.b(0), -0.05, "DI first b(0)");
         check_close(s.b(1), -0.18, "DI first b(1)");
         // DC: rows [pin, pin, bu, ineq, lin], cols (u; x; s)
@@ -437,7 +437,7 @@ void check_double_integrator()
             check_close(s.grad(i), g_exp[i], "DI path grad");
         check_close(s.BA(0, 2), 0.1, "DI path BA(0,2)");
         check_close(s.BA(1, 0), 0.1, "DI path BA(1,0)");
-        check_close(s.BA(1, 2), 0.0, "DI path BA(1,2)");
+        check_close(s.BA(1, 2), 1.0, "DI path BA(1,2)");
         check_close(s.b(0), 0.02, "DI path b(0)");
         check_close(s.b(1), 0.09, "DI path b(1)");
         // DC: rows [bx, bx, bu, ineq, lin]
