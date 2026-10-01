@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -705,6 +706,155 @@ public:
         return Status::kSolved;
     }
 
+    // ==================================================================
+    //  1f: step length + iterate update (worklog 1f)
+    // ==================================================================
+
+    /// Mask the step's lam and t by d_mask (HPIPM masks sol_step after
+    /// the KKT solve, before alpha computation;
+    /// x_ocp_qp_ipm.c:2284-2285).
+    void mask_step(const Qp<P, NH>& in, QpSol<P, NH>& step) const
+    {
+        step.lam_first = step.lam_first.cwiseProduct(in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            step.lam_path[k - 1] =
+                step.lam_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
+        }
+        step.lam_term = step.lam_term.cwiseProduct(in.term.d_mask);
+        step.t_first = step.t_first.cwiseProduct(in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            step.t_path[k - 1] =
+                step.t_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
+        }
+        step.t_term = step.t_term.cwiseProduct(in.term.d_mask);
+    }
+
+    /// Maximum step length keeping λ ≥ 0, t ≥ 0, and (when m ≠ 0)
+    /// λ·t ≥ m_safe·m (HPIPM COMPUTE_ALPHA_QP,
+    /// x_core_qp_ipm_aux.c:193; split_step = 0 branch).
+    ///
+    /// Call `mask_step` before this so that dlam / dt are zero on absent
+    /// sides.  Stores the result in ws_.alpha.
+    S compute_alpha(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                    const QpSol<P, NH>& step)
+    {
+        // m_zero: true when all m entries are zero
+        // (x_ocp_qp_ipm.c:2966-2973)
+        S m_norm = inf_norm(in.first.m);
+        for (int k = 1; k < in.N; ++k)
+        {
+            m_norm = std::max(m_norm, inf_norm(in.path[k - 1].m));
+        }
+        m_norm = std::max(m_norm, inf_norm(in.term.m));
+        const bool m_zero = (m_norm == 0.0);
+
+        S m_safe = std::min(std::max(S(opts_.m_safe), S(0)), S(1));
+        S alpha = S(1);
+
+        auto process =
+            [&](const auto& lam, const auto& t, const auto& dlam,
+                const auto& dt, const auto& m, const auto& dmask)
+        {
+            const int n = static_cast<int>(lam.size());
+            for (int i = 0; i < n; ++i)
+            {
+                S lam1 = lam(i) + alpha * dlam(i);
+                S t1 = t(i) + alpha * dt(i);
+                if (lam1 < S(0))
+                {
+                    alpha = -lam(i) / dlam(i);
+                    lam1 = lam(i) + alpha * dlam(i);
+                }
+                if (t1 < S(0))
+                {
+                    alpha = -t(i) / dt(i);
+                    t1 = t(i) + alpha * dt(i);
+                }
+                if (!m_zero)
+                {
+                    const S m1 = m_safe * (m(i) * dmask(i));
+                    if (lam1 * t1 - m1 < S(-1e-12))
+                    {
+                        const S c = lam(i) * t(i) - m1;
+                        if (c > S(0))
+                        {
+                            const S a = dlam(i) * dt(i);
+                            const S b = dlam(i) * t(i) + lam(i) * dt(i);
+                            const S d = b * b - S(4) * a * c;
+                            const S sd = std::sqrt(d);
+                            alpha = (-b - sd) * (S(0.5) / a);
+                        }
+                        else
+                        {
+                            alpha = S(0);
+                        }
+                    }
+                }
+            }
+        };
+
+        process(iter.lam_first, iter.t_first,
+                step.lam_first, step.t_first,
+                in.first.m, in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            process(iter.lam_path[k - 1], iter.t_path[k - 1],
+                    step.lam_path[k - 1], step.t_path[k - 1],
+                    in.path[k - 1].m, in.path[k - 1].d_mask);
+        }
+        process(iter.lam_term, iter.t_term,
+                step.lam_term, step.t_term,
+                in.term.m, in.term.d_mask);
+
+        ws_.alpha = alpha;
+        return alpha;
+    }
+
+    /// Apply the Newton step to the iterate (HPIPM UPDATE_VAR_QP,
+    /// x_core_qp_ipm_aux.c:472; split_step = 0, t_lam_min = 2).
+    ///
+    /// Damped step length: α' = α·(0.99(1−α) + 0.9999999·α) when α < 1.
+    /// Applied: ux += α_p·δz, π += α_d·δπ,
+    /// λ += α_d·δλ (clip ≥ lam_min), t += α_p·δt (clip ≥ t_min).
+    /// α_p = α_d = α' (split_step = 0).
+    void update_vars(QpSol<P, NH>& iter, const QpSol<P, NH>& step) const
+    {
+        const int N = iter.N;
+        S alpha = ws_.alpha;
+        S alpha_p = alpha, alpha_d = alpha;
+        if (alpha < S(1))
+        {
+            alpha_p = alpha * (S(0.99) * (S(1) - alpha)
+                               + S(0.9999999) * alpha);
+            alpha_d = alpha_p;
+        }
+
+        iter.ux_first += alpha_p * step.ux_first;
+        for (int k = 1; k < N; ++k)
+        {
+            iter.ux_path[k - 1] += alpha_p * step.ux_path[k - 1];
+        }
+        iter.ux_term += alpha_p * step.ux_term;
+
+        for (int k = 0; k < N; ++k)
+        {
+            iter.pi[k] += alpha_d * step.pi[k];
+        }
+
+        update_lam_t(iter.lam_first, iter.t_first,
+                     step.lam_first, step.t_first, alpha_d, alpha_p);
+        for (int k = 1; k < N; ++k)
+        {
+            update_lam_t(iter.lam_path[k - 1], iter.t_path[k - 1],
+                         step.lam_path[k - 1], step.t_path[k - 1],
+                         alpha_d, alpha_p);
+        }
+        update_lam_t(iter.lam_term, iter.t_term,
+                     step.lam_term, step.t_term, alpha_d, alpha_p);
+    }
+
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
 
@@ -718,6 +868,31 @@ private:
     static S inf_norm(const V& v)
     {
         return v.size() > 0 ? v.cwiseAbs().maxCoeff() : S(0);
+    }
+
+    /// Update one stage's λ / t with the (already damped) step, applying the
+    /// t_lam_min = 2 floors (x_core_qp_ipm_aux.c:545-578). `dlam` / `dt` are
+    /// assumed already masked by d_mask (see mask_step).
+    template <class V>
+    void update_lam_t(V& lam, V& t, const V& dlam, const V& dt, S alpha_d,
+                      S alpha_p) const
+    {
+        lam += alpha_d * dlam;
+        t += alpha_p * dt;
+        if (opts_.t_lam_min == 2)
+        {
+            for (int i = 0; i < static_cast<int>(lam.size()); ++i)
+            {
+                if (lam(i) <= S(opts_.lam_min))
+                {
+                    lam(i) = S(opts_.lam_min);
+                }
+                if (t(i) <= S(opts_.t_min))
+                {
+                    t(i) = S(opts_.t_min);
+                }
+            }
+        }
     }
 
     /// One stage of compute_residuals (x_ocp_qp_res.c:424-523).
@@ -1457,7 +1632,6 @@ private:
     }
 
     // Remaining HPIPM macros, owned by later sub-steps (worklog sec. 4):
-    //   compute_alpha / update_vars            -> 1f
     //   compute_mu_aff / apply_centering       -> 1g
 };
 

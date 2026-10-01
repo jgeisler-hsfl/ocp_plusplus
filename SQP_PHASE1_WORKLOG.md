@@ -20,13 +20,14 @@ checkpoints. **Protocol for every sub-step:**
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
 - Phase 1: sub-steps 1a (scaffolding), 1b (residuals), 1c (init point),
-  1e (KKT solve) done — `include/ocp/solvers/hpipm/hpipm.hpp`
+  1e (KKT solve), 1f (alpha + update) done — `include/ocp/solvers/hpipm/hpipm.hpp`
   (`HpipmOptions`, `HpipmIteration`, `HpipmStatistics`,
   `HpipmQpSolver<P, NH>` shell + `compute_residuals` + `init_point` +
-  `fact_solve_kkt` / `solve_kkt` / `solve_kkt_unconstr`). Tests live in
+  `fact_solve_kkt` / `solve_kkt` / `solve_kkt_unconstr` +
+  `mask_step` / `compute_alpha` / `update_vars`). Tests live in
   `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`, `residuals_1b.cpp`,
-  `init_1c.cpp`, `kkt_1e.cpp`). Sub-steps 1f..1i pending (1d merged into
-  1e per plan).
+  `init_1c.cpp`, `kkt_1e.cpp`, `alpha_1f.cpp`). Sub-steps 1g..1i pending
+  (1d merged into 1e per plan).
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -457,3 +458,86 @@ Deviations / corrections to this file:
   exact; oracle-verified.
 - Singular-factor handling: v1 returns `kQpFailure` on a failed Cholesky;
   HPIPM's preg retry ladder (`:1173-1210`) is not wired yet (1f).
+
+### 1f — alpha + update (2026-10-01)
+
+Sources re-read:
+- `x_core_qp_ipm_aux.c:193-468` — `COMPUTE_ALPHA_QP`: split_step = 0 branch
+  (`:375-449`); single alpha from 1.0; per side, feasibility `alpha =
+  -lam/dlam` (dlam < 0) and `alpha = -t/dt` (dt < 0); complementarity when
+  `m != 0`: `m1 = m_safe * m` (clamped `m_safe` in [0,1]), if
+  `lam1*t1 - m1 < -1e-12` then quadratic `a = dlam*dt`,
+  `b = dlam*t + lam*dt`, `d = b^2 - 4ac` with `c = lam*t - m1` (`c > 0` ->
+  `alpha = (-b - sqrt(d))/(2a)`; else `alpha = 0`). `m_zero` is passed in
+  from the OCP layer.
+- `x_ocp_qp_ipm.c:2966-2973` — `m_zero` computed as the inf-norm of the raw
+  (unmasked) `m` being exactly 0; v1 always has m = 0, so `m_zero = 1`.
+- `x_core_qp_ipm_aux.c:472-582` — `UPDATE_VAR_QP`: alpha damping
+  `alpha_p = alpha_p * ((1-alpha_p)*0.99 + alpha_p*0.9999999)` when
+  `alpha < 1` (`:504-510`, applied to alpha_prim AND alpha_dual, with
+  split_step = 0 both equal); `v += alpha_p dv`, `pi += alpha_d dpi`,
+  `lam += alpha_d dlam`, `t += alpha_p dt`; `t_lam_min = 2` adds the floors
+  `lam >= lam_min`, `t >= t_min` (`:545-561`).
+- `x_ocp_qp_ipm.c:2263-2286` — DELTA_STEP prelude: `BACKUP_RES_M` +
+  `COMPUTE_TAU_MIN_QP` (`x_core_qp_ipm_aux.c:756-778`: `res_m =
+  res_m_bkp - tau_min`, all entries) then the KKT step; step masking
+  `d_mask ∘ sol_step->t`, `d_mask ∘ sol_step->lam` after the factorization
+  (`:2284-2285`), BEFORE `COMPUTE_ALPHA` and `UPDATE_VAR`.
+- `x_ocp_qp_ipm.c:3085-3163` — main loop: residuals -> (exit test uses
+  `res_m_tau = ||res_m - tau_min*d_mask||_inf` computed at `:3115` and
+  `:3160`) -> delta step. The tau shift is applied to the workspace res_m
+  once per iteration (via `COMPUTE_TAU_MIN_QP`) and is NOT a separate user
+  step; our test mirrors it by shifting the local `res.res_m_*` before
+  `fact_solve_kkt`.
+
+Implemented (`hpipm.hpp`):
+- `mask_step(const Qp&, QpSol& step)` (public, `:716`): `step.lam_*` /
+  `step.t_*` multiplied in place by `d_mask` (the `ux` step is NOT masked,
+  matching HPIPM's commented-out `ux` masking at `:2283`).
+- `compute_alpha(const Qp&, const QpSol& iter, const QpSol& step)`
+  (public, `:740`): single alpha (split_step = 0), processes stages in
+  order (first, path k = 1..N-1, term); `m_zero` from the raw m inf-norm
+  (per-stage max), `m_safe` clamped to [0,1]; uses the (already masked)
+  step's `lam`/`t` as dlam/dt; stores result in `ws_.alpha`; returns it.
+  Feasibility + complementarity exactly as in the HPIPM split_step = 0
+  branch.
+- `update_vars(QpSol& iter, const QpSol& step)` (public, `:822`): reads
+  `ws_.alpha` (set by `compute_alpha`); damping for `alpha < 1`;
+  `ux += alpha_p step.ux`, `pi += alpha_d step.pi`, per-stage
+  `lam += alpha_d step.lam` / `t += alpha_p step.t` with the `t_lam_min = 2`
+  floors (clipped to `lam_min` / `t_min`) via the private helper
+  `update_lam_t` (`:877`).
+
+Tests: `tests/hpipm/alpha_1f.cpp` (linked into `qp_unit`):
+- `compute_alpha` hand cases (d_mask = 1): no binding -> 1; dual binding
+  (lam = 1, dlam = -2) -> 0.5; primal binding (t = 1, dt = -2) -> 0.5;
+  complementarity (m = 1, lam = t = 1, dlam = dt = -0.5) -> 2 - sqrt(2).
+  DI and MS, N = 1.
+- `mask_step`: even indices kept, odd zeroed, on a 2-stage DI.
+- `update_vars`: damped (alpha = 0.5) update of ux / pi / lam / t matches
+  `alpha_p = 0.5*(0.99*0.5 + 0.9999999*0.5)`; lam/t floors clip a
+  sub-`lam_min` lam to `lam_min` at alpha = 1.
+- 5-iteration predictor-only (affine) loop for DI N = 1, 2, MS N = 1, 2,
+  MS NH = 2: init -> [residuals -> res_m -= tau_min -> fact_solve_kkt ->
+  mask_step -> compute_alpha -> update_vars] x 5; checks
+  alpha > alpha_min, lam/t >= floors, finiteness, and that res_g_max and
+  res_b_max decrease over the loop.
+
+Tests: `qp_unit` (all 1a+1b+1c+1e+1f checks), `qp_dim`, `double_integrator`,
+`mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- §3 1f said "complementarity ratios (m_zero/tau_min handling)" — the
+  m_zero gate is a pure `m == 0` inf-norm check from the OCP layer
+  (`x_ocp_qp_ipm.c:2966-2973`), unrelated to tau_min; tau_min only enters
+  the res_m shift (`COMPUTE_TAU_MIN_QP`). v1 always has m = 0.
+- §4 1f listed the preg retry ladder as deferred to 1f; it remains deferred
+  to 1h (the main loop), not 1f — the single-shot `fact_solve_kkt` from 1e
+  is sufficient for the predictor steps tested here.
+- `mask_step` / `compute_alpha` / `update_vars` are public (plan §6 listed
+  them private), same precedent as 1b/1c/1e: needed by the 1f test and by
+  the 1h main loop.
+- HPIPM masks `sol_step->lam` / `sol_step->t` AFTER the KKT solve and
+  reuses that masked step for both `COMPUTE_ALPHA` and `UPDATE_VAR`; we do
+  the same via `mask_step` (called once per iteration between
+  `fact_solve_kkt` and `compute_alpha`).
