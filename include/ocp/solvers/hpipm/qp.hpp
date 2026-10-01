@@ -88,11 +88,14 @@
 //   [lo sides: one per two-sided row, group order]
 //   [hi sides: one per row, group order]
 //   [slack sides: nslack_<type>, lo-type, d = 0]
-// d holds bound offsets: lo sides store `lo`, hi sides store `-hi`
-// (HPIPM convention; residuals are d + t - v (lo) and d + t + v (hi), so
-// feasibility is lo <= v <= -d_hi, v = 0 at the linearization point for
-// general rows). Pin rows: d_lo = x_0, d_hi = -x_0 (runtime values from
-// initial_state()).
+// d holds bound OFFSETS in the step formulation (SQP_PHASE2_PLAN
+// sec. 1.1-1.2): lo sides store lo - w_cur, hi sides store w_cur - hi,
+// where w_cur is the row value at the current NLP iterate (residuals are
+// d + t - v (lo) and d + t + v (hi) with v = DC z, so v = 0 at the
+// linearization point and an infeasible current iterate shows up as the
+// positive part of the offsets). Pin rows: d_lo = x_0 - x_bar_0,
+// d_hi = -(x_0 - x_bar_0); the NLP driver keeps x_bar_0 = x_0, so in
+// practice d = 0.
 //
 // Assembly notes (phase 2):
 // - First stage with fixed x_0: stage ineq/lin rows whose (linearized)
@@ -699,11 +702,13 @@ struct QpStageFirst
     /// soft rows. Absent groups: zero rows.
     Eigen::Matrix<S, D::nrow_first, D::nvar_first> DC{};
 
-    /// Bound offsets, nside_first entries in the first-stage side layout:
-    /// lo sides store `lo`, hi sides store `-hi`, slack sides 0. For
-    /// general rows the assembly folds in the constraint value at the
-    /// current iterate (offset form, not distance, as in HPIPM's `d`).
-    /// Pin rows: lo side = x_0, hi side = -x_0.
+    /// Bound offsets (step formulation, SQP_PHASE2_PLAN sec. 1.1-1.2):
+    /// nside_first entries in the first-stage side layout. Lo sides store
+    /// lo - w_cur, hi sides store w_cur - hi, where w_cur is the row value
+    /// at the current NLP iterate (residuals d + t -/+ v with v = DC z, so
+    /// an infeasible current iterate shows up as the positive part of the
+    /// offsets). Slack sides 0. Pin rows: d_lo = x_0 - x_bar_0,
+    /// d_hi = -(x_0 - x_bar_0) (the driver keeps x_bar_0 = x_0).
     Eigen::Matrix<S, D::nside_first, 1> d{};
 
     /// 1 = finite / active side, 0 = infinite / absent side.

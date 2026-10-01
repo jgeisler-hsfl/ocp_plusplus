@@ -713,3 +713,143 @@ written; §1 conventions signed off in the checkpoints.
 - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
   passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
   still pass.
+
+### 2f — sqp.hpp (SqpSolver::assemble_qp, add_lm_term, resize)
+
+- Re-read `ocp_nlp_common.c:3079-3203` (`approximate_qp_matrices` /
+  `approximate_qp_vectors_sqp`): the (u;x) Hessian permutes the (x;u)
+  cost Hessian into its (u;x) block and stacks the dynamics/state HVPs
+  (minus sign) and the constraint HVPs (plus sign, `H += J^T W J` per
+  `acados/docs/algorithm/02-qp-approximation.md`); `b` comes from
+  `f` / `h(x)` with the sign flipped into the `A x + B u = b` form;
+  slack rows fill the `W`-weighted penalty Hessian blocks.
+  `ocp_nlp_common.c:3034-3059`: the LM term is `mu * I` on the (u;x)
+  diagonal of every stage, applied only when `hess_type` provides
+  Hessians and `mu > 0`. Slack sign convention re-confirmed against the
+  1b residual work (`res_d(sl) = d + t − v`, `res_d(sh) = d + t + v`).
+- Implemented `include/ocp/solvers/acados/sqp.hpp` (2f section):
+  - `SqpSolver` class over a `QpSolver` (HPIPM), `Regularizer`, and
+    `Globalizer` (2d backtracker).
+  - `assemble_qp(const P&, const Solution<P,NH>&) -> Status`: builds
+    `qp_in_` for the current iterate (zeroes the stages first, then
+    fills first -> path -> terminal). Each stage gets the (u;x) cost
+    Hessian (permuting the problem's (x;u) Hessian; dynamics HVP minus,
+    constraint HVPs plus, terminal state-only), the dynamics `BA`/`b`
+    blocks (first stage at the pinned `x_0`), and the constraint
+    Jacobians `DC` (pin rows, box rows, ineq/eq/lin rows with the slack
+    columns `+1`/`−1`). Soft rows fill the `W`-weighted penalty
+    Hessian diagonal and zero their `DC` row.
+  - `check_first_degeneracy` (plan 2f.6): with `fixed_initial_state`,
+    a first-stage ineq/lin row whose Jacobian w.r.t. `(u_0; s_0)` is
+    zero and which is violated at the pinned `x_0` (per-side hardness
+    for lin rows) aborts `assemble_qp` with `kInfeasible`.
+  - `add_lm_term(Qp<P,NH>&, double mu)`: adds `mu * I` to the (u;x)
+    diagonal of every stage; no-op when `mu <= 0` or `compute_hess`
+    is false.
+  - `resize(int n_stages)`: sizes the workspaces (`qp_in_`,
+    `qp_out_`, `trial_`, `slacks_`); asserts in fixed-extent mode.
+  - All stage fills are element-wise (no Eigen block assignment on
+    small fixed-size matrices): block extraction from small Eigen
+    locals trips a GCC 13 `-Warray-bounds` false positive under
+    `-O2 -Wall -Wextra -Werror`.
+- Deviations from the plan sketch:
+  - Template parameter order is `<P, NH, QpSolver, Regularizer,
+    Globalizer>`: `NH` must precede the component types because a
+    default template argument may only reference preceding
+    parameters (the sketch's order was not compilable).
+  - `assemble_qp` is public and returns `Status` (sketch: private,
+    void); the 2g driver needs the degeneracy `kInfeasible` result.
+  - `assemble_qp` takes `const Solution<P,NH>&` (read-only).
+  - `resize` and `add_lm_term` are public (sketch: private); the 2g
+    driver calls `resize`, and `add_lm_term` is unit-tested directly.
+- **Verified for 2g:** the QP handed to `QpSolver::solve` has the
+  (u;x) variable layout, the `W`-weighted penalty Hessian blocks for
+  slack rows, and the offset-form `d`/`d_mask` convention
+  (`d_lo = lo − w_cur`, `d_hi = w_cur − hi`, `d_mask = 1` on the
+  slack sides) used by 1a/1b/1f. `last_qp()` / `last_qp_sol()`
+  expose the assembled QP and its solution for the driver.
+- Test: `tests/sqp/assemble_2f.cpp` (added to the `sqp_unit` target):
+  `DoubleIntegrator` (N=2, fixed x_0, zero HVPs) checks first/path/
+  terminal hess, grad, BA, b, DC, d, d_mask against hand-computed
+  values; `QuadTest` (N=1, free x_0, non-zero HVPs) checks the
+  Hessian composition (`H_cost − M_dyn + M_ineq`), the terminal eq
+  HVP, and the soft-terminal-eq slack diagonal; `DegProbe` (fixed
+  x_0, hard ineq violated at the pinned state) checks `assemble_qp`
+  returns `kInfeasible`; the LM term is checked for the mu=5
+  diagonal bump, the mu=0 no-op, and the `compute_hess=false`
+  no-op.
+- Build: warning-free under `-Wall -Wextra -Werror`.
+  `./build/sqp_unit` passes; `double_integrator`, `mass_spring`,
+  `qp_dim`, `qp_unit` all still pass.
+
+### 2f — sqp.hpp (SqpSolver::assemble_qp, add_lm_term, resize)
+
+- Re-read `ocp_nlp_common.c:3079-3203` (`approximate_qp_matrices` /
+  `approximate_qp_vectors_sqp`): the (u;x) Hessian permutes the (x;u)
+  cost Hessian into its (u;x) block and stacks the dynamics/state
+  HVPs (minus sign) and the constraint HVPs (plus sign, via the
+  `H += J^T W J` accumulation in `02-qp-approximation.md`); `b` comes
+  from `f` / `h(x)` with the sign flipped into the `A x + B u = b`
+  form; slack rows fill the `W`-weighted penalty Hessian blocks.
+  `ocp_nlp_common.c:3034-3059`: the LM term is `mu * I` on the (u;x)
+  diagonal of every stage (first, each path, terminal), applied only
+  when `hess_type` provides Hessians and `mu > 0`. Slack sign
+  convention re-confirmed against the 1b residual work
+  (`res_d(sl) = d + t - v`, `res_d(sh) = d + t + v`).
+- Implemented `include/ocp/solvers/acados/sqp.hpp` (2f section):
+  - `SqpSolver` class over a `QpSolver` (HPIPM), `Regularizer`, and
+    `Globalizer` (2d backtracker).
+  - `assemble_qp(const P&, const Solution<P,NH>&) -> Status`: builds
+    `qp_in_` for the current iterate. Stage order is first -> path ->
+    terminal. Each stage gets the (u;x) cost Hessian (permuting the
+    problem's (x;u) Hessian), the dynamics `BA`/`b` blocks, and the
+    constraint Jacobians `DC`.
+    - **first stage** (x_0 fixed): dynamics and constraints evaluated
+      at the pinned `x_0`; the dynamics row of the DC block is zero;
+      `check_first_degeneracy` rejects a degenerate first stage (hard
+      state box with `lo == hi`, or a hard linear row already
+      violated) with `Status::kInfeasible`.
+    - **path stages**: dynamics `BA`/`b` from `f(x, u)`;
+      state/inequality/equality/linear constraints from their
+      Jacobians; slack rows for soft rows fill the `W`-weighted
+      penalty Hessian block and zero the corresponding `DC` row.
+    - **terminal stage**: state/inequality/equality/linear
+      constraints (no dynamics row); terminal HVPs on the (u;x)
+      Hessian.
+  - `add_lm_term(Qp<P,NH>&, double mu)`: adds `mu * I` to the (u;x)
+    diagonal of every stage; no-op when `mu <= 0` or
+    `compute_hess` is false.
+  - `resize(int n_stages)`: allocates the workspace (qp_in_,
+    qp_out_, trial, slacks) for a given horizon.
+  - Element-wise fill loops (no Eigen block assignment on small
+    fixed-size matrices) to stay warning-free under GCC's
+    `-Warray-bounds`.
+- Deviations from plan:
+  - Template parameter order is `<P, NH, QpSolver, Regularizer,
+    Globalizer>`: `NH` precedes the component types because C++
+    defaults can only reference earlier parameters.
+  - `assemble_qp` is public and returns `Status` (plan: private,
+    void); the degeneracy check needs to report `kInfeasible` to the
+    2g driver.
+  - `assemble_qp` takes `const Solution<P,NH>&` (read-only).
+  - Added public `resize(int n_stages)` (plan: private); the 2g
+    driver resizes the solver when the horizon changes.
+  - `add_lm_term` is public for direct unit testing; the plan had it
+    private.
+- **Verified for 2g:** the QP handed to `QpSolver::solve` has the
+  (u;x) variable layout, the `W`-weighted penalty Hessian blocks for
+  slack rows, and the `d`/`d_mask` convention (`d = lo - w_cur`,
+  `d_mask = 1` on the slack side) used by 1a/1b/1f.
+- Test: `tests/sqp/assemble_2f.cpp` (added to the `sqp_unit` target):
+  `DoubleIntegrator` (N=2, fixed x_0, zero HVPs, one soft ineq)
+  checks first/path/terminal hess, BA, b, DC, d, d_mask against
+  hand-computed values; `QuadTest` (N=1, free x_0, non-zero HVPs)
+  checks the Hessian composition (H_cost - M_dyn + M_ineq), the
+  terminal eq HVP, and the soft-terminal-eq slack diagonal;
+  `DegProbe` (fixed x_0, hard ineq violated at the pinned state)
+  checks `assemble_qp` returns `kInfeasible`; the LM term is checked
+  for the mu=5 diagonal bump, the mu=0 no-op, and the
+  `compute_hess=false` no-op.
+- Build: warning-free under `-Wall -Wextra -Werror`.
+  `./build/sqp_unit` passes; `double_integrator`, `mass_spring`,
+  `qp_dim`, `qp_unit` all still pass.

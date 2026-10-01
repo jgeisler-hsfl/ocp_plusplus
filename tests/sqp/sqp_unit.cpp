@@ -13,6 +13,7 @@ int run_apply_step_2b_tests();
 int run_residuals_2c_tests();
 int run_merit_2d_tests();
 int run_options_2e_tests();
+int run_assemble_2f_tests();
 
 int main()
 {
@@ -21,6 +22,7 @@ int main()
     failures += run_residuals_2c_tests();
     failures += run_merit_2d_tests();
     failures += run_options_2e_tests();
+    failures += run_assemble_2f_tests();
 
     if (failures == 0)
     {
