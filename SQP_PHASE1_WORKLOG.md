@@ -541,3 +541,92 @@ Deviations / corrections to this file:
   reuses that masked step for both `COMPUTE_ALPHA` and `UPDATE_VAR`; we do
   the same via `mask_step` (called once per iteration between
   `fact_solve_kkt` and `compute_alpha`).
+
+### 1g — Mehrotra centering (compute_mu_aff + apply_centering) (2026-10-01)
+
+Sources re-read:
+- `x_core_qp_ipm_aux.c:636-668` — `COMPUTE_MU_AFF_QP`:
+  `mu_aff = (1/nc_mask) * Σ_{d_mask=1} | -m + (lam + a_d·dlam)·(t + a_p·dt) |`
+  over the active sides; `a_p = a_d = ws->alpha` (split_step = 0); the
+  complementarity RHS is `qp->m` (NOT the workspace `res_m`); result stored
+  in `ws->mu_aff`.
+- `x_core_qp_ipm_aux.c:672-690` — `BACKUP_RES_M`: copies `ws->res->res_m_*`
+  into `ws->res_m_bkp` (unshifted complementarity residual) each iteration.
+- `x_core_qp_ipm_aux.c:695-724` — `COMPUTE_CENTERING_CORRECTION_QP`:
+  `sigma = (mu_aff/mu)^3`; `sigma_mu = max(sigma·mu, tau_min)` (floor only,
+  HPIPM does NOT scale tau_min by the (mu/mu_ref)^3 factor here);
+  `res_m = d_mask ∘ (res_m_bkp + dt ∘ dlam - sigma_mu)`.
+- `x_core_qp_ipm_aux.c:729-751` — `COMPUTE_CENTERING_QP` (pure centering,
+  used when the corrector target would worsen `mu_aff`):
+  `res_m = d_mask ∘ (res_m_bkp - sigma_mu)` (no `dt∘dlam` term).
+- `x_core_qp_ipm_aux.c:756-778` — `COMPUTE_TAU_MIN_QP`: the predictor shift
+  `res_m -= tau_min` (all entries; the OCP layer applies it on the
+  unmasked `res_m`).
+- `x_ocp_qp_ipm.c:2060-2228` — `OCP_QP_IPM_DELTA_STEP`: the predictor step
+  sequence `backup_res_m -> compute_tau_min -> FACT_SOLVE_KKT ->
+  mask step -> COMPUTE_ALPHA` (→ the 1f `compute_alpha`), then
+  `COMPUTE_MU_AFF`, then the corrector (or pure centering) target is built
+  into `res` and `OCP_QP_SOLVE_KKT_STEP` reuses the stored factors.
+- `x_ocp_qp_kkt.c:2306-2346` — `OCP_QP_SOLVE_KKT_STEP`: a leading
+  `COMPUTE_GAMMA_QP` (`:2346`) recomputes `Gamma`/`gamma` from the
+  (centering-shifted) `res_m` before the forward pass reuses the factors.
+
+Implemented (`hpipm.hpp`):
+- `compute_mu_aff(const Qp<P, NH>&, const QpSol<P, NH>& iter, const
+  QpSol<P, NH>& step)` (public, after `update_vars`): the HPIPM
+  `COMPUTE_MU_AFF_QP` masked mean; `a_p = a_d = ws_.alpha`; stores
+  `ws_.mu_aff`; returns it. Must be called after `compute_alpha` (reads
+  `ws_.alpha`).
+- `apply_centering(const Qp<P, NH>&, const QpRes<P, NH>& res_bkp, const
+  QpSol<P, NH>& step, bool correction, QpRes<P, NH>& res_out)` (public):
+  sets `sigma = (mu_aff/mu)^3`, `sigma_mu = max(sigma·mu, tau_min)`;
+  corrector: `res_out.res_m = d_mask ∘ (res_m_bkp + dt∘dlam - sigma_mu)`;
+  pure centering: `d_mask ∘ (res_m_bkp - sigma_mu)`. Reads `mu` from
+  `res_bkp.res_mu` and `ws_.mu_aff` (from `compute_mu_aff`); stores the
+  unfloored `sigma` in `ws_.sigma`. Writes only the `res_m_*` fields of
+  `res_out` (the caller fills the other residuals first).
+- `solve_kkt` now calls `compute_gamma(in, iter, res)` at entry (was:
+  "caller must have set `ws_.gamma_*`/`ws_.Gamma_*`"), matching HPIPM's
+  leading `COMPUTE_GAMMA_QP` in `OCP_QP_SOLVE_KKT_STEP`
+  (`x_ocp_qp_kkt.c:2346`); the trailing "remaining HPIPM flow" comment now
+  lists only `OCP_QP_IPM_DELTA_STEP` + main IPM loop → 1h.
+- **Bug fix (`qp.hpp`)**: `QpStageFirst` / `QpStagePath` / `QpStageTerm`
+  got a default constructor calling `setZero()`. The per-member `{}`
+  initializers do NOT zero fixed-size Eigen matrices (`Eigen::Matrix` has a
+  user-provided default ctor, so it is not an aggregate and `{}` only runs
+  that ctor, leaving the data uninitialized). `first` / `term` are direct
+  members of `Qp`, so they never received the `setZero()` that the `path`
+  stages get via `TrajectoryStorage`'s ctor. Symptom: for `MS NH=2 N=2` the
+  uninitialized `grad` corrupted `res_g`, giving a near-singular KKT step
+  (`dlam` ~ 1e285, `alpha` ~ 5.7e-286 < `alpha_min`); the identical data
+  under `Dynamic` extent happened to land on memory that did not break the
+  check. All three structs now self-zero on construction. (Note: the same
+  latent pattern exists for the direct `first`/`term` Eigen members of
+  `QpSol` / `QpRes`, but every such member is written before it is read on
+  all current paths, so left unchanged.)
+
+Tests: `tests/hpipm/centering_1g.cpp` (linked into `qp_unit`):
+- `compute_mu_aff` hand formula on uniform data (DI N=1): `m = 0` → 0.85,
+  `m = 0.3` → 0.55, masked sides (active-only) → 0.85, all matching the
+  independent `hand_mu_aff` reference to 1e-12.
+- `apply_centering` hand checks (uniform data, DI N=1): corrector target
+  `res_m = d_mask ∘ (res_m_bkp + dt∘dlam - sigma_mu)`, pure-centering
+  target `res_m = d_mask ∘ (res_m_bkp - sigma_mu)`, the `sigma_mu`
+  `tau_min` floor, and masked sides → 0; each matching the hand formula
+  to 1e-12.
+- Pipeline (one affine step, DI N = 1, 2; MS N = 1, 2 + MS NH = 2):
+  `init_point -> compute_residuals -> res_m -= tau_min -> fact_solve_kkt ->
+  mask_step -> compute_alpha -> compute_mu_aff`; checks `alpha > alpha_min`
+  and `mu_aff < mu` (the affine step must reduce the barrier parameter).
+
+Tests: `qp_unit` (all 1a+1b+1c+1e+1f+1g checks), `qp_dim`,
+`double_integrator`, `mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- §3 1g said "slack sides per m_safe convention" for `compute_mu_aff` —
+  resolved: HPIPM's `COMPUTE_MU_AFF_QP` uses the raw `qp->m` on every
+  active side (no `m_safe`), so v1 (m = 0) uses `m` directly.
+- §4 1f deferred the corrector/predictor backup protocol to 1g; the exact
+  corrector vs. pure-centering switch (the `cond_pred_corr` guard on a
+  worsened `mu_aff`) is an OCP-layer decision and belongs to the 1h main
+  loop — `apply_centering` just exposes both targets behind `correction`.

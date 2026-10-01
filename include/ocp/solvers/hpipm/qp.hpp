@@ -713,6 +713,8 @@ struct QpStageFirst
     /// m_relax / funnel in later phases).
     Eigen::Matrix<S, D::nside_first, 1> m{};
 
+    QpStageFirst() { setZero(); }
+
     /// Zero all stage data (container contract for fixed-extent storage).
     void setZero()
     {
@@ -760,6 +762,8 @@ struct QpStagePath
     /// Complementarity RHS: lam * t = m (zero in v1).
     Eigen::Matrix<S, D::nside_path, 1> m{};
 
+    QpStagePath() { setZero(); }
+
     /// Zero all stage data (container contract for fixed-extent storage).
     void setZero()
     {
@@ -802,6 +806,8 @@ struct QpStageTerm
 
     /// Complementarity RHS: lam * t = m (zero in v1).
     Eigen::Matrix<S, D::nside_term, 1> m{};
+
+    QpStageTerm() { setZero(); }
 
     /// Zero all stage data (container contract for fixed-extent storage).
     void setZero()

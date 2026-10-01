@@ -633,14 +633,15 @@ public:
 
     /// Re-solve the KKT system reusing the last factorization (the L_k and
     /// P_k from fact_solve_kkt) — the Mehrotra corrector / refinement path
-    /// (HPIPM `OCP_QP_SOLVE_KKT_STEP`, x_ocp_qp_kkt.c:2306).
-    ///
-    /// The caller must have set ws_.gamma_* / ws_.Gamma_* to the corrector
-    /// values (apply_centering, worklog 1g) before calling.
+    /// (HPIPM `OCP_QP_SOLVE_KKT_STEP`, x_ocp_qp_kkt.c:2306). Gamma / gamma
+    /// are recomputed from `res` (the centering-shifted res_m) before the
+    /// forward pass, as in HPIPM's leading COMPUTE_GAMMA_QP
+    /// (x_ocp_qp_kkt.c:2346).
     void solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
                    const QpRes<P, NH>& res, QpSol<P, NH>& step)
     {
         const int N = in.N;
+        compute_gamma(in, iter, res);
         for (int k = N; k >= 0; --k)
         {
             backward_reduced_stage(k, in, res);
@@ -853,6 +854,108 @@ public:
         }
         update_lam_t(iter.lam_term, iter.t_term,
                      step.lam_term, step.t_term, alpha_d, alpha_p);
+    }
+
+    // ==================================================================
+    //  1g: Mehrotra predictor-corrector (worklog 1g)
+    // ==================================================================
+
+    /// Barrier parameter of the affine (predictor) iterate (HPIPM
+    /// COMPUTE_MU_AFF_QP, x_core_qp_ipm_aux.c:636):
+    ///   mu_aff = (1 / nc_mask) * sum_sides | -m_i + (lam_i + a_d dlam_i)
+    ///                                       * (t_i + a_p dt_i) |
+    /// over the active sides (d_mask = 1); a_p = a_d = ws_.alpha
+    /// (split_step = 0). `m` is the QP's complementarity RHS (in.*, zero in
+    /// v1), NOT the workspace res_m. Must be called after compute_alpha so
+    /// that ws_.alpha holds the accepted (predictor) step length. Stores the
+    /// result in ws_.mu_aff and returns it.
+    S compute_mu_aff(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                     const QpSol<P, NH>& step)
+    {
+        const S a = ws_.alpha;  // a_p = a_d (split_step = 0)
+        S sum = 0.0;
+        int nc_mask = 0;
+        auto add_stage = [&](const auto& m, const auto& lam, const auto& t,
+                             const auto& dlam, const auto& dt,
+                             const auto& dmask)
+        {
+            const int n = static_cast<int>(lam.size());
+            for (int i = 0; i < n; ++i)
+            {
+                if (dmask(i) > 0.5)
+                {
+                    const S lam1 = lam(i) + a * dlam(i);
+                    const S t1 = t(i) + a * dt(i);
+                    sum += std::fabs(-m(i) + lam1 * t1);
+                    ++nc_mask;
+                }
+            }
+        };
+        add_stage(in.first.m, iter.lam_first, iter.t_first,
+                  step.lam_first, step.t_first, in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            add_stage(in.path[k - 1].m, iter.lam_path[k - 1],
+                      iter.t_path[k - 1], step.lam_path[k - 1],
+                      step.t_path[k - 1], in.path[k - 1].d_mask);
+        }
+        add_stage(in.term.m, iter.lam_term, iter.t_term, step.lam_term,
+                  step.t_term, in.term.d_mask);
+        const S mu_aff = (nc_mask > 0) ? sum / nc_mask : 0.0;
+        ws_.mu_aff = mu_aff;
+        return mu_aff;
+    }
+
+    /// Set the complementarity target res_m for the corrector (or pure-
+    /// centering) KKT solve (HPIPM COMPUTE_CENTERING_CORRECTION_QP /
+    /// COMPUTE_CENTERING_QP, x_core_qp_ipm_aux.c:695/729):
+    ///   sigma = (mu_aff / mu)^3,  sigma_mu = max(sigma * mu, tau_min)
+    ///   correction: res_m = d_mask ∘ (res_m_bkp + dt ∘ dlam - sigma_mu)
+    ///   centering:  res_m = d_mask ∘ (res_m_bkp - sigma_mu)
+    /// where mu = res_bkp.res_mu (the barrier parameter of the current
+    /// iterate) and res_m_bkp is the UNshifted complementarity residual
+    /// (before the tau_min predictor shift). Must be called after
+    /// compute_mu_aff (reads ws_.mu_aff). Writes only the res_m_* fields of
+    /// res_out; res_out.res_g / res_b / res_d must already hold the (fixed)
+    /// stationarity / dynamics / feasibility residuals of the current
+    /// iterate. Stores the (unfloored) sigma in ws_.sigma.
+    void apply_centering(const Qp<P, NH>& in, const QpRes<P, NH>& res_bkp,
+                         const QpSol<P, NH>& step, bool correction,
+                         QpRes<P, NH>& res_out)
+    {
+        const S mu = res_bkp.res_mu;
+        const S ratio = ws_.mu_aff / mu;
+        const S sigma = ratio * ratio * ratio;
+        ws_.sigma = sigma;
+        S sigma_mu = sigma * mu;
+        if (sigma_mu < opts_.tau_min)
+        {
+            sigma_mu = opts_.tau_min;
+        }
+        auto center = [&](const auto& bkp, const auto& dlam, const auto& dt,
+                          const auto& dmask, auto& out)
+        {
+            const int n = static_cast<int>(out.size());
+            for (int i = 0; i < n; ++i)
+            {
+                S v = bkp(i) - sigma_mu;
+                if (correction)
+                {
+                    v += dt(i) * dlam(i);
+                }
+                out(i) = (dmask(i) > 0.5) ? v : 0.0;
+            }
+        };
+        center(res_bkp.res_m_first, step.lam_first, step.t_first,
+               in.first.d_mask, res_out.res_m_first);
+        for (int k = 1; k < in.N; ++k)
+        {
+            center(res_bkp.res_m_path[k - 1], step.lam_path[k - 1],
+                   step.t_path[k - 1], in.path[k - 1].d_mask,
+                   res_out.res_m_path[k - 1]);
+        }
+        center(res_bkp.res_m_term, step.lam_term, step.t_term,
+               in.term.d_mask, res_out.res_m_term);
     }
 
     const HpipmOptions& options() const { return opts_; }
@@ -1631,8 +1734,8 @@ private:
         }
     }
 
-    // Remaining HPIPM macros, owned by later sub-steps (worklog sec. 4):
-    //   compute_mu_aff / apply_centering       -> 1g
+    // Remaining HPIPM flow, owned by later sub-steps (worklog sec. 4):
+    //   OCP_QP_IPM_DELTA_STEP + main IPM loop   -> 1h (solve())
 };
 
 }  // namespace ocp
