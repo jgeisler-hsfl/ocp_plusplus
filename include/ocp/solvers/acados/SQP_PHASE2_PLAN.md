@@ -614,3 +614,59 @@ written; §1 conventions signed off in the checkpoints.
 - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
   passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
   still pass.
+
+### 2d — globalize.hpp (MeritBacktracking: merit, weights, line search)
+
+- Re-read `ocp_nlp_globalization_merit_backtracking.c:290-408`
+  (line search: `while (alpha*reduction > alpha_min)`; on exhaustion the
+  post-shrink alpha is still applied, :894; NaN last merit leaves the
+  iterate untouched, :886-890), `:606-702` (merit evaluation: cost +
+  |pi_w|·|dyn| + |lam_w|·(constr_fun > 0)), `:705-755` (weight seed /
+  Leineweber update `w <- max(|dual|, 0.5(|dual| + w_old))`).
+- Implemented `include/ocp/solvers/acados/globalize.hpp`:
+  - `MeritBacktracking<P, NH>`: `GlobOptions opts` + mutable per-solve
+    weight state; `initialize` (resets weights, sets N);
+    `update_weights` (first call seeds `w = |mapped dual|`, later
+    `max(|dual|, 0.5(|dual| + w_old))`); `merit` (cost + 0.5·w_soft·s²
+    via the problem's soft-penalty weights + |w_pi|·L1 dynamics gap +
+    weighted positive violations, soft rows slack-relaxed);
+    `find_acceptable_iterate` (calls `update_weights` first, then the
+    backtracking loop; advances `cur` in place on kSolved / kMinStep,
+    leaves it untouched on kNanDetected; slacks NOT updated — the driver
+    does `s += alpha·δs`).
+  - `detail::apply_sqp_step_primal` — primal-only step update, used for
+    the line-search trial iterates (no dual mapping); `apply_sqp_step`
+    refactored to call it.
+  - `detail::shift_slacks` — trial slacks `s + alpha·(slack part of the
+    step)` (tail of each stage-type step vector).
+- **Deviation (wins):** the plan sketch's "excluded" note (idxe mask,
+  §1.4) applies to `res_comp`, not the merit: acados `constr_fun`
+  (:685-694) counts every two-sided row, and §2d's merit spec lists
+  `eq |e|`. Equality rows are therefore included in the merit
+  (slack-relaxed for soft eq rows: `max(0, -s_lo - e) + max(0, e - s_hi)`;
+  hard rows: `|e|`). Pin rows (fixed x_0) stay excluded — they are a
+  QP-internal device, satisfied by construction since the step preserves
+  x_0 = initial_state.
+- **Deviation (wins):** `initialize(problem, sol)` takes no QpSol; the
+  weight seeding happens on the first `update_weights` call inside
+  `find_acceptable_iterate` (acados parity: the weight init/update is
+  invoked at the start of the line search, not by the driver).
+- **Fix (latent bug, caught by `-Wdangling-pointer`):** `merit()` kept
+  `dynamics_next_state(...) - x[k+1]` as a lazy Eigen expression
+  referencing a destroyed temporary; materialized with `.eval()`.
+- Test: `tests/sqp/merit_2d.cpp` (custom `MeritProb`: nx=nu=1, one soft
+  ineq g=u−5≤0 penalty 4, hard state box ±10, no control/terminal/eq/lin
+  rows, fixed_initial_state=false, dynamics x+=0.5x+u). Cases: hand-
+  computed merit on three iterates (28.5 basic, 119.5 slack-relaxed
+  ineq, 79.0 box violation); N=2 path-stage merit (31.0); weight seed +
+  Leineweber update verified through the merit (112.75); full-step
+  accept (alpha=1, kSolved, duals = mapped at alpha=1); backtracking
+  (merit(a)=15−24a+32a²: a=1 rejected 23>15, a=0.7 accepted 13.88<15;
+  relaxed duals dyn=−0.08, box=[0.88,1.52], ineq=2.34 from start
+  duals dyn=0.9, box=[0.6,0.4], ineq=0.8); kMinStep (zero duals, all 8
+  trials rejected, alpha=0.7^8, cur advanced); kNanDetected (NaN trial
+  merit, cur untouched); `detail::shift_slacks` direct check (first +
+  path).
+- Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
+  passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
+  still pass.
