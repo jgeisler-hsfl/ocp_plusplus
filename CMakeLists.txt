@@ -66,6 +66,12 @@ target_include_directories(sqp_mass_spring
                            PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_mass_spring PRIVATE -Wall -Wextra -Werror)
 
+add_executable(sqp_acados_ref
+               tests/sqp_acados_ref/sqp_acados_ref.cpp)
+target_include_directories(sqp_acados_ref
+                           PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_acados_ref PRIVATE -Wall -Wextra -Werror)
+
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
 if (Doxygen_FOUND)

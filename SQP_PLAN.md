@@ -437,7 +437,13 @@ acados examples.
    per one-sided side `[lo; hi; slacks]`; equality rows are single rows with
    both sides active (verified: acados copies both `d` halves for equality
    rows, `x_ocp_qp_res.c` residuals `d + t − v` / `d + t + v`).
-2. `res_comp` sign — match the source's actual behavior (adds `tau_min`).
+2. ~~`res_comp` sign — match the source's actual behavior (adds `tau_min`).~~
+   **Confirmed (2i, 2026-10-01)**: `ocp_nlp_res_compute`
+   (`ocp_nlp_common.c:3792–3844`) computes `res_comp[i] = lam⊙ineq_fun + tau_min`
+   (`blasfeo_dvecad(..., 1.0, tau_min·ones, ...)`); the source comment says
+   "− tau_min·ones" but the code **adds**. Equality/pin rows are zeroed via
+   `idxe` only in the `tau_min != 0` branch; our `tau_min = 1e-16` default
+   (vs. acados' 0) follows the add-and-mask branch exactly.
 3. ~~Slack Hessian factor.~~ **Resolved (2026-09-30)**: HPIPM's slack
    objective is `0.5·sᵀZ·s + r_sᵀs` with **no** implicit `sᵀs` (verified in
    `x_ocp_qp_res.c`; `COND_SLACKS_FACT` uses `1/(Z + reg_prim + Gamma)`, no

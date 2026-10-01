@@ -971,5 +971,68 @@ written; §1 conventions signed off in the checkpoints.
    res_comp 1e-16; MS res_stat 8.3e-14 / res_eq 8.9e-16 / res_ineq 0 /
    res_comp 1e-16). Both CSVs written.
  - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_double_
-   integrator` and `./build/sqp_mass_spring` pass; `double_integrator`,
-   `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit` all still pass.
+    integrator` and `./build/sqp_mass_spring` pass; `double_integrator`,
+    `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit` all still pass.
+
+  ### 2i — acados reference diff + sign-off
+
+  - **Acados build (feasible).** Configured out-of-tree and built the core:
+    `cmake -B /tmp/opencode/acados_build -S acados -DCMAKE_BUILD_TYPE=Release
+    -DACADOS_EXAMPLES=ON`; `libacados.so` / `libblasfeo.so` / `libhpipm.so`
+    in `/tmp/opencode/acados_build/{acados,external/blasfeo,external/hpipm}`.
+  - **Full-precision reference driver** (`/tmp/opencode/acados_ref/ms_ref.c`,
+    built against the above via `build.sh`): reuses the `create_*_mass_spring*`
+    helpers from `mass_spring_qp.c` (T-diag −2, `b = 0.1·ones`,
+    `Q=I`, `R=2I`, `q=0.1`, `r=0.2`), solves with `FULL_CONDENSING_HPIPM`,
+    and dumps `x_k` / `u_k` per stage at `%.17e` plus the QP objective in the
+    `0.5·z'H·z + g'z` convention (no soft-slack term, since the hard variants
+    have `ns = 0`). Two clean hard variants:
+    - `boxonly`: state box ±4, control box ±0.5, no terminal constraint
+      (`ngN = 0`).
+    - `termeq`: as boxonly + terminal general equality `C_N·x_N = 0` with
+      `C_N = [I_4 0]` (`ngN = 4`), i.e. `x_N(0:3) = 0`.
+  - **Why a custom driver (not the shipped `mass_spring_example` binary):**
+    (a) the shipped example prints to 5 decimals (insufficient for a strict
+    diff); (b) its `SOFT_CONSTRAINTS` variant carries the acados linear
+    slack term `0.5·Z·s² + z·s` (`Z = 1e3`, `z = 1e2`) which our contract
+    (`0.5·w·s²`, §1.6) does not model — so the soft-variant optimum is
+    *not* a valid reference for a strict match; (c) `mass_spring_qp.c` is
+    compiled as a separate TU **without** `GENERAL_CONSTRAINT_AT_TERMINAL_STAGE`
+    in the shipped target, so its terminal constraint is double-enforced
+    (box `[0,0]` on `x_N(0:3)` **and** the general constraint). The two clean
+    hard variants above avoid all three issues.
+  - **New example + test.** `examples/mass_spring_ref/mass_spring_ref.hpp`
+    reproduces the acados QP exactly (two concrete problems sharing a
+    `MassSpringRefData` system/cost kernel; `MassSpringRefBox` `ne_t = 0`,
+    `MassSpringRefTerm` `ne_t = 4`). `tests/sqp_acados_ref/sqp_acados_ref.cpp`
+    (new CMake target `sqp_acados_ref`) solves each with the default
+    `SqpSolver` from a forward-simulation warm start and asserts, against the
+    embedded full-precision reference: `kSolved`, cost relative error < 1e-4,
+    and component-wise `(x, u)` inf-norm error < 1e-4.
+  - **Result.** Both variants match the acados HPIPM reference far tighter
+    than the required 1e-4:
+    - `boxonly`: cost rel. 8.0e-13; `dx = 8.7e-7`, `du = 2.2e-6`; 2 iters.
+    - `termeq`:  cost rel. 2.2e-13; `dx = 7.2e-8`, `du = 2.0e-7`; 2 iters.
+    (The ~1e-7 gap is the expected HPIPM-IPM vs. our cold-start HPIPM
+    difference; the QPs are identical.)
+  - **§1 sign-off (source re-check):**
+    - §1.3 dual mapping — confirmed by the independent 2h FD-Lagrangian gate
+      and by this reference diff (an end-to-end sign error would break the
+      1e-7 match).
+    - §1.4 `res_comp` — `ocp_nlp_common.c:3792–3844` **adds** `tau_min`
+      (`dvecad 1.0`), contradicting its own "− tau_min" comment; equality/pin
+      rows zeroed via `idxe` only in the `tau_min != 0` branch. Acados default
+      is `tau_min = 0`; our `1e-16` default deliberately enters that branch
+      (add-and-mask), matching our `compute_nlp_residuals` exactly.
+    - §2g.5 `primal_nrm_inf` — `ocp_qp_common.c:263–279` norms over
+      `nx + nu + 2*ns` (**slacks included**); our `primal_step_norm_inf`
+      takes the whole `ux` (incl. slack segment) — consistent.
+    - bqp slack sign — `ocp_nlp_constraints_bgp.c` (`fun_i = fun_i − s_i`,
+      slack bounds `fun[slack] = −s + d`) matches our offset form
+      `d_lo = lo − w`, `d_hi = w − hi` with the slack added back on the
+      softened row.
+  - **Docs:** `SQP_PLAN.md` §12 item 2 marked confirmed (res_comp adds
+    `tau_min`; our `1e-16` default follows the add-and-mask branch).
+  - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_acados_ref`
+    passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`,
+    `sqp_unit`, `sqp_double_integrator`, `sqp_mass_spring` all still pass.
