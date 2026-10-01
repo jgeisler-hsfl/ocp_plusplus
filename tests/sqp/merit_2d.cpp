@@ -411,10 +411,14 @@ void test_full_step()
 }
 
 // ---------------------------------------------------------------------
-// Backtracking: alpha=1 rejected, alpha=0.7 accepted.
-// merit(a) = 15 - 24a + 32a^2
-//   merit(1) = 23 > 15  -> reject
-//   merit(0.7) = 13.88 < 15 -> accept
+// Backtracking: alpha=1 and alpha=0.7 rejected, alpha=0.49 accepted.
+// The QP slack variable is the absolute new slack (2f convention), so
+// the trial slack is s(a) = 1.5 + a * (-4 - 1.5) = 1.5 - 5.5a and
+// merit(a) = 15 - 33a + 60.5a^2 (zero primal step: cost and dyn gap
+// are constant).
+//   merit(1) = 42.5 > 15      -> reject
+//   merit(0.7) = 21.545 > 15  -> reject
+//   merit(0.49) = 13.356 < 15 -> accept
 //
 // Start duals: dyn=0.9, box=[0.6,0.4], ineq=0.8
 // Mapped step duals: dyn=-0.5, box=[1,2], ineq=3
@@ -458,16 +462,16 @@ void test_backtracking()
         prob, cur, step, sl, scratch, alpha);
 
     check(st == Status::kSolved, p + "status");
-    check_close(alpha, 0.7, p + "alpha");
+    check_close(alpha, 0.49, p + "alpha");
     // primal unchanged (du=0, dx=0)
     check_close(cur.x[0](0), 0.0, p + "x0");
     check_close(cur.u[0](0), 0.0, p + "u0");
     check_close(cur.x[1](0), 1.0, p + "x1");
-    // relaxed duals
-    check_close(cur.lambda_dyn[0](0), -0.08, p + "dyn");
-    check_close(cur.lambda_box_state[0](0), 0.88, p + "box lo");
-    check_close(cur.lambda_box_state[0](1), 1.52, p + "box hi");
-    check_close(cur.lambda_ineq_stage[0](0), 2.34, p + "ineq");
+    // relaxed duals (0.51 * start + 0.49 * mapped)
+    check_close(cur.lambda_dyn[0](0), 0.214, p + "dyn");
+    check_close(cur.lambda_box_state[0](0), 0.796, p + "box lo");
+    check_close(cur.lambda_box_state[0](1), 1.184, p + "box hi");
+    check_close(cur.lambda_ineq_stage[0](0), 1.878, p + "ineq");
 }
 
 // ---------------------------------------------------------------------
@@ -548,7 +552,8 @@ void test_nan_detected()
 }
 
 // ---------------------------------------------------------------------
-// detail::shift_slacks: trial slacks = s + alpha * (slack part of step)
+// detail::shift_slacks: trial slacks = s + alpha * (s_qp - s)
+// (the QP slack variable is the absolute new slack, 2f convention)
 // ---------------------------------------------------------------------
 void test_shift_slacks()
 {
@@ -562,13 +567,13 @@ void test_shift_slacks()
 
     QpSol<MeritProb> step(N);
     zero_qp_sol<MeritProb, Eigen::Dynamic>(step);
-    step.ux_first(2) = 2.0;      // ds_0 = 2
-    step.ux_path[0](2) = 1.0;    // ds_1 = 1
+    step.ux_first(2) = 2.0;      // s_qp_0 = 2 (absolute)
+    step.ux_path[0](2) = 1.0;    // s_qp_1 = 1 (absolute)
 
     SqpSlacks<MeritProb> dest(N);
     detail::shift_slacks<MeritProb, Eigen::Dynamic>(s, step, 0.5, dest);
-    check_close(dest.first(0), 1.0 + 0.5 * 2.0, p + "first");
-    check_close(dest.path[0](0), 3.0 + 0.5 * 1.0, p + "path");
+    check_close(dest.first(0), 1.0 + 0.5 * (2.0 - 1.0), p + "first");
+    check_close(dest.path[0](0), 3.0 + 0.5 * (1.0 - 3.0), p + "path");
 }
 
 }  // namespace

@@ -12,12 +12,16 @@
 //     ocp_nlp_sqp.c:103-119), per-iteration statistics (acados `stat`
 //     matrix, ocp_nlp_sqp.c:266-271) and the stdout printing
 //     (ocp_nlp_sqp.c:449-466).
+// 2f: SqpSolver::assemble_qp / add_lm_term / resize (QP assembly).
+// 2g: SqpSolver::solve / check_termination / compute_cost (driver).
 //
 // References (re-read at implementation time):
 //   acados/ocp_nlp/ocp_nlp_common.c:3743-3846  (ocp_nlp_res_compute)
 //   acados/ocp_nlp/ocp_nlp_sqp.c:351-430        (check_termination)
 //   acados/ocp_nlp/ocp_nlp_sqp.c:449-466        (print_iteration)
+//   acados/ocp_nlp/ocp_nlp_sqp.c:538-800        (main loop, 2g)
 //   acados/ocp_nlp/ocp_nlp_constraints_bgp.c    (fun layout, dmask)
+//   acados/ocp_qp/ocp_qp_common.c:263-279       (primal step norm, 2g)
 
 #pragma once
 
@@ -749,7 +753,447 @@ public:
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
+    /// Run the SQP iteration on `sol` (warm start in, solution out).
+    ///
+    /// Mirrors acados ocp_nlp_sqp.c:538-800 (sec. 2g): each iteration
+    /// assembles the step-formulation QP at the current iterate,
+    /// regularizes it (before the termination check, as in acados),
+    /// checks termination, solves the QP, and runs the globalizer's line
+    /// search (which advances `sol` in place on acceptance or kMinStep).
+    /// The solver-internal slacks are warm-started across repeated
+    /// solves on the same object when the horizon matches (acados
+    /// nlp_out slack analogue). `sol.status` / `sol.cost_value` are set
+    /// on all exit paths (the cost includes the 0.5*w*s^2 slack penalty,
+    /// plan sec. 1.6).
+    /// Termination decision at the current iterate (public so the branch
+    /// order can be unit-tested; see tests/sqp/driver_2g.cpp). Pure
+    /// function of `opts_`, the four residual norms, the last step norm
+    /// and cost.
+    ///
+    /// Mirrors acados `check_termination` (ocp_nlp_sqp.c:351-430), in
+    /// exactly this order:
+    ///   1. any residual NaN            -> kNanDetected
+    ///   2. iter >= max_iter and
+    ///      !eval_residual_at_max_iter  -> kMaxIterations
+    ///   3. all four norms < tols       -> kSolved
+    ///   4. iter > 0 and step_norm <
+    ///      tol_min_step_norm (and
+    ///      tol_min_step_norm > 0)      -> kMinStep
+    ///   5. cost <= tol_unbounded       -> kUnbounded
+    ///   6. iter >= max_iter            -> kMaxIterations
+    ///   otherwise                      -> kUnset (keep iterating)
+    Status check_termination(int iter, const NlpResiduals& res,
+                             double step_norm, double cost) const
+    {
+        if (std::isnan(res.res_stat) || std::isnan(res.res_eq) ||
+            std::isnan(res.res_ineq) || std::isnan(res.res_comp))
+        {
+            return Status::kNanDetected;
+        }
+        if (!opts_.eval_residual_at_max_iter && iter >= opts_.max_iter)
+        {
+            return Status::kMaxIterations;
+        }
+        if (res.res_stat < opts_.tol_stat && res.res_eq < opts_.tol_eq &&
+            res.res_ineq < opts_.tol_ineq && res.res_comp < opts_.tol_comp)
+        {
+            return Status::kSolved;
+        }
+        if (opts_.tol_min_step_norm > 0.0 && iter > 0 &&
+            step_norm < opts_.tol_min_step_norm)
+        {
+            return Status::kMinStep;
+        }
+        if (cost <= opts_.tol_unbounded)
+        {
+            return Status::kUnbounded;
+        }
+        if (iter >= opts_.max_iter)
+        {
+            return Status::kMaxIterations;
+        }
+        return Status::kUnset;
+    }
+
+    Status solve(const P& problem, Solution<P, NH>& sol)
+    {
+        const int N = sol.N;
+
+        stat_ = SqpStatistics{};
+        qp_status_ = 0;
+        qp_iter_ = 0;
+        alpha_ = 0.0;
+        step_norm_ = 0.0;
+
+        resize(N);
+        if (slack_N_ != N)
+        {
+            slacks_.setZero();
+        }
+        slack_N_ = N;
+
+        cost_value_ = compute_cost(problem, sol, slacks_);
+        sol.cost_value = cost_value_;
+        sol.status = Status::kUnset;
+
+        for (int iter = 0; iter <= opts_.max_iter; ++iter)
+        {
+            Status st = assemble_qp(problem, sol);
+            if (st != Status::kSolved)
+            {
+                sol.status = st;
+                stat_.status = st;
+                return st;
+            }
+            add_lm_term(qp_in_, opts_.levenberg_marquardt);
+
+            const NlpResiduals res =
+                compute_nlp_residuals(problem, sol, opts_.tau_min);
+
+            if (iter == 0)
+            {
+                glob_.initialize(problem, sol);
+            }
+
+            // Before the termination check (acados ocp_nlp_sqp.c:599-600):
+            // the returned QP is the one that would be solved at a
+            // stationary iterate.
+            reg_.regularize(qp_in_);
+
+            const Status term =
+                check_termination(iter, res, step_norm_, cost_value_);
+            if (term != Status::kUnset)
+            {
+                sol.status = term;
+                sol.cost_value = cost_value_;
+                stat_.status = term;
+                const SqpIteration row = make_row(res);
+                stat_.record(row);
+                if (opts_.print_level > 0)
+                {
+                    print_sqp_iteration(iter, row);
+                }
+                return term;
+            }
+
+            const Status qp_st = qp_.solve(qp_in_, qp_out_);
+            qp_status_ = static_cast<int>(qp_st);
+            qp_iter_ = qp_.statistics().iter;
+            if (qp_st != Status::kSolved &&
+                qp_st != Status::kMaxIterations)
+            {
+                // acados: a QP MAXITER is acceptable, any other failure is
+                // a hard stop (ocp_nlp_sqp.c:725-749)
+                sol.status = Status::kQpFailure;
+                sol.cost_value = cost_value_;
+                stat_.status = Status::kQpFailure;
+                const SqpIteration row = make_row(res);
+                stat_.record(row);
+                if (opts_.print_level > 0)
+                {
+                    print_sqp_iteration(iter, row);
+                }
+                return Status::kQpFailure;
+            }
+
+            step_norm_ = primal_step_norm_inf(qp_out_);
+
+            // Advances sol in place on kSolved / kMinStep (2d); leaves it
+            // untouched on kNanDetected.
+            const Status gstatus = glob_.find_acceptable_iterate(
+                problem, sol, qp_out_, slacks_, trial_, alpha_);
+            if (gstatus == Status::kSolved || gstatus == Status::kMinStep)
+            {
+                update_slacks(qp_out_, alpha_);
+                cost_value_ = compute_cost(problem, sol, slacks_);
+                sol.cost_value = cost_value_;
+            }
+
+            const SqpIteration row = make_row(res);
+            stat_.record(row);
+
+            if (gstatus != Status::kSolved)
+            {
+                sol.status = gstatus;
+                stat_.status = gstatus;
+                if (opts_.print_level > 0)
+                {
+                    print_sqp_iteration(iter, row);
+                }
+                return gstatus;
+            }
+            if (opts_.print_level > 0)
+            {
+                print_sqp_iteration(iter, row);
+            }
+        }
+
+        // Unreachable: check_termination returns kMaxIterations at
+        // iter == max_iter (ocp_nlp_sqp.c:419-430).
+        sol.status = Status::kMaxIterations;
+        sol.cost_value = cost_value_;
+        stat_.status = Status::kMaxIterations;
+        return Status::kMaxIterations;
+    }
+
 private:
+    // ---------------------------------------------------------------
+    //  Driver helpers (sub-step 2g)
+    // ---------------------------------------------------------------
+
+    /// One statistics row: the NLP residuals at this iteration plus the
+    /// QP status / iteration / step norm / alpha of the most recent QP
+    /// solve (zeros before the first QP solve; the row of an iteration
+    /// that continues therefore carries that iteration's QP data).
+    SqpIteration make_row(const NlpResiduals& res) const
+    {
+        SqpIteration row;
+        row.res_stat = res.res_stat;
+        row.res_eq = res.res_eq;
+        row.res_ineq = res.res_ineq;
+        row.res_comp = res.res_comp;
+        row.qp_status = qp_status_;
+        row.qp_iter = qp_iter_;
+        row.step_norm = step_norm_;
+        row.alpha = alpha_;
+        return row;
+    }
+
+    /// Inf-norm of the primal step, max over stages (acados
+    /// ocp_qp_out_compute_primal_nrm_inf, ocp_qp_common.c:263-279;
+    /// includes the slack variables: the whole stage variable vector).
+    double primal_step_norm_inf(const QpSol<P, NH>& step) const
+    {
+        double m = static_cast<double>(step.ux_first.cwiseAbs().maxCoeff());
+        for (int k = 1; k < step.N; ++k)
+        {
+            m = std::max(
+                m,
+                static_cast<double>(
+                    step.ux_path[k - 1].cwiseAbs().maxCoeff()));
+        }
+        m = std::max(
+            m,
+            static_cast<double>(step.ux_term.cwiseAbs().maxCoeff()));
+        return m;
+    }
+
+    /// Update the solver-internal slacks after an accepted step.
+    ///
+    /// The QP slack variables are ABSOLUTE (qp.hpp sec. "Side layout":
+    /// the d offsets hold lo - w_cur / w_cur - hi with no s_cur), so the
+    /// iterate slacks are interpolated, not accumulated:
+    /// s <- s + alpha * (s_qp - s).
+    void update_slacks(const QpSol<P, NH>& step, double alpha)
+    {
+        slacks_.first = slacks_.first +
+            alpha * (step.ux_first.segment(D::nu + D::nx,
+                                           D::nslack_first) -
+                     slacks_.first);
+        for (int k = 1; k < step.N; ++k)
+        {
+            slacks_.path[k - 1] =
+                slacks_.path[k - 1] +
+                alpha * (step.ux_path[k - 1].segment(D::nu + D::nx,
+                                                     D::nslack_path) -
+                         slacks_.path[k - 1]);
+        }
+        slacks_.term = slacks_.term +
+            alpha * (step.ux_term.segment(D::nx, D::nslack_term) -
+                     slacks_.term);
+    }
+
+    /// NLP objective at the iterate: the problem's stage + terminal costs
+    /// plus the slack penalty 0.5 * w * s^2 per soft side (sec. 1.6; the
+    /// problem cost functions exclude the solver-internal slacks).
+    double compute_cost(const P& problem, const Solution<P, NH>& sol,
+                        const SqpSlacks<P, NH>& sl) const
+    {
+        double m = 0.0;
+        for (int k = 0; k < sol.N; ++k)
+        {
+            m += static_cast<double>(
+                problem.stage_cost_value(k, sol.x[k], sol.u[k]));
+        }
+        m += static_cast<double>(problem.terminal_cost_value(sol.x[sol.N]));
+        return m + slack_penalty(problem, sl);
+    }
+
+    /// Slack penalty 0.5 * w * s^2 over every soft side (same weights and
+    /// slack order as fill_slack_diag / fill_slack_diag_term; the first
+    /// stage drops the state-box slacks when x_0 is fixed, so the bx lo
+    /// block is absent there — guarded via the stage-type layout).
+    double slack_penalty(const P& problem,
+                         const SqpSlacks<P, NH>& sl) const
+    {
+        double m = 0.0;
+
+        // first / path stages share the stage specs
+        const auto stage_pen = [&](int k, const auto& sv, int base,
+                                   const auto& idxl, const auto& idxh,
+                                   const auto& lay)
+        {
+            if constexpr (P::nbx_soft > 0)
+            {
+                if (lay.rows[detail::g_bx] > 0)
+                {
+                    const auto spec = problem.stage_state_box_constr(k);
+                    for (int i = 0; i < P::nbx_soft; ++i)
+                    {
+                        const int r =
+                            lay.row_off(detail::g_bx)
+                            + P::state_box_soft_idx[i];
+                        m += slack_pair(sv, base, idxl[r], idxh[r],
+                                        static_cast<double>(
+                                            spec.soft_penalty(
+                                                P::state_box_soft_idx[i])));
+                    }
+                }
+            }
+            if constexpr (P::nbu_soft > 0)
+            {
+                const auto spec = problem.stage_control_box_constr(k);
+                for (int i = 0; i < P::nbu_soft; ++i)
+                {
+                    const int r =
+                        lay.row_off(detail::g_bu)
+                        + P::control_box_soft_idx[i];
+                    m += slack_pair(sv, base, idxl[r], idxh[r],
+                                    static_cast<double>(
+                                        spec.soft_penalty(
+                                            P::control_box_soft_idx[i])));
+                }
+            }
+            if constexpr (P::ng_soft > 0)
+            {
+                const auto pen =
+                    problem.stage_inequality_constr_soft_penalty(k);
+                for (int i = 0; i < P::ng_soft; ++i)
+                {
+                    const int r =
+                        lay.row_off(detail::g_ineq) + P::ineq_soft_idx[i];
+                    m += slack_pair(sv, base, idxl[r], idxh[r],
+                                    static_cast<double>(pen(i)));
+                }
+            }
+            if constexpr (P::ne_soft > 0)
+            {
+                const auto pen =
+                    problem.stage_equality_constr_soft_penalty(k);
+                for (int i = 0; i < P::ne_soft; ++i)
+                {
+                    const int r =
+                        lay.row_off(detail::g_eq) + P::eq_soft_idx[i];
+                    m += slack_pair(sv, base, idxl[r], idxh[r],
+                                    static_cast<double>(pen(i)));
+                }
+            }
+            if constexpr (P::nl_soft > 0)
+            {
+                const auto spec = problem.stage_linear_constr(k);
+                for (int i = 0; i < P::nl_soft; ++i)
+                {
+                    const int r =
+                        lay.row_off(detail::g_lin) + P::lin_soft_idx[i];
+                    m += slack_pair(sv, base, idxl[r], idxh[r],
+                                    static_cast<double>(
+                                        spec.bounds.soft_penalty(
+                                            P::lin_soft_idx[i])));
+                }
+            }
+        };
+
+        stage_pen(0, sl.first, D::nvar_first - D::nslack_first,
+                  D::idxs_lo_first, D::idxs_hi_first, D::lay_first);
+        for (int k = 1; k < sl.N; ++k)
+        {
+            stage_pen(k, sl.path[k - 1], D::nvar_path - D::nslack_path,
+                      D::idxs_lo_path, D::idxs_hi_path, D::lay_path);
+        }
+
+        // terminal
+        {
+            const auto& sv = sl.term;
+            const int base = D::nvar_term - D::nslack_term;
+            const auto& lay = D::lay_term;
+            if constexpr (P::nbx_t_soft > 0)
+            {
+                const auto spec = problem.terminal_state_box_constr();
+                for (int i = 0; i < P::nbx_t_soft; ++i)
+                {
+                    const int r = lay.row_off(detail::g_bx)
+                                 + P::terminal_state_box_soft_idx[i];
+                    m += slack_pair(sv, base, D::idxs_lo_term[r],
+                                    D::idxs_hi_term[r],
+                                    static_cast<double>(
+                                        spec.soft_penalty(
+                                            P::terminal_state_box_soft_idx[i])));
+                }
+            }
+            if constexpr (P::ng_t_soft > 0)
+            {
+                const auto pen =
+                    problem.terminal_inequality_constr_soft_penalty();
+                for (int i = 0; i < P::ng_t_soft; ++i)
+                {
+                    const int r = lay.row_off(detail::g_ineq)
+                                 + P::terminal_ineq_soft_idx[i];
+                    m += slack_pair(sv, base, D::idxs_lo_term[r],
+                                    D::idxs_hi_term[r],
+                                    static_cast<double>(pen(i)));
+                }
+            }
+            if constexpr (P::ne_t_soft > 0)
+            {
+                const auto pen =
+                    problem.terminal_equality_constr_soft_penalty();
+                for (int i = 0; i < P::ne_t_soft; ++i)
+                {
+                    const int r = lay.row_off(detail::g_eq)
+                                 + P::terminal_eq_soft_idx[i];
+                    m += slack_pair(sv, base, D::idxs_lo_term[r],
+                                    D::idxs_hi_term[r],
+                                    static_cast<double>(pen(i)));
+                }
+            }
+            if constexpr (P::nl_t_soft > 0)
+            {
+                const auto spec = problem.terminal_linear_constr();
+                for (int i = 0; i < P::nl_t_soft; ++i)
+                {
+                    const int r = lay.row_off(detail::g_lin)
+                                 + P::terminal_lin_soft_idx[i];
+                    m += slack_pair(sv, base, D::idxs_lo_term[r],
+                                    D::idxs_hi_term[r],
+                                    static_cast<double>(
+                                        spec.bounds.soft_penalty(
+                                            P::terminal_lin_soft_idx[i])));
+                }
+            }
+        }
+        return m;
+    }
+
+    /// 0.5 * w * (s_lo^2 + s_hi^2) for one soft row's slack columns
+    /// (absent sides, col < 0, contribute nothing).
+    template <class SV>
+    static double slack_pair(const SV& sv, int base, int col_lo, int col_hi,
+                             double w)
+    {
+        double m = 0.0;
+        if (col_lo >= 0)
+        {
+            const double s = static_cast<double>(sv[col_lo - base]);
+            m += 0.5 * w * s * s;
+        }
+        if (col_hi >= 0)
+        {
+            const double s = static_cast<double>(sv[col_hi - base]);
+            m += 0.5 * w * s * s;
+        }
+        return m;
+    }
+
     // ---------------------------------------------------------------
     //  HVP matrix builders (nx+nu unit-vector calls, plan sec. 1.5)
     // ---------------------------------------------------------------
@@ -2052,9 +2496,12 @@ private:
     QpSol<P, NH> qp_out_;
     Solution<P, NH> trial_;
     SqpSlacks<P, NH> slacks_;
+    int slack_N_ = 0;  // horizon of the current slacks_ (warm-start check)
     double alpha_ = 0.0;
     double step_norm_ = 0.0;
     double cost_value_ = 0.0;
+    int qp_status_ = 0;  // last QP status (0 = none yet)
+    int qp_iter_ = 0;    // last QP iteration count
 };
 
 }  // namespace ocp

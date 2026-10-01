@@ -280,26 +280,30 @@ void apply_sqp_step_primal(const Solution<P, NH>& start,
     }
 }
 
-/// Trial slacks for the line search: s + alpha * (slack part of the QP
-/// step). The slack part is the tail of each stage-type step vector (the
-/// last nslack_<type> entries of (u;x;s) / (x;s), qp.hpp layout). `dest`
-/// must already be sized to the step's horizon.
+/// Trial slacks for the line search.  The QP slack variable is the
+/// *absolute* new slack (2f convention: d offsets exclude s_cur, slack
+/// Hessian diagonal = w, grad = 0), so the damped trial is the
+/// interpolation  s_trial = s_old + alpha * (s_qp − s_old).
+/// The slack part is the tail of each stage-type step vector (the
+/// last nslack_<type> entries of (u;x;s) / (x;s), qp.hpp layout).
+/// `dest` must already be sized to the step's horizon.
 template <class P, int NH = Eigen::Dynamic>
 void shift_slacks(const SqpSlacks<P, NH>& s, const QpSol<P, NH>& step,
                   double alpha, SqpSlacks<P, NH>& dest)
 {
     using D = QpDim<P>;
-    dest.first =
-        s.first + alpha * step.ux_first.segment(D::nu + D::nx,
-                                                D::nslack_first);
+    const auto s_qp_first =
+        step.ux_first.segment(D::nu + D::nx, D::nslack_first);
+    dest.first = s.first + alpha * (s_qp_first - s.first);
     for (int k = 1; k < s.N; ++k)
     {
-        dest.path[k - 1] = s.path[k - 1] +
-            alpha * step.ux_path[k - 1].segment(D::nu + D::nx,
-                                                D::nslack_path);
+        const auto s_qp_path =
+            step.ux_path[k - 1].segment(D::nu + D::nx, D::nslack_path);
+        dest.path[k - 1] = s.path[k - 1] + alpha * (s_qp_path - s.path[k - 1]);
     }
-    dest.term =
-        s.term + alpha * step.ux_term.segment(D::nx, D::nslack_term);
+    const auto s_qp_term =
+        step.ux_term.segment(D::nx, D::nslack_term);
+    dest.term = s.term + alpha * (s_qp_term - s.term);
 }
 
 }  // namespace detail
@@ -841,25 +845,20 @@ private:
 
     // -- weighted positive constraint violations ---------------------
 
-    double stage_violation(const P& problem,
-                           const Solution<P, NH>& sol,
-                           const SqpSlacks<P, NH>& sl,
-                           int k) const
+    // Templated over the stage-type layout / idxs / slack vector: the
+    // first stage carries extra pin rows (fixed x_0), so the first and
+    // path idxs arrays can have different sizes (no ?: over them).
+    template <class SV, class IdxLo, class IdxHi>
+    double stage_violation_impl(const P& problem,
+                                const Solution<P, NH>& sol,
+                                const SV& sv, const IdxLo& idxl,
+                                const IdxHi& idxh,
+                                const detail::QpLayout& lay,
+                                int base, int k) const
     {
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
-        const bool first = (k == 0);
-        const detail::QpLayout& lay =
-            first ? D::lay_first : D::lay_path;
-        const auto& sv = first ? sl.first : sl.path[k - 1];
-        const auto& idxl =
-            first ? D::idxs_lo_first : D::idxs_lo_path;
-        const auto& idxh =
-            first ? D::idxs_hi_first : D::idxs_hi_path;
-        const int base = first
-            ? D::nvar_first - D::nslack_first
-            : D::nvar_path - D::nslack_path;
-        const int R = first ? D::nrow_first : D::nrow_path;
+        const int R = static_cast<int>(idxl.size());
 
         typename P::ineq_t gv{};
         typename P::eq_t ev{};
@@ -891,35 +890,41 @@ private:
 
             if (g == detail::g_bx)
             {
-                const auto spec =
-                    problem.stage_state_box_constr(k);
-                const double v = static_cast<double>(
-                    x(P::state_box_idx[j]));
-                m += static_cast<double>(w_box_state[k](j))
-                   * std::max(0.0,
-                       static_cast<double>(spec.lo(j))
-                       - s_lo - v);
-                m += static_cast<double>(
-                         w_box_state[k](D::nbx + j))
-                   * std::max(0.0,
-                       v - static_cast<double>(spec.hi(j))
-                       - s_hi);
+                if constexpr (P::nbx > 0)
+                {
+                    const auto spec =
+                        problem.stage_state_box_constr(k);
+                    const double v = static_cast<double>(
+                        x(P::state_box_idx[j]));
+                    m += static_cast<double>(w_box_state[k](j))
+                       * std::max(0.0,
+                           static_cast<double>(spec.lo(j))
+                           - s_lo - v);
+                    m += static_cast<double>(
+                              w_box_state[k](D::nbx + j))
+                       * std::max(0.0,
+                           v - static_cast<double>(spec.hi(j))
+                           - s_hi);
+                }
             }
             else if (g == detail::g_bu)
             {
-                const auto spec =
-                    problem.stage_control_box_constr(k);
-                const double v = static_cast<double>(
-                    u(P::control_box_idx[j]));
-                m += static_cast<double>(w_box_control[k](j))
-                   * std::max(0.0,
-                       static_cast<double>(spec.lo(j))
-                       - s_lo - v);
-                m += static_cast<double>(
-                         w_box_control[k](D::nbu + j))
-                   * std::max(0.0,
-                       v - static_cast<double>(spec.hi(j))
-                       - s_hi);
+                if constexpr (P::nbu > 0)
+                {
+                    const auto spec =
+                        problem.stage_control_box_constr(k);
+                    const double v = static_cast<double>(
+                        u(P::control_box_idx[j]));
+                    m += static_cast<double>(w_box_control[k](j))
+                       * std::max(0.0,
+                           static_cast<double>(spec.lo(j))
+                           - s_lo - v);
+                    m += static_cast<double>(
+                              w_box_control[k](D::nbu + j))
+                       * std::max(0.0,
+                           v - static_cast<double>(spec.hi(j))
+                           - s_hi);
+                }
             }
             else if (g == detail::g_ineq)
             {
@@ -952,6 +957,24 @@ private:
             }
         }
         return m;
+    }
+
+    double stage_violation(const P& problem,
+                           const Solution<P, NH>& sol,
+                           const SqpSlacks<P, NH>& sl,
+                           int k) const
+    {
+        if (k == 0)
+        {
+            return stage_violation_impl(
+                problem, sol, sl.first, D::idxs_lo_first,
+                D::idxs_hi_first, D::lay_first,
+                D::nvar_first - D::nslack_first, 0);
+        }
+        return stage_violation_impl(
+            problem, sol, sl.path[k - 1], D::idxs_lo_path,
+            D::idxs_hi_path, D::lay_path,
+            D::nvar_path - D::nslack_path, k);
     }
 
     double term_violation(const P& problem,
@@ -993,19 +1016,22 @@ private:
 
             if (g == detail::g_bx)
             {
-                const auto spec =
-                    problem.terminal_state_box_constr();
-                const double v = static_cast<double>(
-                    x(P::terminal_state_box_idx[j]));
-                m += static_cast<double>(w_box_term(j))
-                   * std::max(0.0,
-                       static_cast<double>(spec.lo(j))
-                       - s_lo - v);
-                m += static_cast<double>(
-                         w_box_term(D::nbx_t + j))
-                   * std::max(0.0,
-                       v - static_cast<double>(spec.hi(j))
-                       - s_hi);
+                if constexpr (P::nbx_t > 0)
+                {
+                    const auto spec =
+                        problem.terminal_state_box_constr();
+                    const double v = static_cast<double>(
+                        x(P::terminal_state_box_idx[j]));
+                    m += static_cast<double>(w_box_term(j))
+                       * std::max(0.0,
+                           static_cast<double>(spec.lo(j))
+                           - s_lo - v);
+                    m += static_cast<double>(
+                              w_box_term(D::nbx_t + j))
+                       * std::max(0.0,
+                           v - static_cast<double>(spec.hi(j))
+                           - s_hi);
+                }
             }
             else if (g == detail::g_ineq)
             {

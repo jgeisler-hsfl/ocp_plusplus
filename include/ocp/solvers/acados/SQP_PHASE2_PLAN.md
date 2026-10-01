@@ -853,3 +853,81 @@ written; §1 conventions signed off in the checkpoints.
 - Build: warning-free under `-Wall -Wextra -Werror`.
   `./build/sqp_unit` passes; `double_integrator`, `mass_spring`,
   `qp_dim`, `qp_unit` all still pass.
+
+### 2g — driver `SqpSolver::solve` (sqp.hpp)
+
+- Re-read `ocp_nlp_sqp.c:538-800` (main loop; regularize before the
+  termination check at :599-600; QP MAXITER acceptable, any other QP
+  failure a hard stop at :725-749; post-shrink alpha applied at
+  :894), `:351-430` (termination order), `ocp_qp_common.c:263-279`
+  (primal step norm, slacks included), and `01-sqp-main-loop.md`.
+- Implemented in `include/ocp/solvers/acados/sqp.hpp`:
+  - `SqpSolver::solve(problem, sol)`: `iter = 0..max_iter` loop —
+    `assemble_qp` -> `add_lm_term` -> `compute_nlp_residuals` ->
+    `glob_.initialize` (iter 0) -> `reg_.regularize` (before the
+    termination check) -> `check_termination` -> `qp_.solve` ->
+    `primal_step_norm_inf` -> `glob_.find_acceptable_iterate`
+    (advances `sol` in place on kSolved / kMinStep; untouched on
+    kNanDetected) -> `update_slacks` + `compute_cost` on the accepted
+    step. `sol.status` / `sol.cost_value` set on every exit path; one
+    `SqpIteration` row per iteration (early-return paths included).
+  - `check_termination` (public, pure): acados branch order — NaN ->
+    kNanDetected; `iter >= max_iter && !eval_residual_at_max_iter` ->
+    kMaxIterations; all four norms < tols -> kSolved;
+    `iter > 0 && step_norm < tol_min_step_norm` -> kMinStep;
+    `cost <= tol_unbounded` -> kUnbounded; `iter >= max_iter` ->
+    kMaxIterations; else kUnset.
+  - `compute_cost` / `slack_penalty` / `slack_pair`: problem stage +
+    terminal cost plus the 0.5 w s^2 slack penalty over every soft
+    side (sec. 1.6; first-stage state-box slacks absent when x_0 is
+    fixed, via the stage-type layout).
+  - `update_slacks`: solver-internal slacks are the ABSOLUTE QP slack
+    (2f convention: d offsets exclude s_cur), so they are
+    interpolated, not accumulated: `s <- s + alpha (s_qp - s)`.
+    Warm-started across repeated solves on the same object when the
+    horizon matches (`slack_N_` guard), else zeroed.
+  - `primal_step_norm_inf`: max stage inf-norm over the full (u;x;s)
+    step vector, slacks included (ocp_qp_common.c:263-279).
+- Companion fix in `globalize.hpp` (found while bringing the driver
+  up): `detail::shift_slacks` now interpolates `s + alpha (s_qp - s)`
+  (the QP slack is the absolute new slack, 2f convention);
+  `MeritBacktracking::stage_violation` split into a templated impl
+  because the first stage carries extra pin rows, so the first/path
+  idx arrays differ in size (no `?:` across them); `if constexpr`
+  guards so empty groups never touch an unimplemented spec.
+  `merit_2d.cpp` updated to the absolute-slack convention
+  (backtracking test: alpha = 0.49 accepted instead of 0.7).
+- **Root cause of the initial DI end-to-end failures:** the QP was
+  self-consistent (res_b ~ 1e-13) yet the trial iterate violated the
+  true dynamics by a constant gap — the `BA` dynamics block was
+  assembled from `DoubleIntegrator::dynamics_jacobian`, which was
+  missing the identity diagonal (A(0,0) and A(1,1) left at 0). The
+  QP therefore solved the wrong (leaky) dynamics and the merit never
+  decreased (kMinStep). Fixed in a separate `example:` commit
+  (Jacobian diagonal + regression checks in `double_integrator/
+  main.cpp` + corrected hand-computed BA in `assemble_2f.cpp`); the
+  driver then converged on the first attempt.
+- Deviations from plan:
+  - `check_termination` is public (plan: private) so the branch order
+    is directly unit-testable.
+  - `compute_cost` takes the solver-internal `SqpSlacks` (plan
+    sketch: problem + solution only); the sec. 1.6 slack penalty
+    needs them.
+- Test: `tests/sqp/driver_2g.cpp` (added to `sqp_unit`):
+  `check_termination` branch order (all six branches + the kUnset
+  fallthrough, incl. `eval_residual_at_max_iter`); DI N=10 end-to-end
+  from a terminal-equality-feasible warm start (constant control
+  `a = (1 - (q0+v0) - Ts N v0) / (Ts^2 N(N-1)/2 + Ts N)`; the
+  equality is linear in the trajectory, so feasibility is preserved
+  through every iteration): kSolved, independent residual recheck
+  below tolerance, x_0 preserved, terminal equality and control box
+  satisfied, `cost_value` = raw cost (the soft velocity cap is
+  inactive at the optimum); repeated solve on the same object
+  (second solve terminates at iteration 0, no QP solved, slacks
+  warm-started); max_iter = 0 -> kMaxIterations with one row;
+  DegProbe -> kInfeasible (2f.6 degeneracy via the driver);
+  duck-typed FailQp -> kQpFailure and ZeroStepQp -> kMinStep driver
+  paths.
+- Build: warning-free under `-Wall -Wextra -Werror`.
+  `./build/sqp_unit` passes (2a-2g); `double_integrator`,
+  `mass_spring`, `qp_dim`, `qp_unit` all still pass.

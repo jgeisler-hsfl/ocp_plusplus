@@ -1859,8 +1859,13 @@ private:
         }
     }
 
-    /// Closed-form slack / multiplier step for one stage: dt_i = C_i dz_k -
-    /// res_d_i and dlam_i = d_mask_i (-(res_m_i + lam_i dt_i)/t_i).
+    /// Closed-form slack / multiplier step for one stage:
+    /// dt_i = C_i dz_k - res_d_i and
+    /// dlam_i = d_mask_i (-(res_m_i + lam_i dt_i)/t_i).
+    ///
+    /// HPIPM (x_core_qp_ipm_aux.c COMPUTE_LAM_T_QP) writes the same thing
+    /// as `dlam = -t^-1 (res_m + lam dt_aff - lam res_d); dt -= res_d`;
+    /// the two forms are identical (dt_aff - res_d = dt).
     template <class Dc, class Dv, class Lam, class T, class Rd, class Rm,
               class Rg, class IdxLo, class IdxHi>
     void closed_form_one_stage(const Dc& dc, const Dv& dmask, const Lam& lam,
