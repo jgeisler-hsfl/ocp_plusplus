@@ -111,6 +111,7 @@ void check_solver_shell(const char* name)
 
 int run_residuals_1b_tests();
 int run_init_1c_tests();
+int run_kkt_1e_tests();
 
 int main()
 {
@@ -120,6 +121,7 @@ int main()
     check_solver_shell<MassSpring, 5>("MassSpring (NH = 5, fixed-extent)");
     failures += run_residuals_1b_tests();
     failures += run_init_1c_tests();
+    failures += run_kkt_1e_tests();
 
     if (failures == 0)
     {

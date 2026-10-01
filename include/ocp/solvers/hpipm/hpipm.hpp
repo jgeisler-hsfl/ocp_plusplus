@@ -184,6 +184,11 @@ public:
     using Pb_term_t  = Eigen::Matrix<S, D::nx, D::nvar_term>;
     using Pi_t        = Eigen::Matrix<S, D::nx, 1>;
     using Ba_t        = Eigen::Matrix<S, D::nx, D::nu + D::nx>;
+    // Riccati state Hessian P_k (x-space Schur complement of the augmented
+    // stage Hessian) and the costate linear term q_k (worklog 1e).
+    using P_first_t   = Eigen::Matrix<S, D::nx, D::nx>;
+    using P_path_t    = Eigen::Matrix<S, D::nx, D::nx>;
+    using P_term_t    = Eigen::Matrix<S, D::nx, D::nx>;
 
     /// Horizon-sized solver workspace (internal state; sized in solve()).
     ///
@@ -212,6 +217,23 @@ public:
         Pb_first_t Pb_first{};
         Trajectory<Pb_path_t, detail::traj_extent<NH, -1>()> Pb_path;
         Pb_term_t Pb_term{};
+
+        // Riccati state Hessian P_k (x-space Schur complement of the
+        // augmented stage Hessian Mtilde_k), per stage k = 0..N
+        P_first_t P_first{};
+        Trajectory<P_path_t, detail::traj_extent<NH, -1>()> P_path;
+        P_term_t P_term{};
+
+        // Riccati costate linear term q_k, per stage k = 0..N
+        Pi_t q_first{};
+        Trajectory<Pi_t, detail::traj_extent<NH, -1>()> q_path;
+        Pi_t q_term{};
+
+        // reduced Newton RHS rtilde_k = rtilde_k - BAbt_k'(P_{k+1} res_b_k
+        // + q_{k+1}), in the (u;s;x) ordering, per stage k = 0..N
+        v_first_t rtilde_first{};
+        Trajectory<v_path_t, detail::traj_extent<NH, -1>()> rtilde_path;
+        v_term_t rtilde_term{};
 
         // KKT residuals (HPIPM d_ocp_qp_res analogue)
         QpRes<P, NH> res;
@@ -270,6 +292,9 @@ public:
                 M_path.resize(np);
                 L_path.resize(np);
                 Pb_path.resize(np);
+                P_path.resize(np);
+                q_path.resize(np);
+                rtilde_path.resize(np);
                 gamma_path.resize(np);
                 Gamma_path.resize(np);
                 t_inv_path.resize(np);
@@ -557,6 +582,125 @@ public:
         }
     }
 
+    // ==================================================================
+    //  1e: KKT solve (two-pass Riccati; worklog 1e)
+    // ==================================================================
+
+    /// Factorize the KKT system (backward pass) and solve for the Newton
+    /// step (forward pass) plus the closed-form dual / slack update
+    /// (HPIPM `OCP_QP_FACT_SOLVE_KKT_STEP`, x_ocp_qp_kkt.c:1117).
+    ///
+    /// `in`: QP data; `iter`: the current primal-dual iterate (absolute
+    /// lam / t, used for Gamma / gamma); `res`: the KKT residuals; `step`:
+    /// [out] the Newton step — `step.ux_*` = δz, `step.pi` = δπ,
+    /// `step.lam_*` = δλ, `step.t_*` = δt (the HPIPM `sol_step`).
+    ///
+    /// @return kSolved on success, kQpFailure if the Cholesky stays
+    ///         singular after the reg-primal growth schedule.
+    Status fact_solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                          const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        ws_.resize(N);
+        compute_gamma(in, iter, res);
+        const S reg = opts_.reg_prim;
+        for (int k = N; k >= 0; --k)
+        {
+            if (!backward_factor_stage(k, in, reg))
+            {
+                return Status::kQpFailure;
+            }
+        }
+        for (int k = N; k >= 0; --k)
+        {
+            backward_reduced_stage(k, in, res);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            forward_stage(k, in, res, step);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            closed_form_stage(k, in, res, iter, step);
+        }
+        return Status::kSolved;
+    }
+
+    /// Re-solve the KKT system reusing the last factorization (the L_k and
+    /// P_k from fact_solve_kkt) — the Mehrotra corrector / refinement path
+    /// (HPIPM `OCP_QP_SOLVE_KKT_STEP`, x_ocp_qp_kkt.c:2306).
+    ///
+    /// The caller must have set ws_.gamma_* / ws_.Gamma_* to the corrector
+    /// values (apply_centering, worklog 1g) before calling.
+    void solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                   const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        for (int k = N; k >= 0; --k)
+        {
+            backward_reduced_stage(k, in, res);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            forward_stage(k, in, res, step);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            closed_form_stage(k, in, res, iter, step);
+        }
+    }
+
+    /// Inequality-free fast path (HPIPM `OCP_QP_FACT_SOLVE_KKT_UNCONSTR`,
+    /// x_ocp_qp_kkt.c:316): the same two-pass with Gamma = gamma = 0 (no
+    /// constraint rows; `res` carries res_g / res_b only).
+    Status solve_kkt_unconstr(const Qp<P, NH>& in, const QpRes<P, NH>& res,
+                              QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        ws_.gamma_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            ws_.gamma_path[k - 1].setZero();
+        }
+        ws_.gamma_term.setZero();
+        ws_.Gamma_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            ws_.Gamma_path[k - 1].setZero();
+        }
+        ws_.Gamma_term.setZero();
+        const S reg = opts_.reg_prim;
+        for (int k = N; k >= 0; --k)
+        {
+            if (!backward_factor_stage(k, in, reg))
+            {
+                return Status::kQpFailure;
+            }
+        }
+        for (int k = N; k >= 0; --k)
+        {
+            backward_reduced_stage(k, in, res);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            forward_stage(k, in, res, step);
+        }
+        // no inequality sides: δt = δλ = 0
+        step.lam_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            step.lam_path[k - 1].setZero();
+        }
+        step.lam_term.setZero();
+        step.t_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            step.t_path[k - 1].setZero();
+        }
+        step.t_term.setZero();
+        return Status::kSolved;
+    }
+
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
 
@@ -820,18 +964,497 @@ private:
         }
     }
 
-    // 1:1 translations of the HPIPM macros, implemented in the owning
-    // sub-step (SQP_PHASE1_WORKLOG.md sec. 4):
-    //   void fact_solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,
-    //                       QpRes<P, NH>&);                    // 1e
-    //   void solve_kkt(const Qp<P, NH>&, QpSol<P, NH>&,
-    //                  QpRes<P, NH>&);                        // 1e
-    //   void solve_kkt_unconstr(const Qp<P, NH>&, QpSol<P, NH>&);  // 1e
-    //   double compute_alpha(const Qp<P, NH>&, const QpSol<P, NH>&);  // 1f
-    //   double compute_mu_aff(const Qp<P, NH>&, const QpSol<P, NH>&); // 1g
-    //   void apply_centering(const Qp<P, NH>&, const QpSol<P, NH>&); // 1g
-    //   void update_vars(const Qp<P, NH>&, const QpSol<P, NH>&,
-    //                    double alpha);                          // 1f
+    // ==================================================================
+    //  1e: KKT solve (two-pass Riccati, slacks kept explicit in M_k)
+    // ==================================================================
+    //
+    // Reduced Newton system per stage k (worklog sec. 2):
+    //   M_k dz_k + BA_k' dpi_k - pin(dpi_{k-1}) = rtilde0_k,  rtilde0_k =
+    //       -res_g_k - C_k'(gamma_k)
+    //   dx_{k+1} = D_k dz_k + res_b_k
+    // with M_k = H_k + reg*I_(u;x) + C_k' diag(Gamma_k) C_k (Decision D1:
+    // slacks explicit, full dense Cholesky over (u;x;s)). The two-pass
+    // Riccati is done in a (u;s;x) ordering (x last) so that the x-block
+    // Schur complement of Mtilde_k = M_k + D_k' P_{k+1} D_k is read
+    // directly off the Cholesky factor:
+    //   backward (k = N..0): Mtilde_k, L_k = chol(Mtilde_k),
+    //       P_k = L_k(x,x)' L_k(x,x);  rtilde_k = rtilde0_k - D_k'(P_{k+1}
+    //       res_b_k + q_{k+1});  q_k = -rtilde_kx + L_k(x,w) z, z =
+    //       L_k(w,w)^{-1} rtilde_kw.
+    //   forward (k = 0..N): dz_k = Mtilde_k^{-1}(rtilde_k + e_x dpi_{k-1});
+    //       dpi_k = P_{k+1}(D_k dz_k + res_b_k) + q_{k+1}.
+    //   closed form: dt_i = C_i dz_k - res_d_i,
+    //       dlam_i = d_mask_i (-(res_m_i + lam_i dt_i)/t_i).
+    // P_{N+1} = q_{N+1} = 0, dpi_{-1} = 0; D_N / BA_N absent (terminal).
+
+    /// Stored (u;x;s) index for a (u;s;x) position i (x last).
+    static int usx_old_idx(int i, int nu, int nx, int nsk)
+    {
+        if (i < nu)
+        {
+            return i;
+        }
+        if (i < nu + nsk)
+        {
+            return nu + nx + (i - nu);
+        }
+        return nu + (i - nu - nsk);
+    }
+
+    /// Permute a column vector from (u;x;s) to (u;s;x) order (x last).
+    template <class V>
+    static V usx_permute_vec(const V& v, int nu, int nx, int nsk)
+    {
+        V out;
+        const int nv = static_cast<int>(v.size());
+        for (int i = 0; i < nv; ++i)
+        {
+            out(i) = v(usx_old_idx(i, nu, nx, nsk));
+        }
+        return out;
+    }
+
+    /// Permute a column vector from (u;s;x) back to (u;x;s) order.
+    template <class V>
+    static V usx_unpermute_vec(const V& v, int nu, int nx, int nsk)
+    {
+        V out;
+        const int nv = static_cast<int>(v.size());
+        for (int i = 0; i < nv; ++i)
+        {
+            out(usx_old_idx(i, nu, nx, nsk)) = v(i);
+        }
+        return out;
+    }
+
+    /// Permute a square matrix from (u;x;s) to (u;s;x) order (rows + cols).
+    template <class M>
+    static M usx_permute_mat(const M& m, int nu, int nx, int nsk)
+    {
+        M out;
+        const int nv = static_cast<int>(m.rows());
+        for (int i = 0; i < nv; ++i)
+        {
+            const int oi = usx_old_idx(i, nu, nx, nsk);
+            for (int j = 0; j < nv; ++j)
+            {
+                out(i, j) = m(oi, usx_old_idx(j, nu, nx, nsk));
+            }
+        }
+        return out;
+    }
+
+    /// Effective side-DC C (nside x nvar, stored (u;x;s) order): the gradient
+    /// of each side's constraint function w.r.t. z. `nside_ref` is unused
+    /// except to fix the row extent.
+    template <class Dc, class Dv, class IdxLo, class IdxHi>
+    static auto usx_build_side_dc(const Dc& dc, const Dv& nside_ref,
+                                  detail::QpLayout lay,
+                                  const IdxLo& idxs_lo,
+                                  const IdxHi& idxs_hi, int nsk)
+    {
+        (void)nside_ref;
+        using C = Eigen::Matrix<typename Dc::Scalar, Dv::RowsAtCompileTime,
+                                Dc::ColsAtCompileTime>;
+        C c;
+        c.setZero();
+        const int nrow = static_cast<int>(dc.rows());
+        const int lo = lay.lo_size();
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int sl = lay.side_lo(r);
+            const int sh = lay.side_hi(r);
+            if (sl >= 0)
+            {
+                c.row(sl) = dc.row(r);
+                const int ch = idxs_hi[r];
+                if (ch >= 0)
+                {
+                    c(sl, ch) = 0.0;
+                }
+            }
+            c.row(sh) = -dc.row(r);
+            const int cl = idxs_lo[r];
+            if (cl >= 0)
+            {
+                c(sh, cl) = 0.0;
+            }
+        }
+        const int s0 = Dc::ColsAtCompileTime - nsk;
+        for (int j = 0; j < nsk; ++j)
+        {
+            c(lo + nrow + j, s0 + j) = 1.0;
+        }
+        return c;
+    }
+
+    /// Per-side gamma / Gamma / t_inv (HPIPM COMPUTE_GAMMA_GAMMA_QP,
+    /// x_core_qp_ipm_aux.c:38): gamma_i = (res_m_i - lam_i res_d_i)/t_i,
+    /// Gamma_i = lam_i/t_i, both masked by d_mask (absent sides -> 0).
+    void compute_gamma(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                       const QpRes<P, NH>& res)
+    {
+        auto fill = [](auto& gamma, auto& Gamma, auto& t_inv, const auto& dmask,
+                       const auto& lam, const auto& t, const auto& res_d,
+                       const auto& res_m)
+        {
+            const int nside = static_cast<int>(gamma.size());
+            for (int i = 0; i < nside; ++i)
+            {
+                t_inv(i) = 1.0 / t(i);
+                if (dmask(i) > 0.5)
+                {
+                    Gamma(i) = lam(i) * t_inv(i);
+                    gamma(i) = t_inv(i) * (res_m(i) - lam(i) * res_d(i));
+                }
+                else
+                {
+                    Gamma(i) = 0.0;
+                    gamma(i) = 0.0;
+                }
+            }
+        };
+        fill(ws_.gamma_first, ws_.Gamma_first, ws_.t_inv_first,
+             in.first.d_mask, iter.lam_first, iter.t_first, res.res_d_first,
+             res.res_m_first);
+        for (int k = 1; k < in.N; ++k)
+        {
+            fill(ws_.gamma_path[k - 1], ws_.Gamma_path[k - 1],
+                 ws_.t_inv_path[k - 1], in.path[k - 1].d_mask,
+                 iter.lam_path[k - 1], iter.t_path[k - 1],
+                 res.res_d_path[k - 1], res.res_m_path[k - 1]);
+        }
+        fill(ws_.gamma_term, ws_.Gamma_term, ws_.t_inv_term, in.term.d_mask,
+             iter.lam_term, iter.t_term, res.res_d_term, res.res_m_term);
+    }
+
+    /// Factor one stage (backward): form Mtilde_k = M_k + D_k' P_{k+1} D_k
+    /// in (u;s;x) order, Cholesky it, and read off P_k = L_k(x,x)' L_k(x,x).
+    /// Returns false if the Cholesky is singular. NU / NX / NSK are the
+    /// stage's (u; x; s) extents (NSK may be 0; the term stage has NU = 0).
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Ba,
+              class IdxLo, class IdxHi>
+    bool factor_one_stage(bool has_dyn, const H& hess, const Dc& dc,
+                          const Dv& gamma, const Dv& Gamma, const Ba* ba,
+                          detail::QpLayout lay, const IdxLo& idxs_lo,
+                          const IdxHi& idxs_hi, S reg,
+                          const P_first_t& p_next, H& m_usx_out,
+                          H& l_usx_out, P_first_t& p_out)
+    {
+        (void)gamma;
+        using Ss = typename H::Scalar;
+        constexpr int nvar = H::RowsAtCompileTime;
+        constexpr int nw = NU + NSK;
+        const auto c = usx_build_side_dc(dc, Gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        H m_nat = hess + c.transpose() * (Gamma.asDiagonal() * c);
+        H m_usx = usx_permute_mat(m_nat, NU, NX, NSK);
+        for (int i = 0; i < NU; ++i)
+        {
+            m_usx(i, i) += reg;
+        }
+        for (int i = 0; i < NX; ++i)
+        {
+            m_usx(nw + i, nw + i) += reg;
+        }
+        if (has_dyn)
+        {
+            Eigen::Matrix<Ss, NX, nvar> dk;
+            dk.setZero();
+            if (NU > 0)
+            {
+                dk.block(0, 0, NX, NU) = ba->block(0, 0, NX, NU);
+            }
+            dk.block(0, nw, NX, NX) = ba->block(0, NU, NX, NX);
+            m_usx += dk.transpose() * p_next * dk;
+        }
+        m_usx_out = m_usx;
+        Eigen::LLT<H> llt(m_usx);
+        if (llt.info() != Eigen::Success)
+        {
+            return false;
+        }
+        l_usx_out = llt.matrixL();
+        const auto lxx = l_usx_out.block(nw, nw, NX, NX);
+        p_out = lxx * lxx.transpose();
+        return true;
+    }
+
+    /// Reduced RHS + costate offset for one stage (backward): rtilde_k =
+    /// rtilde0_k - D_k'(P_{k+1} res_b_k + q_{k+1}) and q_k = -rtilde_kx +
+    /// L_k(x,w) z with z = L_k(w,w)^{-1} rtilde_kw. Reuses L_k / P_{k+1}
+    /// from the factorization; only gamma changes (corrector reuse).
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Rg,
+              class Rb, class Ba, class IdxLo, class IdxHi>
+    void reduce_one_stage(bool has_dyn, const H& hess, const Dc& dc,
+                          const Dv& gamma, const Rg& res_g, const Rb* res_b,
+                          const Ba* ba, detail::QpLayout lay,
+                          const IdxLo& idxs_lo, const IdxHi& idxs_hi,
+                          const P_first_t& p_next, const Pi_t& q_next,
+                          const H& l_usx, Rg& rtilde_out, Pi_t& q_out)
+    {
+        (void)hess;
+        using Ss = typename H::Scalar;
+        constexpr int nvar = H::RowsAtCompileTime;
+        constexpr int nw = NU + NSK;
+        const auto c = usx_build_side_dc(dc, gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        Rg r0_nat = -res_g - c.transpose() * gamma;
+        Rg rtilde = usx_permute_vec(r0_nat, NU, NX, NSK);
+        if (has_dyn)
+        {
+            Eigen::Matrix<Ss, NX, nvar> dk;
+            dk.setZero();
+            if (NU > 0)
+            {
+                dk.block(0, 0, NX, NU) = ba->block(0, 0, NX, NU);
+            }
+            dk.block(0, nw, NX, NX) = ba->block(0, NU, NX, NX);
+            const Pi_t term = p_next * (*res_b) + q_next;
+            rtilde -= dk.transpose() * term;
+        }
+        rtilde_out = rtilde;
+        using Wm = Eigen::Matrix<Ss, nw, nw>;
+        using Wv = Eigen::Matrix<Ss, nw, 1>;
+        using Xv = Eigen::Matrix<Ss, NX, 1>;
+        const Wv rw = rtilde.head(nw);
+        const Xv rx = rtilde.tail(NX);
+        const Wm lww = l_usx.topLeftCorner(nw, nw);
+        const Wv z = lww.template triangularView<Eigen::Lower>().solve(rw);
+        const Eigen::Matrix<Ss, NX, nw> lxm = l_usx.block(nw, 0, NX, nw);
+        q_out = -rx + lxm * z;
+    }
+
+    /// Forward solve for one stage: dz_k = Mtilde_k^{-1}(rtilde_k + e_x
+    /// dpi_{k-1}) and (when a costate exists) dpi_k = P_{k+1}(D_k dz_k +
+    /// res_b_k) + q_{k+1}.
+    template <class H, class Rg, class Rb, class Ba>
+    void forward_one_stage(bool has_dyn, const H& l_usx, const Rg& rtilde,
+                           const Pi_t& dpi_prev, const P_first_t& p_next,
+                           const Pi_t& q_next, const Rb* res_b, const Ba* ba,
+                           int nsk, int nu, int nx, Rg& dz_usx_out,
+                           Pi_t* dpi_out)
+    {
+        (void)has_dyn;
+        using Ss = typename H::Scalar;
+        Rg b = rtilde;
+        for (int i = 0; i < nx; ++i)
+        {
+            b(nu + nsk + i) += dpi_prev(i);
+        }
+        const Rg y = l_usx.template triangularView<Eigen::Lower>().solve(b);
+        dz_usx_out =
+            l_usx.transpose().template triangularView<Eigen::Upper>().solve(y);
+        if (dpi_out != nullptr)
+        {
+            Pi_t dnext;
+            for (int i = 0; i < nx; ++i)
+            {
+                Ss acc = (*res_b)(i);
+                for (int j = 0; j < nu; ++j)
+                {
+                    acc += (*ba)(i, j) * dz_usx_out(j);
+                }
+                for (int j = 0; j < nx; ++j)
+                {
+                    acc += (*ba)(i, nu + j) * dz_usx_out(nu + nsk + j);
+                }
+                dnext(i) = acc;
+            }
+            *dpi_out = p_next * dnext + q_next;
+        }
+    }
+
+    /// Closed-form slack / multiplier step for one stage: dt_i = C_i dz_k -
+    /// res_d_i and dlam_i = d_mask_i (-(res_m_i + lam_i dt_i)/t_i).
+    template <class Dc, class Dv, class Lam, class T, class Rd, class Rm,
+              class Rg, class IdxLo, class IdxHi>
+    void closed_form_one_stage(const Dc& dc, const Dv& dmask, const Lam& lam,
+                               const T& t, const Rd& res_d, const Rm& res_m,
+                               detail::QpLayout lay, const IdxLo& idxs_lo,
+                               const IdxHi& idxs_hi, int nsk, const Rg& dz,
+                               Rd& dt_out, Rm& dlam_out)
+    {
+        const auto c = usx_build_side_dc(dc, res_d, lay, idxs_lo, idxs_hi,
+                                         nsk);
+        dt_out = c * dz - res_d;
+        const auto lam_m = dmask.cwiseProduct(lam);
+        dlam_out =
+            dmask.cwiseProduct((-res_m - lam_m.cwiseProduct(dt_out))
+                                   .cwiseQuotient(t));
+    }
+
+    // Stage dispatch wrappers (first / path / term).
+
+    bool backward_factor_stage(int k, const Qp<P, NH>& in, S reg)
+    {
+        const int N = in.N;
+        if (k == 0)
+        {
+            const auto& st = in.first;
+            const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
+            return factor_one_stage<D::nu, D::nx, D::nslack_first>(
+                true, st.hess, st.DC, ws_.gamma_first, ws_.Gamma_first,
+                &st.BA, D::lay_first, D::idxs_lo_first, D::idxs_hi_first, reg,
+                p_next, ws_.M_first, ws_.L_first, ws_.P_first);
+        }
+        if (k == N)
+        {
+            const auto& st = in.term;
+            const P_first_t p_next = P_first_t::Zero();
+            return factor_one_stage<0, D::nx, D::nslack_term>(
+                false, st.hess, st.DC, ws_.gamma_term, ws_.Gamma_term,
+                static_cast<const Ba_t*>(nullptr), D::lay_term,
+                D::idxs_lo_term, D::idxs_hi_term, reg, p_next, ws_.M_term,
+                ws_.L_term, ws_.P_term);
+        }
+        const auto& st = in.path[k - 1];
+        const P_first_t& p_next =
+            (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
+        return factor_one_stage<D::nu, D::nx, D::nslack_path>(
+            true, st.hess, st.DC, ws_.gamma_path[k - 1],
+            ws_.Gamma_path[k - 1], &st.BA, D::lay_path, D::idxs_lo_path,
+            D::idxs_hi_path, reg, p_next, ws_.M_path[k - 1],
+            ws_.L_path[k - 1], ws_.P_path[k - 1]);
+    }
+
+    void backward_reduced_stage(int k, const Qp<P, NH>& in,
+                                const QpRes<P, NH>& res)
+    {
+        const int N = in.N;
+        if (k == 0)
+        {
+            const auto& st = in.first;
+            const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
+            const Pi_t& q_next = (N == 1) ? ws_.q_term : ws_.q_path[0];
+            reduce_one_stage<D::nu, D::nx, D::nslack_first>(
+                true, st.hess, st.DC, ws_.gamma_first, res.res_g_first,
+                &res.res_b[0], &st.BA, D::lay_first, D::idxs_lo_first,
+                D::idxs_hi_first, p_next, q_next, ws_.L_first,
+                ws_.rtilde_first, ws_.q_first);
+        }
+        else if (k == N)
+        {
+            const auto& st = in.term;
+            const P_first_t p_next = P_first_t::Zero();
+            const Pi_t q_next = Pi_t::Zero();
+            reduce_one_stage<0, D::nx, D::nslack_term>(
+                false, st.hess, st.DC, ws_.gamma_term, res.res_g_term,
+                static_cast<const Pi_t*>(nullptr),
+                static_cast<const Ba_t*>(nullptr), D::lay_term,
+                D::idxs_lo_term, D::idxs_hi_term, p_next, q_next, ws_.L_term,
+                ws_.rtilde_term, ws_.q_term);
+        }
+        else
+        {
+            const auto& st = in.path[k - 1];
+            const P_first_t& p_next =
+                (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
+            const Pi_t& q_next = (k + 1 == N) ? ws_.q_term : ws_.q_path[k];
+            reduce_one_stage<D::nu, D::nx, D::nslack_path>(
+                true, st.hess, st.DC, ws_.gamma_path[k - 1],
+                res.res_g_path[k - 1], &res.res_b[k], &st.BA, D::lay_path,
+                D::idxs_lo_path, D::idxs_hi_path, p_next, q_next,
+                ws_.L_path[k - 1], ws_.rtilde_path[k - 1],
+                ws_.q_path[k - 1]);
+        }
+    }
+
+    void forward_stage(int k, const Qp<P, NH>& in, const QpRes<P, NH>& res,
+                       QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        Pi_t dpi_prev = Pi_t::Zero();
+        if (k >= 1)
+        {
+            dpi_prev = step.pi[k - 1];
+        }
+        if (k == 0)
+        {
+            const auto& st = in.first;
+            const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
+            const Pi_t& q_next = (N == 1) ? ws_.q_term : ws_.q_path[0];
+            v_first_t dz_usx;
+            forward_one_stage(true, ws_.L_first, ws_.rtilde_first, dpi_prev,
+                              p_next, q_next, &res.res_b[0], &st.BA,
+                              D::nslack_first, D::nu, D::nx, dz_usx,
+                              &step.pi[0]);
+            step.ux_first = usx_unpermute_vec(dz_usx, D::nu, D::nx,
+                                              D::nslack_first);
+        }
+        else if (k == N)
+        {
+            v_term_t dz_usx;
+            forward_one_stage(false, ws_.L_term, ws_.rtilde_term, dpi_prev,
+                              P_first_t::Zero(), Pi_t::Zero(),
+                              static_cast<const Pi_t*>(nullptr),
+                              static_cast<const Ba_t*>(nullptr),
+                              D::nslack_term, 0, D::nx, dz_usx, nullptr);
+            step.ux_term = usx_unpermute_vec(dz_usx, 0, D::nx,
+                                             D::nslack_term);
+        }
+        else
+        {
+            const auto& st = in.path[k - 1];
+            const P_first_t& p_next =
+                (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
+            const Pi_t& q_next = (k + 1 == N) ? ws_.q_term : ws_.q_path[k];
+            v_path_t dz_usx;
+            forward_one_stage(true, ws_.L_path[k - 1],
+                              ws_.rtilde_path[k - 1], dpi_prev, p_next,
+                              q_next, &res.res_b[k], &st.BA, D::nslack_path,
+                              D::nu, D::nx, dz_usx, &step.pi[k]);
+            step.ux_path[k - 1] =
+                usx_unpermute_vec(dz_usx, D::nu, D::nx, D::nslack_path);
+        }
+    }
+
+    void closed_form_stage(int k, const Qp<P, NH>& in, const QpRes<P, NH>& res,
+                           const QpSol<P, NH>& iter, QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        if (k == 0)
+        {
+            const auto& st = in.first;
+            c_first_t dt, dlam;
+            closed_form_one_stage(st.DC, st.d_mask, iter.lam_first,
+                                  iter.t_first, res.res_d_first,
+                                  res.res_m_first, D::lay_first,
+                                  D::idxs_lo_first, D::idxs_hi_first,
+                                  D::nslack_first, step.ux_first, dt, dlam);
+            step.t_first = dt;
+            step.lam_first = dlam;
+        }
+        else if (k == N)
+        {
+            const auto& st = in.term;
+            c_term_t dt, dlam;
+            closed_form_one_stage(st.DC, st.d_mask, iter.lam_term,
+                                  iter.t_term, res.res_d_term,
+                                  res.res_m_term, D::lay_term, D::idxs_lo_term,
+                                  D::idxs_hi_term, D::nslack_term,
+                                  step.ux_term, dt, dlam);
+            step.t_term = dt;
+            step.lam_term = dlam;
+        }
+        else
+        {
+            const auto& st = in.path[k - 1];
+            c_path_t dt, dlam;
+            closed_form_one_stage(st.DC, st.d_mask, iter.lam_path[k - 1],
+                                  iter.t_path[k - 1], res.res_d_path[k - 1],
+                                  res.res_m_path[k - 1], D::lay_path,
+                                  D::idxs_lo_path, D::idxs_hi_path,
+                                  D::nslack_path, step.ux_path[k - 1], dt,
+                                  dlam);
+            step.t_path[k - 1] = dt;
+            step.lam_path[k - 1] = dlam;
+        }
+    }
+
+    // Remaining HPIPM macros, owned by later sub-steps (worklog sec. 4):
+    //   compute_alpha / update_vars            -> 1f
+    //   compute_mu_aff / apply_centering       -> 1g
 };
 
 }  // namespace ocp

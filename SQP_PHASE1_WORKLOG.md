@@ -19,12 +19,14 @@ checkpoints. **Protocol for every sub-step:**
   QpStageFirst/Path/Term, Qp, QpSol, QpRes), `problem.hpp` Status enum
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
-- Phase 1: sub-steps 1a (scaffolding), 1b (residuals), 1c (init point) done —
-  `include/ocp/solvers/hpipm/hpipm.hpp` (`HpipmOptions`, `HpipmIteration`,
-  `HpipmStatistics`, `HpipmQpSolver<P, NH>` shell + `compute_residuals` +
-  `init_point`). Tests live in `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`,
-  `residuals_1b.cpp`, `init_1c.cpp`). Sub-steps 1e..1i pending (1d merged
-  into 1e per plan).
+- Phase 1: sub-steps 1a (scaffolding), 1b (residuals), 1c (init point),
+  1e (KKT solve) done — `include/ocp/solvers/hpipm/hpipm.hpp`
+  (`HpipmOptions`, `HpipmIteration`, `HpipmStatistics`,
+  `HpipmQpSolver<P, NH>` shell + `compute_residuals` + `init_point` +
+  `fact_solve_kkt` / `solve_kkt` / `solve_kkt_unconstr`). Tests live in
+  `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`, `residuals_1b.cpp`,
+  `init_1c.cpp`, `kkt_1e.cpp`). Sub-steps 1f..1i pending (1d merged into
+  1e per plan).
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -378,3 +380,80 @@ Deviations / corrections to this file:
   heuristic is recorded above; note the both-violated repair sets
   `x = 0.5*(d_lo - d_hi)` (midpoint of the bound interval, since
   d_lo = lo, d_hi = -hi), matching `x_ocp_qp_ipm.c:1978`.
+
+### 1e — KKT solve (two-pass Riccati Cholesky) (2026-10-01)
+
+Sources re-read:
+- `x_ocp_qp_kkt.c:316` — `OCP_QP_FACT_SOLVE_KKT_UNCONSTR`: unconstrained
+  fast path (no inequality rows); same two-pass with Gamma = gamma = 0.
+- `x_ocp_qp_kkt.c:1117` — `OCP_QP_FACT_SOLVE_KKT_STEP`: gamma/Gamma
+  (`:1162`), terminal factor `L_N = chol(M_N)` with `DIARE(nu+nx, preg)`
+  (`:1227`) — regularization added to the (u;x) diagonal only, slacks
+  unregularized — then slack conditioning / Gamma-diagonal update /
+  `SYRK_POTRF` (`:1230-1253`); middle stages build `AL = D_k L_{k+1,xx-rows}`
+  and fold `AL·ALᵀ` into `M_k` before `SYRK_POTRF_LN_MN` (`:1277-1315`);
+  singular diagonal → `preg` retry schedule (`:1173-1210`): first retry
+  `preg += 1e-4` (or `/3` if already boosted), later `×100` (or `×8`).
+- `x_ocp_qp_kkt.c:2306` — `OCP_QP_SOLVE_KKT_STEP`: forward pass only,
+  reusing the stored factors (Mehrotra corrector / refinement).
+- `x_core_qp_ipm_aux.c:38` — `COMPUTE_GAMMA_GAMMA_QP`:
+  `Gamma_i = lam_i/t_i` (floored at `t_lam_min`/`lam_min` when
+  `t_lam_min` flag), `gamma_i = (res_m_i − lam_i·res_d_i)/t_i`, masked
+  sides → 0.
+- `x_core_qp_ipm_aux.c:164` — `COMPUTE_LAM_T_QP`:
+  `dlam_i = −(res_m_i + lam_i·(Δv_i − res_d_i))/t_i` with applied
+  `δt_i = Δv_i − res_d_i` — exactly our closed forms.
+
+Implemented (`hpipm.hpp`):
+- `fact_solve_kkt` (`:600`): `ws_.resize(N)`, `compute_gamma`, then three
+  passes — (1) backward factorization `k = N..0`: `M̃_N = M_N`,
+  `M̃_k = M_k + D_kᵀ·P_{k+1}·D_k`, `L_k = chol(M̃_k)` (Eigen::LLT over the
+  full (u;s;x) block; failure → `kQpFailure`; HPIPM's preg retry schedule
+  is deferred to 1f), `P_k = L_k(xx)·L_k(xx)ᵀ`; (2) backward reduction
+  `k = N..0`: `r̃_k = r̃⁰_k − D_kᵀ(P_{k+1}·res_b_k + q_{k+1})` and
+  `q_k = −r̃_k,x + L_k(x,w)·z`, `z = L_k(w,w)⁻¹·r̃_k,w`; (3) forward
+  `k = 0..N`: `δz_k = M̃_k⁻¹(r̃_k + e_x·δπ_{k−1})` (two triangular solves
+  with `L_k`), `δπ_k = P_{k+1}(D_k·δz_k + res_b_k) + q_{k+1}`; then
+  closed forms `δt = C·δz − res_d`,
+  `δλ = d_mask∘(−(res_m + λ∘δt)/t)` per stage.
+- `solve_kkt` (`:635`): forward pass only, reusing stored `L_k`/`P_k`/`q_k`
+  (HPIPM `OCP_QP_SOLVE_KKT_STEP`); caller resets gamma/Gamma for the
+  corrector (1g).
+- `solve_kkt_unconstr` (`:656`): `fact_solve_kkt` with Gamma = gamma = 0
+  (no inequality sides; δt = δλ = 0).
+- Stage helpers `factor_one_stage` / `reduce_one_stage` /
+  `forward_one_stage` take the stage dims as non-type template params
+  (`NU, NX, NSK` first, before deduced types) so all intermediates are
+  fixed-size Eigen; the (u;s;x) permutation is done by
+  `usx_permute_mat` / `usx_permute_vec` / `usx_build_side_dc`.
+
+Tests: `tests/hpipm/kkt_1e.cpp` (linked into `qp_unit`): per case,
+assembles the full coupled Newton system
+`[M_k + D_kᵀP_{k+1}D_k | D_kᵀ; −D_k | M_{k+1} + ...] [δz; δπ] = r̃` in
+dynamic-size Eigen (test-only) and solves with `FullPivLU` as an
+independent oracle; compares solver `δz`/`δπ` (rel tol 1e-9), the
+`δt`/`δλ` closed forms, and verifies `solve_kkt` (factor reuse) agrees
+with a fresh `fact_solve_kkt`. Cases: DI N = 1, 2 (soft ineq → slacks),
+MS N = 1, 2 + MS NH = 2 (no slacks, fixed-extent).
+
+Tests: `qp_unit` (all 1a+1b+1c+1e checks), `qp_dim`,
+`double_integrator`, `mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- §2 two-pass formula corrected: `P_k` is the (x,x) block of `L_k` times
+  its transpose — `L_k(xx)·L_k(xx)ᵀ` — which equals the Schur complement
+  `M̃_xx − M̃_xw·M̃_ww⁻¹·M̃_wx` of the (w,x) split. The tentative §2 formula
+  used the full `(L_{k+1}L_{k+1}ᵀ)_{xx}` block (= `M̃_{k+1,xx}`, includes
+  `L_xw·L_xwᵀ`), which is NOT equivalent and gives wrong `δz`. The
+  forward pass solves the full `M̃_k` stage system (two triangular
+  solves) rather than §2's `L_{k+1,xx}ᵀ`-coupled update; both describe
+  the same solution, oracle-verified.
+- §2 `M_k = H + reg·I + ...`: reg is added to the (u;x) diagonal only,
+  never to slack variables — matches HPIPM's `DIARE(nu+nx, preg)`
+  (`x_ocp_qp_kkt.c:1227`).
+- §2 open item ("x-block indexing of L with slacks present") resolved:
+  with (u;s;x) ordering the x block is last, so `L` is block-lower-
+  triangular `[[L_w,w  0],[L_x,w  L_x,x]]` and the indexing above is
+  exact; oracle-verified.
+- Singular-factor handling: v1 returns `kQpFailure` on a failed Cholesky;
+  HPIPM's preg retry ladder (`:1173-1210`) is not wired yet (1f).
