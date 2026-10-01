@@ -664,9 +664,52 @@ written; §1 conventions signed off in the checkpoints.
   (merit(a)=15−24a+32a²: a=1 rejected 23>15, a=0.7 accepted 13.88<15;
   relaxed duals dyn=−0.08, box=[0.88,1.52], ineq=2.34 from start
   duals dyn=0.9, box=[0.6,0.4], ineq=0.8); kMinStep (zero duals, all 8
-  trials rejected, alpha=0.7^8, cur advanced); kNanDetected (NaN trial
-  merit, cur untouched); `detail::shift_slacks` direct check (first +
-  path).
+   trials rejected, alpha=0.7^8, cur advanced); kNanDetected (NaN trial
+   merit, cur untouched); `detail::shift_slacks` direct check (first +
+   path).
+- Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
+  passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
+  still pass.
+
+### 2e — sqp.hpp (SqpOptions, SqpIteration, SqpStatistics, printing)
+
+- Re-read `ocp_nlp_sqp.c:103-119` (`ocp_nlp_sqp_opts_initialize_default`:
+  max_iter = 20, timeout_heuristic/max_time = 0),
+  `ocp_nlp_common.c:1215,1271-1276,1282-1287` (eval_residual_at_max_iter
+  false, qp_warm_start = 0, warm_start_first_qp false; tol_stat/eq/ineq/
+  comp = 1e-8, tol_unbounded = -1e10, tol_min_step_norm = 1e-12),
+  `ocp_nlp_sqp.c:351-430` (check_termination order — consumed by 2g),
+  `ocp_nlp_sqp.c:449-466` + `ocp_nlp_common.c:4697-4710` +
+  `ocp_nlp_globalization_merit_backtracking.c:411-422` (print_iteration:
+  header every 10th iteration, column formats),
+  `ocp_nlp_sqp.c:266-271` (`stat` matrix: stat_n = 7 base columns —
+  res_stat..res_comp, qp_status, qp_iter, alpha), `ocp_qp_common.c:263-279`
+  (`ocp_qp_out_compute_primal_nrm_inf` over nx+nu+2*ns).
+- Implemented `include/ocp/solvers/acados/sqp.hpp` (2e section):
+  - `SqpOptions` — all plan fields; defaults as verified above. `tau_min`
+    = 1e-16: acados's NLP-level `tau_min` is *not* explicitly defaulted
+    (zero-initialized struct → 0; confirmed in
+    `interfaces/acados_template/.../acados_ocp_options.py` and the MATLAB
+    wrapper), while HPIPM's IPM uses 1e-16 (x_ocp_qp_ipm.c:95); the plan's
+    1e-16 is kept (noted in the struct doc).
+  - `SqpIteration` — the eight recorded quantities per iteration.
+  - `SqpStatistics` — `record` (append + counter), `write_csv` (header
+    `iter,res_stat,res_eq,res_ineq,res_comp,qp_status,qp_iter,step_norm,
+    alpha` + one row per iteration, 0-based iter index, %.10e; no-op if
+    the file cannot be opened).
+  - `print_sqp_iteration(iter, row)` — header re-emitted at
+    `iter % 10 == 0`, acados column formats (residuals %.4e, qp ints,
+    step_norm %.2e, alpha %.2e). `inline` (header-only; a plain definition
+    causes a multiple-definition link error across the test TUs).
+- **Verified for 2g:** the QP step norm (`mem->step_norm`) includes the
+  slacks (acados computes the inf norm over `nx+nu+2*ns` of each stage's
+  ux block, ocp_qp_common.c:263-279).
+- Test: `tests/sqp/options_2e.cpp` (added to the `sqp_unit` target):
+  SqpOptions defaults incl. the embedded GlobOptions; `record`/iter
+  counter; `write_csv` round-trip (header + 2 rows parsed back via
+  sscanf, all nine columns); `print_sqp_iteration` smoke test with
+  stdout captured via dup(1)/dup2 (header at iter 0 and 10 but not 1;
+  exactly two headers; row value formats checked).
 - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
   passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
   still pass.
