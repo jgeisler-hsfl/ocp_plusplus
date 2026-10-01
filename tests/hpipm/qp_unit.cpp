@@ -112,6 +112,7 @@ int run_kkt_1e_tests();
 int run_alpha_1f_tests();
 int run_centering_1g_tests();
 int run_solve_1h_tests();
+int run_suite_1i_tests();
 
 int main()
 {
@@ -125,6 +126,7 @@ int main()
     failures += run_alpha_1f_tests();
     failures += run_centering_1g_tests();
     failures += run_solve_1h_tests();
+    failures += run_suite_1i_tests();
 
     if (failures == 0)
     {

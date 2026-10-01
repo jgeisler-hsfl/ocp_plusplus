@@ -30,7 +30,7 @@ checkpoints. **Protocol for every sub-step:**
   unconstrained fast path)). Tests live in
   `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`, `residuals_1b.cpp`,
   `init_1c.cpp`, `kkt_1e.cpp`, `alpha_1f.cpp`, `centering_1g.cpp`,
-  `solve_1h.cpp`). Sub-step 1i (test suite) pending.
+  `solve_1h.cpp`, `suite_1i.cpp`).
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -696,5 +696,60 @@ Deviations / corrections to this file:
 - The 1a shell test previously asserted `solve()` returns `kAborted` (the
   stub); with `solve()` implemented that call would read uninitialized
   Eigen data on the empty QP, so the shell test now checks only the
-  scaffolding accessors / stat layout and defers `solve()` coverage to the
-  1h test.
+   scaffolding accessors / stat layout and defers `solve()` coverage to the
+   1h test.
+
+### 1i — test suite (2026-10-01)
+
+Sources re-read:
+- `qp.hpp:22-34, 91-95` — the staged-QP contract: dynamics
+  `x_{k+1} = BA_k z_k + b_k`; per-row sides `lo: v − d ≤ t` (d holds `lo`),
+  `hi: −v − d ≤ t` (d holds `−hi`), so feasibility is `lo ≤ v ≤ −d_hi`; pin
+  rows `d_lo = x0, d_hi = −x0`; soft rows carry a `+1` (lo) / `−1` (hi)
+  slack column in DC; equality rows are two-sided with `lo == hi`.
+- `double_integrator.hpp` / `mass_spring.hpp` — the two concrete Dims used
+  by the suite (DI: nx 2, nu 1, soft ineq, terminal eq, fixed x0; MS:
+  nx 8, nu 3, no soft, fixed x0).
+
+Implemented: `tests/hpipm/suite_1i.cpp` (linked into `qp_unit`):
+- `Stg<P, NH>` per-stage accessors (H/grad/BA/b/DC/d/d_mask, nvar/zoff,
+  layout) over a `Qp`.
+- `dense_oracle`: an independent dense KKT solve of the staged QP —
+  stationarity (`H z + g + BAᵀπ − pin(π_prev)`), dynamics
+  (`BA z + b − x_{k+1}`), pin rows (`x_0 = x0`), plus one multiplier per
+  explicitly-listed active side/slack; `FullPivLU` with a KKT-residual
+  guard. The reference the solver's primal/dual is cross-checked against.
+- Case 1 (LQR cross-check, DI N = 2, 3; MS N = 2): `fill_lqr` builds a PD
+  synthetic QP (PD `I + RᵀR` Hessian on (u;x) + unit on slacks,
+  contractive 0.5·I dynamics, wide ±1e3 box/ineq/lin **and eq** sides so
+  every non-pin side is interior); solver vs oracle z_k / π_k / objective;
+  x_0 pin exact; non-pin hi sides interior.
+- Case 2 (soft ineq, DI N = 1, 2): `fill_soft` makes one ineq the only
+  active row (Jacobian `jg`, slack weight `w`, hi = 0); verifies the
+  weighted-slack KKT `λ_hi == w·s`, `s > 0`, slack-side multiplier ~ 0,
+  KKT residuals; for N = 1 cross-checks z_0 / z_1 / π_0 / λ_hi against the
+  oracle with the ineq listed active.
+- Case 4 (terminal, TermConstr N = 1, 2): `fill_terminal` with an active
+  terminal equality and wide terminal ineq/lin/box; verifies the terminal
+  equality `x_N(0) − x_N(1) = 0` and cross-checks all z_k / π_k / objective
+  against the oracle with the terminal eq active.
+- Case 5 (edge cases, DI): infeasible QP (contradictory control box
+  lo > hi) → a failure status (observed `kMinStep`, status 5),
+  non-PSD Hessian → `kQpFailure` (status 4),
+  tiny `iter_max = 1` → `kMaxIterations` (status 2, `iter == 1`).
+
+Design note (found while making cases 1/2 oracles agree with the solver):
+the dense oracle lists only the *active* sides. A row whose hi side is set
+tight (`d_hi = 0`, i.e. `v ≤ 0`) is active whenever `v > 0` at the optimum,
+so it must be either (a) kept wide in the fill (cases 1 and 2 — every
+non-target side is interior) or (b) listed as an active row in the oracle
+(case 4 — the terminal equality). The first `fill_lqr` / `fill_soft`
+versions left the synthetic equality rows tight (`d_hi = 0`) while their
+oracles listed no active row, so the solver (solving the QP with that
+equality active) disagreed with the oracle (ignoring it); the fix was to
+make the synthetic equality rows wide in those two fills.
+
+Tests: `qp_unit` now runs all 1a+1b+1c+1e+1f+1g+1h+1i checks; `suite_1i`
+reports "All suite (1i) checks passed." Full `qp_unit`, `qp_dim`,
+`double_integrator`, `mass_spring` build warning-free under
+`-Wall -Wextra -Werror` and pass (exit 0).
