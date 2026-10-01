@@ -574,8 +574,43 @@ written; §1 conventions signed off in the checkpoints.
   duals (first / path / terminal, dynamics sign flip, ineq hi, eq/lin net,
   box lower/upper); primal interpolation at α=0.5; relaxed vs full dual
   update; fixed-x_0 sanity (DI: the pinned x_0 step is 0, so x[0] is
-  preserved exactly). Both dynamic and fixed-horizon (`NH=2`)
-  instantiations.
+   preserved exactly). Both dynamic and fixed-horizon (`NH=2`)
+   instantiations.
+- Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
+  passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
+  still pass.
+
+### 2c — sqp.hpp (NlpResiduals, compute_nlp_residuals)
+
+- Re-read `ocp_nlp_common.c:3743-3846` (`ocp_nlp_res_compute`),
+  `ocp_nlp_sqp.c:351-430` (`check_termination`), and
+  `ocp_nlp_constraints_bgp.c` (fun/dmask layout).
+- Implemented `include/ocp/solvers/acados/sqp.hpp` (new file, the shared
+  SQP header that sub-steps 2c–2g will grow):
+  - `NlpResiduals` struct: `res_stat`, `res_eq`, `res_ineq`, `res_comp`.
+  - `compute_nlp_residuals<P, NH>(problem, sol, tau_min = 1e-16)`:
+    - `res_stat`: inf-norm of Lagrangian gradient per stage; x_0 skipped
+      when `fixed_initial_state`.
+    - `res_eq`: max dynamics gap `||f_k(x_k,u_k) − x_{k+1}||_inf`.
+    - `res_ineq`: max positive violation (box both sides, ineq, eq |e|,
+      linear both sides), stage + terminal.
+    - `res_comp`: `|lam · max(0,violation) + tau_min|` per active side;
+      equality and pin rows zeroed (acados idxe masking); linear rows use
+      net-multiplier sign to pick active side.
+- **Deviation (wins):** plan sketch used `lam * ineq_fun + tau_min` on the
+  raw signed value; implemented as `lam * max(0, violation) + tau_min`
+  (slack-based, matches acados). Linear rows use net-multiplier sign for
+  side selection.
+- **Deviation (inherited from 2b):** terminal state-box multipliers read
+  from `lambda_box_state[N]` (sized `2*nbx`, not `2*nbx_t`); terminal
+  rows map into the first `nbx_t` of each half.
+- Test: `tests/sqp/residuals_2c.cpp` — 3 cases on DoubleIntegrator (N=2,
+  fixed x_0): (1) hand-computed infeasible iterate
+  (`res_stat=17.7`, `res_eq=10.6`, `res_ineq=3.5`,
+  `res_comp=0.7+1e-16`); (2) same iterate with `tau_min=0`
+  (`res_comp=0.7`); (3) forward-simulated feasible iterate with zero
+  multipliers (`res_eq=0`, `res_ineq=0.6` from terminal eq,
+  `res_comp=tau_min`, `res_stat=22.0` from terminal cost gradient).
 - Build: warning-free under `-Wall -Wextra -Werror`. `./build/sqp_unit`
   passes; `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit` all
   still pass.
