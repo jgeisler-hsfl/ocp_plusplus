@@ -1,4 +1,9 @@
 # AGENTS.md
+## Core Operational Protocol (Mandatory)
+1. **Task Breakdown:** Before executing any significant chunk of work, break the task down into distinct execution blocks.
+2. **Intermediate Summaries:** After finishing a major sub-task, output a short summary note (e.g., `Checkpoint: [Sub-task] completed. Result: [Key outcome]`). This preserves state and ensures easy recovery if interrupted.
+3. **Loop Prevention:** If you repeat reasoning without progress or hit a dead end, STOP immediately. State `[STUCK]`, briefly explain the roadblock, and adjust your strategy before continuing.
+4. **When updating tasks or resuming after a long/interrupted/compacted session:** Always call `todoread` first to verify the current state of the panel.
 
 ## Project
 C++17 framework for numerical optimal control problems (OCP). Strict separation of:
