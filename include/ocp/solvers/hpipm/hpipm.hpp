@@ -34,6 +34,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <utility>
 #include <vector>
@@ -184,6 +185,10 @@ public:
     using Pb_term_t  = Eigen::Matrix<S, D::nx, D::nvar_term>;
     using Pi_t        = Eigen::Matrix<S, D::nx, 1>;
     using Ba_t        = Eigen::Matrix<S, D::nx, D::nu + D::nx>;
+    // init_point bound tables (row, varidx) pairs; compile-time sized
+    using BoundFirstArr = std::array<std::pair<int, int>, D::nbound_first>;
+    using BoundPathArr  = std::array<std::pair<int, int>, D::nbound_path>;
+    using BoundTermArr  = std::array<std::pair<int, int>, D::nbound_term>;
     // Riccati state Hessian P_k (x-space Schur complement of the augmented
     // stage Hessian) and the costate linear term q_k (worklog 1e).
     using P_first_t   = Eigen::Matrix<S, D::nx, D::nx>;
@@ -519,24 +524,25 @@ public:
         // first stage (k = 0): pin rows (g_pin) + state/control box rows
         {
             const auto& lay = D::lay_first;
-            std::vector<std::pair<int, int>> bound;
+            BoundFirstArr bound;
+            int bi = 0;
             if (P::fixed_initial_state)
             {
                 for (int j = 0; j < D::nx; ++j)
                 {
-                    bound.emplace_back(j, D::idx_x0[j]);
+                    bound[bi++] = {j, D::idx_x0[j]};
                 }
             }
             const int nbxf = D::nbx_first;
             for (int j = 0; j < nbxf; ++j)
             {
-                bound.emplace_back(lay.row_off(detail::g_bx) + j,
-                                   D::idxb_first[j]);
+                bound[bi++] = {lay.row_off(detail::g_bx) + j,
+                               D::idxb_first[j]};
             }
             for (int j = 0; j < D::nbu; ++j)
             {
-                bound.emplace_back(lay.row_off(detail::g_bu) + j,
-                                   D::idxb_first[nbxf + j]);
+                bound[bi++] = {lay.row_off(detail::g_bu) + j,
+                               D::idxb_first[nbxf + j]};
             }
             init_stage(out.ux_first, out.lam_first, out.t_first, in.first.d,
                        in.first.DC, lay, D::idxs_lo_first, D::idxs_hi_first,
@@ -546,16 +552,15 @@ public:
         // path stages (k = 1..N-1)
         {
             const auto& lay = D::lay_path;
-            std::vector<std::pair<int, int>> bound;
+            BoundPathArr bound;
             for (int j = 0; j < D::nbx; ++j)
             {
-                bound.emplace_back(lay.row_off(detail::g_bx) + j,
-                                   D::idxb_path[j]);
+                bound[j] = {lay.row_off(detail::g_bx) + j, D::idxb_path[j]};
             }
             for (int j = 0; j < D::nbu; ++j)
             {
-                bound.emplace_back(lay.row_off(detail::g_bu) + j,
-                                   D::idxb_path[D::nbx + j]);
+                bound[D::nbx + j] = {lay.row_off(detail::g_bu) + j,
+                                     D::idxb_path[D::nbx + j]};
             }
             for (int k = 1; k < N; ++k)
             {
@@ -570,11 +575,10 @@ public:
         // terminal stage (k = N): state box rows only
         {
             const auto& lay = D::lay_term;
-            std::vector<std::pair<int, int>> bound;
+            BoundTermArr bound;
             for (int j = 0; j < D::nbx_t; ++j)
             {
-                bound.emplace_back(lay.row_off(detail::g_bx) + j,
-                                   D::idxb_term[j]);
+                bound[j] = {lay.row_off(detail::g_bx) + j, D::idxb_term[j]};
             }
             init_stage(out.ux_term, out.lam_term, out.t_term, in.term.d,
                        in.term.DC, lay, D::idxs_lo_term, D::idxs_hi_term,
@@ -866,15 +870,15 @@ private:
     /// @param dc      constraint Jacobian over z (natural orientation)
     /// @param lay     side/row layout of this stage type
     /// @param idxs_lo / idxs_hi  per-row slack column in z (-1 if not soft)
-    /// @param bound   (row, varidx) pairs of the box-type rows
+    /// @param bound   (row, varidx) pairs of the box-type rows (compile-time
+    ///                 sized std::array; alloc-free)
     /// @param nux     width of the (u;x) part of z
     /// @param nslack  number of slack variables
     template <class Z, class Lam, class T, class DV, class DC, class IdxLo,
-              class IdxHi>
+              class IdxHi, class BoundArr>
     void init_stage(Z& z, Lam& lam, T& t, const DV& d, const DC& dc,
                     detail::QpLayout lay, const IdxLo& idxs_lo,
-                    const IdxHi& idxs_hi,
-                    const std::vector<std::pair<int, int>>& bound, int nux,
+                    const IdxHi& idxs_hi, const BoundArr& bound, int nux,
                     int nslack, S thr0, S mu0) const
     {
         const int nrow = static_cast<int>(dc.rows());

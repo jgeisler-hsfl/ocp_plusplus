@@ -399,6 +399,13 @@ struct QpDim
     static constexpr std::array<int, P::fixed_initial_state ? nx : 0>
         idx_x0 = make_idx_x0();
 
+    // Box-type bound-row counts (init_point's (row, varidx) pairs):
+    // pin rows (first, fixed x_0 only) + state box + control box.
+    static constexpr int nbound_first = (P::fixed_initial_state ? nx : 0)
+                                        + nbx_first + nbu;
+    static constexpr int nbound_path = nbx + nbu;
+    static constexpr int nbound_term = nbx_t;
+
     // ---------------------------------------------------------------
     // Soft-slack column mapping (HPIPM `idxs` / `idxs_rev` analogue)
     // ---------------------------------------------------------------
