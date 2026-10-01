@@ -20,14 +20,17 @@ checkpoints. **Protocol for every sub-step:**
   (kSolved, kMaxIterations, kInfeasible, kQpFailure, kMinStep, kUnbounded,
   kNanDetected, kAborted, kTimeout) + HVP contract, `tests/qp_dim`.
 - Phase 1: sub-steps 1a (scaffolding), 1b (residuals), 1c (init point),
-  1e (KKT solve), 1f (alpha + update) done — `include/ocp/solvers/hpipm/hpipm.hpp`
+  1e (KKT solve), 1f (alpha + update), 1g (centering), 1h (main loop)
+  done — `include/ocp/solvers/hpipm/hpipm.hpp`
   (`HpipmOptions`, `HpipmIteration`, `HpipmStatistics`,
   `HpipmQpSolver<P, NH>` shell + `compute_residuals` + `init_point` +
   `fact_solve_kkt` / `solve_kkt` / `solve_kkt_unconstr` +
-  `mask_step` / `compute_alpha` / `update_vars`). Tests live in
+  `mask_step` / `compute_alpha` / `update_vars` +
+  `compute_mu_aff` / `apply_centering` + `solve` (IPM main loop +
+  unconstrained fast path)). Tests live in
   `tests/hpipm/` (`qp_dim.cpp`, `qp_unit.cpp`, `residuals_1b.cpp`,
-  `init_1c.cpp`, `kkt_1e.cpp`, `alpha_1f.cpp`). Sub-steps 1g..1i pending
-  (1d merged into 1e per plan).
+  `init_1c.cpp`, `kkt_1e.cpp`, `alpha_1f.cpp`, `centering_1g.cpp`,
+  `solve_1h.cpp`). Sub-step 1i (test suite) pending.
 
 ## 1. Our model (re-verified from `qp.hpp`)
 
@@ -630,3 +633,68 @@ Deviations / corrections to this file:
   corrector vs. pure-centering switch (the `cond_pred_corr` guard on a
   worsened `mu_aff`) is an OCP-layer decision and belongs to the 1h main
   loop — `apply_centering` just exposes both targets behind `correction`.
+
+### 1h — main IPM loop (solve) (2026-10-01)
+
+Sources re-read:
+- `x_ocp_qp_ipm.c:2060-2228` — `OCP_QP_IPM_DELTA_STEP`: predictor step
+  `backup_res_m -> compute_tau_min -> FACT_SOLVE_KKT_STEP -> mask step ->
+  COMPUTE_ALPHA -> COMPUTE_MU_AFF`, then corrector (or pure centering) target
+  into `res` + `OCP_QP_SOLVE_KKT_STEP` reusing the stored factors, then a
+  second `COMPUTE_ALPHA` + `UPDATE_VAR`.
+- `x_ocp_qp_ipm.c:3085-3209` — `OCP_QP_IPM_SOLVE` main loop: pre-iteration
+  residuals into stat row 0; exit test `alpha > alpha_min & res_g <= tol &
+  res_b <= tol & res_d <= tol & res_m_tau <= res_m_max & dual_gap <=
+  dual_gap_max`; status mapping `:3182-3209`. Unconstrained fast path
+  (`:2908-2950`): a single KKT solve, iter = 0.
+
+Implemented (`hpipm.hpp`):
+- `solve(const Qp<P, NH>&, QpSol<P, NH>&)` (`:350`): `ws_.resize(N)` +
+  `stat_.init`; fast path when no side is active (`has_active_side`); else
+  `init_point` + `mask_abs_lam` + pre-iteration `compute_residuals` into
+  stat row 0, then the IPM loop. Per iteration: exit test → BACKUP_RES_M
+  (`ws_.res_bkp`) + `shift_res_m(tau_min)` → `fact_solve_kkt` (predictor) →
+  `mask_step` → `compute_alpha` (stat cols 0,1) → if `pred_corr`:
+  `compute_mu_aff` (col 2) + corrector `apply_centering(correction=true)` +
+  `solve_kkt` (factor reuse) + `mask_step` + `compute_alpha` (cols 4,5),
+  and a `cond_pred_corr` pure-centering fallback when the corrector's
+  `mu_aff` more than doubles the predictor's; then `update_vars` (1f),
+  fresh `compute_residuals`, stat row kk+1 (cols 3, 6-12 + v1-zero cols
+  13-20), `stat_.iter = kk + 1`. Status mapping: `iter_max` →
+  kMaxIterations, `alpha <= alpha_min` → kMinStep, NaN `res_mu` →
+  kNanDetected, else kSolved.
+- Helpers: `has_active_side` (any `d_mask > 0.5`), `res_m_tau`
+  (`||res_m − tau_min∘d_mask||_inf`), `mask_abs_lam` (post-init `lam *=
+  d_mask`), `shift_res_m`, `fill_stat_residuals` (cols 7-12), `stat_row`
+  (row kk+1, null when `kk+1 >= stat_max`), `solve_unconstr` (fast path:
+  zero iterate, `solve_kkt_unconstr`, stat row 0, iter = 0).
+- `Workspace` gained a `QpRes<P, NH> res_bkp` member (BACKUP_RES_M).
+
+Tests: `tests/hpipm/solve_1h.cpp` (linked into `qp_unit`):
+- `fill_qp` builds a feasibility-friendly synthetic QP per case (PD Hessian
+  `I + RᵀR` on (u;x) + unit on slacks, small random DC, origin-interior
+  box/linear bounds lo = −3 / hi = 3, eq at v = 0, ineq hi = 1, m = 0, all
+  sides active, contractive dynamics 0.5·I on x + small u-part).
+- Convergence cases (kSolved + every KKT residual within the option
+  tolerances, incl. the tau-shifted complementarity; stat rows populated):
+  DI N = 1, 2; MS N = 1, 2; MS NH = 2 (N = 2).
+- Masked-sides case (every 5th side `d_mask = 0`, DI/MS N = 2): exercises
+  `mask_step`/`mask_abs_lam`; checks kSolved, residuals within tolerance,
+  and absent sides stay interior (`t >= t_min`, `lam >= 0`).
+- Unconstrained fast path (all `d_mask = 0`, DI N = 1; MS N = 2 + MS NH = 2):
+  iter = 0, kSolved, res_g/res_b at machine precision.
+
+Tests: `qp_unit` (all 1a+1b+1c+1e+1f+1g+1h checks), `qp_dim`,
+`double_integrator`, `mass_spring` build warning-free and pass.
+
+Deviations / corrections to this file:
+- §4 1h "fast path: no active inequality sides" — the actual HPIPM
+  fast-path condition is `nc == 0` (no constraint rows at all), reached in
+  our solver by `has_active_side` (no `d_mask > 0.5`). Since an all-zero
+  `d_mask` means no active side, the two coincide; `solve_unconstr` is
+  taken whenever every side is masked, matching HPIPM's unconstr branch.
+- The 1a shell test previously asserted `solve()` returns `kAborted` (the
+  stub); with `solve()` implemented that call would read uninitialized
+  Eigen data on the empty QP, so the shell test now checks only the
+  scaffolding accessors / stat layout and defers `solve()` coverage to the
+  1h test.

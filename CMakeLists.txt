@@ -42,7 +42,8 @@ target_compile_options(qp_dim PRIVATE -Wall -Wextra -Werror)
 
 add_executable(qp_unit tests/hpipm/qp_unit.cpp tests/hpipm/residuals_1b.cpp
                     tests/hpipm/init_1c.cpp tests/hpipm/kkt_1e.cpp
-                    tests/hpipm/alpha_1f.cpp tests/hpipm/centering_1g.cpp)
+                    tests/hpipm/alpha_1f.cpp tests/hpipm/centering_1g.cpp
+                    tests/hpipm/solve_1h.cpp)
 target_include_directories(qp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_unit PRIVATE -Wall -Wextra -Werror)
 

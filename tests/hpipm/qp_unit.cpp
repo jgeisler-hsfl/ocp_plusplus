@@ -95,12 +95,9 @@ void check_solver_shell(const char* name)
     it.npd_reg_hess = 21;
     check(it.npd_reg_hess == 21, p + " HpipmIteration has 21 writable fields");
 
-    // solve() shell: not implemented until worklog 1h -> kAborted
-    const int n = (NH == Eigen::Dynamic) ? 3 : NH;
-    ocp::Qp<P, NH> qp(n);
-    ocp::QpSol<P, NH> sol(n);
-    check(solver.solve(qp, sol) == ocp::Status::kAborted,
-          p + " solve() shell returns kAborted");
+    // solve() is implemented in worklog 1h and covered end-to-end by the 1h
+    // test (run_solve_1h_tests); the 1a shell only checks the scaffolding
+    // accessors / stat layout above.
 
     std::printf("%s: nvar(first/path/term)=%d/%d/%d  nside=%d/%d/%d  OK\n",
                 name, D::nvar_first, D::nvar_path, D::nvar_term,
@@ -114,6 +111,7 @@ int run_init_1c_tests();
 int run_kkt_1e_tests();
 int run_alpha_1f_tests();
 int run_centering_1g_tests();
+int run_solve_1h_tests();
 
 int main()
 {
@@ -126,6 +124,7 @@ int main()
     failures += run_kkt_1e_tests();
     failures += run_alpha_1f_tests();
     failures += run_centering_1g_tests();
+    failures += run_solve_1h_tests();
 
     if (failures == 0)
     {

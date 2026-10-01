@@ -243,6 +243,10 @@ public:
 
         // KKT residuals (HPIPM d_ocp_qp_res analogue)
         QpRes<P, NH> res;
+        // unshifted complementarity residual backup (HPIPM res_m_bkp,
+        // BACKUP_RES_M): the centering / pure-centering targets are built
+        // from this pre-tau-shift snapshot
+        QpRes<P, NH> res_bkp;
 
         // per-side gamma / Gamma (HPIPM COMPUTE_GAMMA, x_core_qp_ipm_aux.c)
         c_first_t gamma_first{};
@@ -310,6 +314,7 @@ public:
                 dt_path.resize(np);
                 dpi.resize(n);
                 res.resize(n);
+                res_bkp.resize(n);
             }
             else
             {
@@ -324,25 +329,176 @@ public:
         stat_.init(opts_.stat_max);
     }
 
-    /// Solve the staged QP (relative-formulation IPM).
+    /// Solve the staged QP (relative-formulation IPM, worklog 1h).
     ///
     /// `in`: the QP data (HPIPM `qp`); `out`: the primal STEP over the
     /// stage-type variable vectors (u; x; s) / (x; s) plus the ABSOLUTE
     /// multipliers pi, lam, t (the QpSol mixed convention).
+    ///
+    /// Fast path: when no side is active (all d_mask = 0) the QP is
+    /// unconstrained, so a single `solve_kkt_unconstr` yields the solution
+    /// in one shot (HPIPM `OCP_QP_IPM_SOLVE` unconstr branch; iter = 0).
+    /// Otherwise the predictor-corrector IPM loop runs:
+    ///   init_point -> [residuals -> (exit test) -> delta step (tau-shift,
+    ///   fact_solve_kkt, alpha, mu_aff, centering, solve_kkt, update_vars)]*.
     ///
     /// Exit (worklog sec. 1, `x_ocp_qp_ipm.c:3119`): converged when
     /// alpha > alpha_min and res_g / res_b / res_d / (tau-shifted) res_m
     /// are within their tolerances and dual_gap <= dual_gap_max.
     /// @return kSolved, or kMaxIterations / kMinStep / kQpFailure /
     ///         kNanDetected on failure.
-    ///
-    /// @note shell (worklog 1a): returns kAborted until the IPM loop is
-    ///         implemented (worklog 1h).
     Status solve(const Qp<P, NH>& in, QpSol<P, NH>& out)
     {
-        ws_.resize(in.N);
-        (void)out;
-        return Status::kAborted;
+        const int N = in.N;
+        ws_.resize(N);
+        stat_.init(opts_.stat_max);
+
+        if (!has_active_side(in))
+        {
+            return solve_unconstr(in, out);
+        }
+
+        // interior-point initialization (worklog 1c) + mask absolute lam
+        init_point(in, out);
+        mask_abs_lam(in, out);
+        ws_.alpha = S(1);
+
+        // pre-iteration residuals (stat row 0; x_ocp_qp_ipm.c:3085-3107)
+        compute_residuals(in, out, ws_.res);
+        S rm_tau = res_m_tau(in, ws_.res);
+        fill_stat_residuals(stat_.row(0), ws_.res);
+
+        QpSol<P, NH> step(N);
+        for (int kk = 0; kk < opts_.iter_max; ++kk)
+        {
+            // exit test (x_ocp_qp_ipm.c:3119-3128)
+            if (ws_.alpha <= opts_.alpha_min)
+            {
+                break;
+            }
+            const bool converged =
+                (ws_.res.res_g_max <= opts_.res_g_max &&
+                 ws_.res.res_b_max <= opts_.res_b_max &&
+                 ws_.res.res_d_max <= opts_.res_d_max &&
+                 rm_tau <= opts_.res_m_max &&
+                 ws_.res.dual_gap <= opts_.dual_gap_max);
+            if (converged)
+            {
+                break;
+            }
+
+            // --- delta step (OCP_QP_IPM_DELTA_STEP) ---
+            // 1) BACKUP_RES_M + COMPUTE_TAU_MIN (predictor shift)
+            ws_.res_bkp = ws_.res;
+            shift_res_m(in, ws_.res, opts_.tau_min);
+
+            // 2) predictor: factorize + solve (worklog 1e)
+            const Status fs = fact_solve_kkt(in, out, ws_.res, step);
+            if (fs != Status::kSolved)
+            {
+                stat_.iter = kk;
+                stat_.status = Status::kQpFailure;
+                return Status::kQpFailure;
+            }
+            mask_step(in, step);
+
+            // 3) predictor step length (stat 0, 1)
+            const S alpha_aff = compute_alpha(in, out, step);
+            HpipmIteration* row = stat_row(kk);
+            if (row)
+            {
+                row->alpha_prim_aff = alpha_aff;
+                row->alpha_dual_aff = alpha_aff;
+            }
+
+            // 4) Mehrotra predictor-corrector (worklog 1g)
+            if (opts_.pred_corr)
+            {
+                const S mu_aff_pred = compute_mu_aff(in, out, step);
+                if (row)
+                {
+                    row->mu_aff = mu_aff_pred;
+                }
+                // corrector: centering target, reuse the stored factors
+                apply_centering(in, ws_.res_bkp, step, /*correction=*/true,
+                                ws_.res);
+                solve_kkt(in, out, ws_.res, step);
+                mask_step(in, step);
+                const S alpha_corr = compute_alpha(in, out, step);
+                if (row)
+                {
+                    row->sigma = ws_.sigma;
+                    row->alpha_prim = alpha_corr;
+                    row->alpha_dual = alpha_corr;
+                }
+                // conditional pure centering (x_ocp_qp_ipm.c:2564-2605)
+                if (opts_.cond_pred_corr)
+                {
+                    const S mu_aff_corr = compute_mu_aff(in, out, step);
+                    if (mu_aff_corr > S(2) * mu_aff_pred)
+                    {
+                        apply_centering(in, ws_.res_bkp, step,
+                                        /*correction=*/false, ws_.res);
+                        solve_kkt(in, out, ws_.res, step);
+                        mask_step(in, step);
+                        const S alpha_pc = compute_alpha(in, out, step);
+                        if (row)
+                        {
+                            row->alpha_prim = alpha_pc;
+                            row->alpha_dual = alpha_pc;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (row)
+                {
+                    row->alpha_prim = ws_.alpha;
+                    row->alpha_dual = ws_.alpha;
+                }
+            }
+
+            // 5) update the iterate (worklog 1f)
+            update_vars(out, step);
+
+            // 6) fresh residuals + stat row kk+1
+            compute_residuals(in, out, ws_.res);
+            rm_tau = res_m_tau(in, ws_.res);
+            if (row)
+            {
+                row->mu = ws_.res.res_mu;
+                fill_stat_residuals(*row, ws_.res);
+                row->lq_fact = 0;
+                row->itref_pred = 0;
+                row->itref_corr = 0;
+                row->lin_res_stat = 0.0;
+                row->lin_res_eq = 0.0;
+                row->lin_res_ineq = 0.0;
+                row->lin_res_comp = 0.0;
+                row->npd_reg_hess = 0;
+            }
+            stat_.iter = kk + 1;
+        }
+
+        // status mapping (x_ocp_qp_ipm.c:3182-3209)
+        if (stat_.iter == opts_.iter_max)
+        {
+            stat_.status = Status::kMaxIterations;
+            return Status::kMaxIterations;
+        }
+        if (ws_.alpha <= opts_.alpha_min)
+        {
+            stat_.status = Status::kMinStep;
+            return Status::kMinStep;
+        }
+        if (std::isnan(ws_.res.res_mu))
+        {
+            stat_.status = Status::kNanDetected;
+            return Status::kNanDetected;
+        }
+        stat_.status = Status::kSolved;
+        return Status::kSolved;
     }
 
     /// KKT residuals of a primal-dual iterate (HPIPM `OCP_QP_RES_COMPUTE`,
@@ -996,6 +1152,162 @@ private:
                 }
             }
         }
+    }
+
+    /// True when at least one side has d_mask > 0.5 (any active
+    /// constraint). Drives the fast-path branch in solve().
+    bool has_active_side(const Qp<P, NH>& in) const
+    {
+        auto any = [](const auto& dm)
+        {
+            for (int i = 0; i < static_cast<int>(dm.size()); ++i)
+            {
+                if (dm(i) > 0.5)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (any(in.first.d_mask))
+        {
+            return true;
+        }
+        for (int k = 1; k < in.N; ++k)
+        {
+            if (any(in.path[k - 1].d_mask))
+            {
+                return true;
+            }
+        }
+        return any(in.term.d_mask);
+    }
+
+    /// ||res_m − tau_min ∘ d_mask||_∞ across all stages (HPIPM's
+    /// res_m_tau exit-test quantity, x_ocp_qp_ipm.c:3114-3116).
+    S res_m_tau(const Qp<P, NH>& in, const QpRes<P, NH>& res) const
+    {
+        S m = 0;
+        auto acc = [&](const auto& rm, const auto& dm)
+        {
+            for (int i = 0; i < static_cast<int>(rm.size()); ++i)
+            {
+                m = std::max(m, std::fabs(rm(i) - opts_.tau_min * dm(i)));
+            }
+        };
+        acc(res.res_m_first, in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            acc(res.res_m_path[k - 1], in.path[k - 1].d_mask);
+        }
+        acc(res.res_m_term, in.term.d_mask);
+        return m;
+    }
+
+    /// Mask the absolute multipliers by d_mask (HPIPM masks qp_sol->lam
+    /// after init; t is kept for all sides to stay interior).
+    void mask_abs_lam(const Qp<P, NH>& in, QpSol<P, NH>& sol) const
+    {
+        sol.lam_first = sol.lam_first.cwiseProduct(in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            sol.lam_path[k - 1] =
+                sol.lam_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
+        }
+        sol.lam_term = sol.lam_term.cwiseProduct(in.term.d_mask);
+    }
+
+    /// res_m -= tau * d_mask on every stage (COMPUTE_TAU_MIN_QP,
+    /// x_core_qp_ipm_aux.c:756-778).
+    void shift_res_m(const Qp<P, NH>& in, QpRes<P, NH>& res, S tau) const
+    {
+        res.res_m_first.array() -= tau * in.first.d_mask.array();
+        for (int k = 1; k < in.N; ++k)
+        {
+            res.res_m_path[k - 1].array() -=
+                tau * in.path[k - 1].d_mask.array();
+        }
+        res.res_m_term.array() -= tau * in.term.d_mask.array();
+    }
+
+    /// Fill the residual / objective fields of a stat row (HPIPM cols 7-12).
+    static void fill_stat_residuals(HpipmIteration& row,
+                                    const QpRes<P, NH>& res)
+    {
+        row.res_stat = res.res_g_max;
+        row.res_eq = res.res_b_max;
+        row.res_ineq = res.res_d_max;
+        row.res_comp = res.res_m_max;
+        row.dual_gap = res.dual_gap;
+        row.obj = res.obj;
+    }
+
+    /// Pointer to the stat row for iteration kk (row index kk+1), or null
+    /// when the row is beyond the stat_max storage.
+    HpipmIteration* stat_row(int kk)
+    {
+        return (kk + 1 < stat_.stat_max) ? &stat_.row(kk + 1) : nullptr;
+    }
+
+    /// Unconstrained fast path (HPIPM OCP_QP_IPM_SOLVE unconstr branch,
+    /// x_ocp_qp_ipm.c:2908-2950). Zero the iterate, solve the KKT system
+    /// once, return iter = 0.
+    Status solve_unconstr(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    {
+        const int N = in.N;
+        out.ux_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.ux_path[k - 1].setZero();
+        }
+        out.ux_term.setZero();
+        for (int k = 0; k < N; ++k)
+        {
+            out.pi[k].setZero();
+        }
+        out.lam_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.lam_path[k - 1].setZero();
+        }
+        out.lam_term.setZero();
+        out.t_first.setZero();
+        for (int k = 1; k < N; ++k)
+        {
+            out.t_path[k - 1].setZero();
+        }
+        out.t_term.setZero();
+
+        compute_residuals(in, out, ws_.res);
+        QpSol<P, NH> step(N);
+        const Status st = solve_kkt_unconstr(in, ws_.res, step);
+        if (st != Status::kSolved)
+        {
+            stat_.iter = 0;
+            stat_.status = Status::kQpFailure;
+            return Status::kQpFailure;
+        }
+        out.ux_first = step.ux_first;
+        for (int k = 1; k < N; ++k)
+        {
+            out.ux_path[k - 1] = step.ux_path[k - 1];
+        }
+        out.ux_term = step.ux_term;
+        for (int k = 0; k < N; ++k)
+        {
+            out.pi[k] = step.pi[k];
+        }
+
+        stat_.iter = 0;
+        compute_residuals(in, out, ws_.res);
+        fill_stat_residuals(stat_.row(0), ws_.res);
+        if (!out.ux_first.allFinite() || !out.ux_term.allFinite())
+        {
+            stat_.status = Status::kNanDetected;
+            return Status::kNanDetected;
+        }
+        stat_.status = Status::kSolved;
+        return Status::kSolved;
     }
 
     /// One stage of compute_residuals (x_ocp_qp_res.c:424-523).
