@@ -1,5 +1,5 @@
-# acados reference
-acados
+# acados reference (root symlink)
+/acados
 
 # Build artifacts
 build/
