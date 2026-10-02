@@ -29,6 +29,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <type_traits>
 #include <vector>
@@ -841,6 +842,9 @@ public:
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
+    /// Number of second-order-correction re-solves performed (3j).
+    int soc_count() const { return soc_count_; }
+
     /// Run the SQP iteration on `sol` (warm start in, solution out).
     ///
     /// Mirrors acados ocp_nlp_sqp.c:538-800 (sec. 2g): each iteration
@@ -934,6 +938,10 @@ public:
         timeout_estimated_per_iter_ = 0.0;
         lm_mu_ = 0.0;
         lm_mu_bar_ = 0.0;
+        soc_count_ = 0;
+
+        // 3j: hand the globalization options to the active globalizer.
+        glob_.opts = opts_.glob;
 
         resize(N);
         if (slack_N_ != N)
@@ -1095,9 +1103,15 @@ public:
             step_norm_ = primal_step_norm_inf(qp_out_);
 
             // Advances sol in place on kSolved / kMinStep (2d); leaves it
-            // untouched on kNanDetected.
+            // untouched on kNanDetected. 3j: the globalizer may re-solve the
+            // QP (second-order correction) through this callable; it runs in
+            // original space and rewrites qp_out_ in place (alpha = 1 step
+            // is what it sees).
             const Status gstatus = glob_.find_acceptable_iterate(
-                problem, sol, qp_in_, qp_out_, slacks_, trial_, alpha_);
+                problem, sol, qp_in_, qp_out_, slacks_, trial_, alpha_,
+                [this, &problem, &sol]() -> Status {
+                    return perform_second_order_correction(problem, sol);
+                });
             if (gstatus == Status::kSolved || gstatus == Status::kMinStep)
             {
                 update_slacks(qp_out_, alpha_);
@@ -1448,6 +1462,219 @@ private:
             m += 0.5 * w * s * s;
         }
         return m;
+    }
+
+    // ---------------------------------------------------------------
+    //  3j: second-order-correction (SOC) pre-pass
+    // ---------------------------------------------------------------
+
+    /// Second-order-correction re-solve (acados
+    /// ocp_nlp_common.c:4290-4442). Rewrites the QP RHS at the full step
+    /// (dynamics `b`, general-row `d`), re-solves the regularized QP in
+    /// place, and corrects the duals. `sol` is the current iterate (the
+    /// step has NOT been applied yet); `qp_out_` holds the full step
+    /// (alpha = 1). Returns kQpFailure if the re-solve fails.
+    Status perform_second_order_correction(const P& problem,
+                                           const Solution<P, NH>& sol)
+    {
+        soc_rewrite_rhs(problem, sol);
+        reg_.regularize(qp_in_);
+        const Status st = qp_.solve(qp_in_, qp_out_);
+        if (st != Status::kSolved && st != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+        reg_.correct_dual_sol(qp_in_, qp_out_);
+        ++soc_count_;
+        return Status::kSolved;
+    }
+
+    /// Rewrite the QP right-hand sides at the full step. The corrected QP
+    /// keeps the current-point Jacobians (BA, DC) and Hessian; only the
+    /// right-hand sides are re-evaluated at the trial iterate (x + dx,
+    /// u + du) (Nocedal & Wright 18.51, the acados second-order
+    /// correction):
+    ///
+    ///   b_k  <- f_k(x_k + dx_k, u_k + du_k) - x_{k+1} - dx_{k+1}
+    ///   d_lo <- lo - c_t,  d_hi <- c_t - hi   (general rows)
+    ///
+    /// Box / pin rows are linear and need no second-order correction.
+    void soc_rewrite_rhs(const P& problem, const Solution<P, NH>& sol)
+    {
+        const int N = qp_in_.N;
+
+        // dynamics: b_k <- f(x+dx, u+du) - x_{k+1} - dx_{k+1}
+        for (int k = 0; k < N; ++k)
+        {
+            Eigen::Matrix<S, D::nx, 1> dxk;
+            Eigen::Matrix<S, D::nu, 1> duk;
+            if (k == 0)
+            {
+                dxk = qp_out_.ux_first.segment(D::nu, D::nx);
+                duk = qp_out_.ux_first.head(D::nu);
+            }
+            else
+            {
+                dxk = qp_out_.ux_path[k - 1].segment(D::nu, D::nx);
+                duk = qp_out_.ux_path[k - 1].head(D::nu);
+            }
+
+            // state step at stage k + 1 (x part): path vs terminal extent
+            Eigen::Matrix<S, D::nx, 1> dx_next;
+            if (k + 1 == N)
+            {
+                dx_next = qp_out_.ux_term.head(D::nx);
+            }
+            else
+            {
+                dx_next = qp_out_.ux_path[k].segment(D::nu, D::nx);
+            }
+
+            const auto xk = sol.x[k] + dxk;
+            const auto uk = sol.u[k] + duk;
+            const auto ftrial = problem.dynamics_next_state(k, xk, uk);
+            const auto gap = ftrial - sol.x[k + 1] - dx_next;
+
+            if (k == 0)
+            {
+                qp_in_.first.b = gap;
+            }
+            else
+            {
+                qp_in_.path[k - 1].b = gap;
+            }
+        }
+
+        // general rows (ineq / eq / lin): first, path, terminal
+        soc_rewrite_d_stage(problem, sol, qp_in_.first, D::lay_first,
+                            D::idxs_lo_first, D::idxs_hi_first,
+                            qp_out_.ux_first, 0);
+        for (int k = 1; k < N; ++k)
+        {
+            soc_rewrite_d_stage(problem, sol, qp_in_.path[k - 1],
+                                D::lay_path, D::idxs_lo_path,
+                                D::idxs_hi_path, qp_out_.ux_path[k - 1], k);
+        }
+        soc_rewrite_d_term(problem, sol, qp_in_.term, D::lay_term,
+                           D::idxs_lo_term, D::idxs_hi_term,
+                           qp_out_.ux_term);
+    }
+
+    /// SOC d-rewrite for one path / first stage (ineq / eq / lin rows).
+    ///
+    /// The assembly convention is d_lo = lo - w_cur, d_hi = w_cur - hi
+    /// (offset from the row value at the current iterate). The HPIPM row
+    /// value v already carries DC_ux . dz and the slack columns, so the
+    /// second-order correction only re-bases the offset to the nonlinear
+    /// row value at the trial iterate:
+    ///
+    ///   d_lo <- lo - c_t
+    ///   d_hi <- c_t - hi
+    ///
+    /// Box / pin rows are skipped (linear, no second-order term).
+    template <class St, class IdxLo, class IdxHi, class Step>
+    void soc_rewrite_d_stage(const P& problem, const Solution<P, NH>& sol,
+                              St& st, const detail::QpLayout& lay,
+                              const IdxLo& /*idxl*/, const IdxHi& /*idxh*/,
+                              const Step& step, int k)
+    {
+        const int R = lay.nrow();
+
+        const auto x_trial = sol.x[k] + step.segment(D::nu, D::nx);
+        const auto u_trial = sol.u[k] + step.head(D::nu);
+
+        typename P::ineq_t gv{};
+        typename P::eq_t ev{};
+        typename P::lin_t lv{};
+        typename P::stage_linear_t lin_spec{};
+        if constexpr (D::ng > 0)
+            gv = problem.stage_inequality_constr(k, x_trial, u_trial);
+        if constexpr (D::ne > 0)
+            ev = problem.stage_equality_constr(k, x_trial, u_trial);
+        if constexpr (D::nl > 0)
+        {
+            lin_spec = problem.stage_linear_constr(k);
+            lv = lin_spec.A * x_trial + lin_spec.B * u_trial;
+        }
+
+        for (int r = 0; r < R; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g != detail::g_ineq && g != detail::g_eq
+                && g != detail::g_lin)
+                continue;
+            const int j = r - lay.row_off(g);
+
+            double lo = 0.0, hi = 0.0, c_trial = 0.0;
+            if (g == detail::g_ineq)
+                c_trial = static_cast<double>(gv(j));
+            else if (g == detail::g_eq)
+                c_trial = static_cast<double>(ev(j));
+            else  // g_lin
+            {
+                lo = static_cast<double>(lin_spec.bounds.lo(j));
+                hi = static_cast<double>(lin_spec.bounds.hi(j));
+                c_trial = static_cast<double>(lv(j));
+            }
+
+            st.d(lay.side_hi(r)) = static_cast<S>(c_trial - hi);
+            const int slo = lay.side_lo(r);
+            if (slo >= 0)
+                st.d(slo) = static_cast<S>(lo - c_trial);
+        }
+    }
+
+    /// SOC d-rewrite for the terminal stage (ineq / eq / lin rows).
+    /// Mirrors soc_rewrite_d_stage with the terminal layout (x-only).
+    template <class St, class IdxLo, class IdxHi, class Step>
+    void soc_rewrite_d_term(const P& problem, const Solution<P, NH>& sol,
+                            St& st, const detail::QpLayout& lay,
+                            const IdxLo& /*idxl*/, const IdxHi& /*idxh*/,
+                            const Step& step)
+    {
+        const int R = lay.nrow();
+
+        const auto x_trial = sol.x[sol.N] + step.head(D::nx);
+
+        typename P::ineq_term_t gv{};
+        typename P::eq_term_t ev{};
+        typename P::lin_term_t lv{};
+        typename P::term_linear_t lin_spec{};
+        if constexpr (D::ng_t > 0)
+            gv = problem.terminal_inequality_constr(x_trial);
+        if constexpr (D::ne_t > 0)
+            ev = problem.terminal_equality_constr(x_trial);
+        if constexpr (D::nl_t > 0)
+        {
+            lin_spec = problem.terminal_linear_constr();
+            lv = lin_spec.A * x_trial;
+        }
+
+        for (int r = 0; r < R; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g != detail::g_ineq && g != detail::g_eq
+                && g != detail::g_lin)
+                continue;
+            const int j = r - lay.row_off(g);
+
+            double lo = 0.0, hi = 0.0, c_trial = 0.0;
+            if (g == detail::g_ineq)
+                c_trial = static_cast<double>(gv(j));
+            else if (g == detail::g_eq)
+                c_trial = static_cast<double>(ev(j));
+            else  // g_lin
+            {
+                lo = static_cast<double>(lin_spec.bounds.lo(j));
+                hi = static_cast<double>(lin_spec.bounds.hi(j));
+                c_trial = static_cast<double>(lv(j));
+            }
+
+            st.d(lay.side_hi(r)) = static_cast<S>(c_trial - hi);
+            const int slo = lay.side_lo(r);
+            if (slo >= 0)
+                st.d(slo) = static_cast<S>(lo - c_trial);
+        }
     }
 
     // ---------------------------------------------------------------
@@ -2817,6 +3044,7 @@ private:
     double timeout_estimated_per_iter_ = 0.0;  // 3f: per-iter time estimate
     double lm_mu_ = 0.0;     // 3g: adaptive LM mu
     double lm_mu_bar_ = 0.0; // 3g: adaptive LM mu_bar (previous mu)
+    int soc_count_ = 0;      // 3j: number of SOC re-solves performed
 };
 
 }  // namespace ocp

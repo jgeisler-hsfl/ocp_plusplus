@@ -915,7 +915,48 @@ Phase 3 marked done and any §12 open items updated.
   - Accept-type (`funnel_iter_type`) is logged in the statistics.
   - Funnel solution matches the merit-backtracking reference (cost to `1e-6`,
     `x`/`u` to `1e-6`).
-- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+ - Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
   `qp_unit`, `sqp_unit` (incl. the new `funnel globalization (3i)` suite),
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### Checkpoint 3j — second-order-correction pre-pass (done)
+
+- `GlobOptions::use_soc` (default `false`) gates the SOC; the driver hands it
+  to the active globalizer (`glob_.opts = opts_.glob`; the funnel's
+  `GlobOptions` member was renamed `glob` -> `opts` for consistency with
+  `MeritBacktracking`).
+- `MeritBacktracking::find_acceptable_iterate` gained a trailing
+  `std::function<Status()> soc_fn` (the funnel ignores it). Before the
+  backtracking loop, when `use_soc` the full step (`alpha = 1`) is accepted
+  outright only when it lowers **both** the merit and the L-infinity
+  constraint violation (`inf_violation` = max over stages of `|dynamics gap|`
+  and positive-part constraint violation). Otherwise `soc_fn()` re-solves the
+  QP in place; `step` aliases the driver's `qp_out_`, so it then holds the
+  corrected step, the merit weights are re-updated from the corrected QP
+  duals, `merit0` is recomputed, and the line search runs on the corrected
+  step (acados `ocp_nlp_soc_line_search`, Waechter 2006).
+- `SqpSolver::perform_second_order_correction(problem, sol)` rewrites the QP
+  RHS at the full step and re-solves the regularized QP in original space
+  (`qp_.solve(qp_in_, qp_out_)`; `reg_.regularize` before, GLM
+  `correct_dual_sol` after — a no-op). `soc_count_` / `soc_count()` expose
+  how many SOC re-solves ran.
+- RHS rewrite (`soc_rewrite_rhs`, Nocedal & Wright 18.51; Jacobians BA/DC and
+  the Hessian stay at the current point, only the RHS is re-evaluated at the
+  trial `x + dx, u + du`):
+  - dynamics `b_k <- f_k(x_k + dx_k, u_k + du_k) - x_{k+1} - dx_{k+1}`;
+  - general rows (ineq/eq/lin, incl. terminal) re-base the assembly offset
+    to the nonlinear trial row value: `d_lo <- lo - c_t`,
+    `d_hi <- c_t - hi`. The HPIPM row value already carries `DC_ux . dz` and
+    the slack columns, so no explicit step/slack terms are added (an earlier
+    from-scratch form double-counted them and produced a `kMinStep` stall).
+  - box / pin rows are linear and untouched.
+- Tests (`tests/sqp/soc_3j.cpp`, registered in `sqp_unit`):
+  - regression: `use_soc=false` on DI (N=10) -> `kSolved`, residuals <
+    `1e-8`, `soc_count == 0`.
+  - `use_soc=true` on DI -> `kSolved`, residuals < `1e-8`, cost matches the
+    no-SOC reference to `1e-6`, and `soc_count > 0` (the warm-start full step
+    is rejected on iteration 0 and the QP is re-solved).
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `second-order-correction (3j)` suite),
+  `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`.

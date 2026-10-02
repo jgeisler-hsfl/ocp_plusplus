@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <functional>
 
 #include <Eigen/Dense>
 
@@ -40,6 +41,7 @@ struct GlobOptions
     double alpha_reduction = 0.7;        // backtracking shrink factor
     double eps_sufficient_descent = 1e-4;  // (phase 3, Leineweber 1999)
     bool full_step_dual = false;        // full-step dual update vs. relaxed
+    bool use_soc = false;               // 3j: second-order-correction pre-pass
 };
 
 // =========================================================================
@@ -604,20 +606,67 @@ struct MeritBacktracking
 
     /// Backtracking line search. Advances `cur` in place on success
     /// or kMinStep. Leaves `cur` untouched on kNanDetected.
+    ///
+    /// 3j: when `opts.use_soc`, a second-order-correction (SOC) pre-pass
+    /// runs before the backtracking loop (acados ocp_nlp_soc_line_search,
+    /// ocp_nlp_globalization_merit_backtracking.c:566-602). The full step
+    /// (alpha = 1) is accepted outright when it lowers both the merit and
+    /// the L-infinity constraint violation. Otherwise `soc_fn` re-solves
+    /// the QP in place with the second-order-corrected RHS; `step` aliases
+    /// the driver's qp_out_, so it then holds the corrected step, and the
+    /// line search runs on it (with the merit weights re-updated from the
+    /// corrected QP duals).
     Status find_acceptable_iterate(const P& problem,
                                    Solution<P, NH>& cur,
                                    const Qp<P, NH>& /*qp*/,
                                    const QpSol<P, NH>& step,
                                    const SqpSlacks<P, NH>& slacks,
                                    Solution<P, NH>& scratch,
-                                   double& alpha) const
+                                   double& alpha,
+                                   const std::function<Status()>&
+                                       soc_fn) const
     {
         const int N = cur.N;
         assert(N_ == N && step.N == N && slacks.N == N
                && scratch.N == N);
 
         update_weights(step);
-        const double merit0 = merit(problem, cur, slacks);
+        double merit0 = merit(problem, cur, slacks);
+
+        if (opts.use_soc)
+        {
+            SqpSlacks<P, NH> trial_slacks(N);
+            detail::apply_sqp_step_primal<P, NH>(cur, step, 1.0,
+                                                  scratch);
+            detail::shift_slacks(slacks, step, 1.0, trial_slacks);
+            const double merit1 = merit(problem, scratch,
+                                        trial_slacks);
+            const double viol_cur =
+                inf_violation(problem, cur, slacks);
+            const double viol_step =
+                inf_violation(problem, scratch, trial_slacks);
+            if (std::isfinite(merit1) && merit1 < merit0
+                && viol_step < viol_cur)
+            {
+                // full step accepted: merit and L-infinity violation both
+                // improve -> skip the line search.
+                alpha = 1.0;
+                apply_sqp_step<P, NH>(cur, step, 1.0,
+                                       opts.full_step_dual, cur);
+                return Status::kSolved;
+            }
+            // full step rejected (or non-finite): perform the SOC re-solve.
+            // `step` aliases the driver's qp_out_, which the re-solve
+            // replaces; re-update the merit weights from the corrected QP
+            // duals before the line search.
+            const Status soc_st = soc_fn();
+            if (soc_st != Status::kSolved)
+            {
+                return soc_st;
+            }
+            update_weights(step);
+            merit0 = merit(problem, cur, slacks);
+        }
 
         SqpSlacks<P, NH> trial_slacks(N);
         double a = 1.0;
@@ -647,6 +696,35 @@ struct MeritBacktracking
         apply_sqp_step<P, NH>(cur, step, a,
                                opts.full_step_dual, cur);
         return Status::kMinStep;
+    }
+
+    /// L-infinity constraint violation: max over all stages of the
+    /// dynamics gap (absolute) and the positive-part constraint violation
+    /// (acados ocp_nlp_get_violation_inf_norm,
+    /// ocp_nlp_globalization_merit_backtracking.c:424-459).
+    double inf_violation(const P& problem,
+                         const Solution<P, NH>& sol,
+                         const SqpSlacks<P, NH>& sl) const
+    {
+        const int N = sol.N;
+        double v = 0.0;
+        for (int k = 0; k < N; ++k)
+        {
+            const auto gap = (problem.dynamics_next_state(
+                                  k, sol.x[k], sol.u[k])
+                              - sol.x[k + 1])
+                                 .eval();
+            for (int j = 0; j < D::nx; ++j)
+                v = std::max(v,
+                    std::fabs(static_cast<double>(gap(j))));
+        }
+        v = std::max(v, violation_stage_inf(problem, sol, sl, 0));
+        for (int k = 1; k < N; ++k)
+        {
+            v = std::max(v, violation_stage_inf(problem, sol, sl, k));
+        }
+        v = std::max(v, violation_term_inf(problem, sol, sl));
+        return v;
     }
 
 private:
@@ -1066,6 +1144,204 @@ private:
         }
         return m;
     }
+
+    // -- L-infinity positive constraint violations (3j) --------------
+    //
+    // Unweighted max of the positive-part violation (feasible rows -> 0),
+    // mirroring stage_violation_impl / term_violation but returning the
+    // max instead of the weighted sum. Used by the SOC full-step gate.
+
+    template <class SV, class IdxLo, class IdxHi>
+    double violation_stage_inf_impl(const P& problem,
+                                    const Solution<P, NH>& sol,
+                                    const SV& sv, const IdxLo& idxl,
+                                    const IdxHi& idxh,
+                                    const detail::QpLayout& lay,
+                                    int base, int k) const
+    {
+        const auto& x = sol.x[k];
+        const auto& u = sol.u[k];
+        const int R = static_cast<int>(idxl.size());
+
+        typename P::ineq_t gv{};
+        typename P::eq_t ev{};
+        typename P::lin_t lv{};
+        typename P::stage_linear_t lin_spec{};
+        if constexpr (D::ng > 0)
+            gv = problem.stage_inequality_constr(k, x, u);
+        if constexpr (D::ne > 0)
+            ev = problem.stage_equality_constr(k, x, u);
+        if constexpr (D::nl > 0)
+        {
+            lin_spec = problem.stage_linear_constr(k);
+            lv = lin_spec.A * x + lin_spec.B * u;
+        }
+
+        double v = 0.0;
+        for (int r = 0; r < R; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g == detail::g_pin)
+                continue;
+            const int j = r - lay.row_off(g);
+            const double s_lo = (idxl[r] >= 0)
+                ? static_cast<double>(sv[idxl[r] - base])
+                : 0.0;
+            const double s_hi = (idxh[r] >= 0)
+                ? static_cast<double>(sv[idxh[r] - base])
+                : 0.0;
+
+            if (g == detail::g_bx)
+            {
+                if constexpr (P::nbx > 0)
+                {
+                    const auto spec =
+                        problem.stage_state_box_constr(k);
+                    const double vv = static_cast<double>(
+                        x(P::state_box_idx[j]));
+                    v = std::max(v, std::max(
+                        0.0, static_cast<double>(spec.lo(j))
+                             - s_lo - vv));
+                    v = std::max(v, std::max(
+                        0.0, vv - static_cast<double>(spec.hi(j))
+                             - s_hi));
+                }
+            }
+            else if (g == detail::g_bu)
+            {
+                if constexpr (P::nbu > 0)
+                {
+                    const auto spec =
+                        problem.stage_control_box_constr(k);
+                    const double vv = static_cast<double>(
+                        u(P::control_box_idx[j]));
+                    v = std::max(v, std::max(
+                        0.0, static_cast<double>(spec.lo(j))
+                             - s_lo - vv));
+                    v = std::max(v, std::max(
+                        0.0, vv - static_cast<double>(spec.hi(j))
+                             - s_hi));
+                }
+            }
+            else if (g == detail::g_ineq)
+            {
+                const double vv = static_cast<double>(gv(j));
+                v = std::max(v, std::max(0.0, vv - s_hi));
+            }
+            else if (g == detail::g_eq)
+            {
+                const double e = static_cast<double>(ev(j));
+                v = std::max(v, std::max(0.0, -s_lo - e)
+                             + std::max(0.0, e - s_hi));
+            }
+            else  // g_lin
+            {
+                const double vv = static_cast<double>(lv(j));
+                const double lo = static_cast<double>(
+                    lin_spec.bounds.lo(j));
+                const double hi = static_cast<double>(
+                    lin_spec.bounds.hi(j));
+                v = std::max(v, std::max(0.0, lo - s_lo - vv)
+                             + std::max(0.0, vv - s_hi - hi));
+            }
+        }
+        return v;
+    }
+
+    double violation_stage_inf(const P& problem,
+                               const Solution<P, NH>& sol,
+                               const SqpSlacks<P, NH>& sl, int k) const
+    {
+        if (k == 0)
+        {
+            return violation_stage_inf_impl(
+                problem, sol, sl.first, D::idxs_lo_first,
+                D::idxs_hi_first, D::lay_first,
+                D::nvar_first - D::nslack_first, 0);
+        }
+        return violation_stage_inf_impl(
+            problem, sol, sl.path[k - 1], D::idxs_lo_path,
+            D::idxs_hi_path, D::lay_path,
+            D::nvar_path - D::nslack_path, k);
+    }
+
+    double violation_term_inf(const P& problem,
+                              const Solution<P, NH>& sol,
+                              const SqpSlacks<P, NH>& sl) const
+    {
+        const auto& x = sol.x[sol.N];
+        const auto& sv = sl.term;
+        const auto& idxl = D::idxs_lo_term;
+        const auto& idxh = D::idxs_hi_term;
+        const int base = D::nvar_term - D::nslack_term;
+        const detail::QpLayout& lay = D::lay_term;
+
+        typename P::ineq_term_t gv{};
+        typename P::eq_term_t ev{};
+        typename P::lin_term_t lv{};
+        typename P::term_linear_t lin_spec{};
+        if constexpr (D::ng_t > 0)
+            gv = problem.terminal_inequality_constr(x);
+        if constexpr (D::ne_t > 0)
+            ev = problem.terminal_equality_constr(x);
+        if constexpr (D::nl_t > 0)
+        {
+            lin_spec = problem.terminal_linear_constr();
+            lv = lin_spec.A * x;
+        }
+
+        double v = 0.0;
+        for (int r = 0; r < D::nrow_term; ++r)
+        {
+            const int g = lay.group_of(r);
+            const int j = r - lay.row_off(g);
+            const double s_lo = (idxl[r] >= 0)
+                ? static_cast<double>(sv[idxl[r] - base])
+                : 0.0;
+            const double s_hi = (idxh[r] >= 0)
+                ? static_cast<double>(sv[idxh[r] - base])
+                : 0.0;
+
+            if (g == detail::g_bx)
+            {
+                if constexpr (P::nbx_t > 0)
+                {
+                    const auto spec =
+                        problem.terminal_state_box_constr();
+                    const double vv = static_cast<double>(
+                        x(P::terminal_state_box_idx[j]));
+                    v = std::max(v, std::max(
+                        0.0, static_cast<double>(spec.lo(j))
+                             - s_lo - vv));
+                    v = std::max(v, std::max(
+                        0.0, vv - static_cast<double>(spec.hi(j))
+                             - s_hi));
+                }
+            }
+            else if (g == detail::g_ineq)
+            {
+                const double vv = static_cast<double>(gv(j));
+                v = std::max(v, std::max(0.0, vv - s_hi));
+            }
+            else if (g == detail::g_eq)
+            {
+                const double e = static_cast<double>(ev(j));
+                v = std::max(v, std::max(0.0, -s_lo - e)
+                             + std::max(0.0, e - s_hi));
+            }
+            else  // g_lin
+            {
+                const double vv = static_cast<double>(lv(j));
+                const double lo = static_cast<double>(
+                    lin_spec.bounds.lo(j));
+                const double hi = static_cast<double>(
+                    lin_spec.bounds.hi(j));
+                v = std::max(v, std::max(0.0, lo - s_lo - vv)
+                             + std::max(0.0, vv - s_hi - hi));
+            }
+        }
+        return v;
+    }
 };
 
 // =========================================================================
@@ -1097,7 +1373,7 @@ struct Funnel
     using D = QpDim<P>;
     using S = typename P::scalar_t;
 
-    GlobOptions glob;
+    GlobOptions opts;
 
     // acados ocp_nlp_globalization_funnel_opts defaults
     double initialization_increase_factor = 15.0;
@@ -1138,13 +1414,18 @@ struct Funnel
 
     /// Backtracking line search. Advances `cur` in place on kSolved;
     /// leaves `cur` untouched on kMinStep / kNanDetected.
+    ///
+    /// The trailing `soc_fn` is part of the shared globalization contract
+    /// (3j) but unused by the funnel.
     Status find_acceptable_iterate(const P& problem,
                                    Solution<P, NH>& cur,
                                    const Qp<P, NH>& qp,
                                    const QpSol<P, NH>& step,
                                    const SqpSlacks<P, NH>& slacks,
                                    Solution<P, NH>& scratch,
-                                   double& alpha) const
+                                   double& alpha,
+                                   const std::function<Status()>&
+                                       /*soc_fn*/) const
     {
         const int N = cur.N;
         assert(N_ == N && step.N == N && slacks.N == N
@@ -1238,16 +1519,16 @@ struct Funnel
                 alpha = a;
                 l1_infeasibility_ = tri_l1;
                 apply_sqp_step<P, NH>(cur, step, a,
-                                       glob.full_step_dual, cur);
+                                       opts.full_step_dual, cur);
                 return Status::kSolved;
             }
 
-            if (a < glob.alpha_min)
+            if (a < opts.alpha_min)
             {
                 alpha = a;
                 return Status::kMinStep;
             }
-            a *= glob.alpha_reduction;
+            a *= opts.alpha_reduction;
         }
     }
 
@@ -1278,7 +1559,7 @@ private:
     bool armijo(double actual_red, double pred_red, double a) const
     {
         return actual_red >=
-               glob.eps_sufficient_descent * a *
+               opts.eps_sufficient_descent * a *
                std::max(0.0, pred_red - 1e-9);
     }
 

@@ -20,6 +20,7 @@ int run_timeout_3f_tests();
 int run_adaptive_lm_3g_tests();
 int run_qpscaling_3h_tests();
 int run_funnel_3i_tests();
+int run_soc_3j_tests();
 
 int main()
 {
@@ -35,6 +36,7 @@ int main()
     failures += run_adaptive_lm_3g_tests();
     failures += run_qpscaling_3h_tests();
     failures += run_funnel_3i_tests();
+    failures += run_soc_3j_tests();
 
     if (failures == 0)
     {
