@@ -16,6 +16,7 @@ int run_options_2e_tests();
 int run_assemble_2f_tests();
 int run_driver_2g_tests();
 int run_warm_start_3c_tests();
+int run_timeout_3f_tests();
 
 int main()
 {
@@ -27,6 +28,7 @@ int main()
     failures += run_assemble_2f_tests();
     failures += run_driver_2g_tests();
     failures += run_warm_start_3c_tests();
+    failures += run_timeout_3f_tests();
 
     if (failures == 0)
     {

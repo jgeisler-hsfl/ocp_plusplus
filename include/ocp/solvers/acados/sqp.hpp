@@ -26,6 +26,7 @@
 #pragma once
 
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -571,7 +572,10 @@ struct SqpOptions
     int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
     bool eval_residual_at_max_iter = false;
-    double timeout_max_time = 0.0;        // phase 3 (inert in v1)
+    int timeout_heuristic = 0;            // 3f: 0 = ZERO, 1 = LAST, 2 = MAX,
+                                          // 3 = AVERAGE (acados
+                                          // ocp_nlp_timeout_heuristic_t)
+    double timeout_max_time = 0.0;        // 3f: wall-clock budget; 0 = none
     bool scale_qp_objective = false;      // phase 3 (inert in v1)
     bool scale_qp_constraints = false;
     double tau_min = 1e-16;               // res_comp floor (plan sec. 1.4)
@@ -781,9 +785,17 @@ public:
     ///      tol_min_step_norm > 0)      -> kMinStep
     ///   5. cost <= tol_unbounded       -> kUnbounded
     ///   6. iter >= max_iter            -> kMaxIterations
+    ///   7. timeout_max_time > 0 and
+    ///      timeout_max_time <=
+    ///      elapsed + estimate           -> kTimeout (3f)
     ///   otherwise                      -> kUnset (keep iterating)
+    ///
+    /// `elapsed` is the wall-clock seconds since `solve()` entry (0 unless a
+    /// timeout budget is active); the estimate is the last per-iteration
+    /// duration tracked by the driver (3f).
     Status check_termination(int iter, const NlpResiduals& res,
-                             double step_norm, double cost) const
+                             double step_norm, double cost,
+                             double elapsed = 0.0) const
     {
         if (std::isnan(res.res_stat) || std::isnan(res.res_eq) ||
             std::isnan(res.res_ineq) || std::isnan(res.res_comp))
@@ -812,6 +824,17 @@ public:
         {
             return Status::kMaxIterations;
         }
+        // Timeout (acados ocp_nlp_sqp.c:434-440): the budget is exceeded when
+        // the wall-clock elapsed so far plus the predicted per-iteration
+        // duration would pass timeout_max_time. Reached only if none of the
+        // earlier branches fired (in particular a converged iterate returns
+        // kSolved above, as in acados).
+        if (opts_.timeout_max_time > 0.0 &&
+            opts_.timeout_max_time <=
+                elapsed + timeout_estimated_per_iter_)
+        {
+            return Status::kTimeout;
+        }
         return Status::kUnset;
     }
 
@@ -824,6 +847,7 @@ public:
         qp_iter_ = 0;
         alpha_ = 0.0;
         step_norm_ = 0.0;
+        timeout_estimated_per_iter_ = 0.0;
 
         resize(N);
         if (slack_N_ != N)
@@ -835,6 +859,9 @@ public:
         cost_value_ = compute_cost(problem, sol, slacks_);
         sol.cost_value = cost_value_;
         sol.status = Status::kUnset;
+
+        const auto t_start = std::chrono::steady_clock::now();
+        double timeout_prev_time_tot = 0.0;
 
         for (int iter = 0; iter <= opts_.max_iter; ++iter)
         {
@@ -860,8 +887,42 @@ public:
             // stationary iterate.
             reg_.regularize(qp_in_);
 
+            // Phase 3f: update the per-iteration time estimate before the
+            // termination check (acados ocp_nlp_sqp.c:606-644).
+            double elapsed = 0.0;
+            if (opts_.timeout_max_time > 0.0)
+            {
+                elapsed = std::chrono::duration<double>(
+                              std::chrono::steady_clock::now() - t_start)
+                              .count();
+                if (iter > 0)
+                {
+                    const double prev_iter_time =
+                        elapsed - timeout_prev_time_tot;
+                    switch (opts_.timeout_heuristic)
+                    {
+                    case 1:  // LAST
+                        timeout_estimated_per_iter_ = prev_iter_time;
+                        break;
+                    case 2:  // MAX
+                        timeout_estimated_per_iter_ = std::max(
+                            timeout_estimated_per_iter_, prev_iter_time);
+                        break;
+                    case 3:  // AVERAGE
+                        timeout_estimated_per_iter_ =
+                            0.5 * prev_iter_time +
+                            0.5 * timeout_estimated_per_iter_;
+                        break;
+                    default:  // 0 = ZERO: stays 0
+                        break;
+                    }
+                }
+                timeout_prev_time_tot = elapsed;
+            }
+
             const Status term =
-                check_termination(iter, res, step_norm_, cost_value_);
+                check_termination(iter, res, step_norm_, cost_value_,
+                                  elapsed);
             if (term != Status::kUnset)
             {
                 sol.status = term;
@@ -2577,6 +2638,7 @@ private:
     double cost_value_ = 0.0;
     int qp_status_ = 0;  // last QP status (0 = none yet)
     int qp_iter_ = 0;    // last QP iteration count
+    double timeout_estimated_per_iter_ = 0.0;  // 3f: per-iter time estimate
 };
 
 }  // namespace ocp

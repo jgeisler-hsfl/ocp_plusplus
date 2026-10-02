@@ -674,3 +674,48 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit` (incl. the new `abs_form (3e)` suite), `sqp_unit`,
   `double_integrator`, `sqp_double_integrator`, `sqp_mass_spring`,
   `sqp_acados_ref`.
+
+### 3f — timeout
+
+- Re-read `ocp_nlp_sqp.c:351-443` (`check_termination` timeout branch at
+  `:434-440`), `:519-520` (estimate init: zero unless `MAX_OVERALL`),
+  `:538-539` (locals `timeout_previous_time_tot` / `timeout_time_prev_iter`),
+  `:606-644` (per-iter estimate update: `LAST`, `MAX_CALL`/`MAX_OVERALL`,
+  `AVERAGE`, `ZERO`), `:113-117` (defaults `timeout_heuristic = ZERO`,
+  `timeout_max_time = 0`), `utils/types.h:111-118` (heuristic enum:
+  `MAX_CALL=0, MAX_OVERALL=1, LAST=2, AVERAGE=3, ZERO=4`).
+- `SqpOptions`: added `int timeout_heuristic = 0;` (0 = ZERO, 1 = LAST,
+  2 = MAX, 3 = AVERAGE) alongside the existing `timeout_max_time`.
+  **Deviation:** the plan's numbering (0 = ZERO) differs from the acados enum
+  (ZERO = 4). This is intentional — ZERO is the default (no prediction), so
+  it gets the C++ default value 0. `MAX_CALL` and `MAX_OVERALL` are collapsed
+  into a single `MAX` (value 2); both do the same running-max update in
+  acados, and the per-solve reset in `solve()` gives `MAX_CALL` semantics.
+- `check_termination`: added a 5th parameter `double elapsed = 0.0` (default
+  keeps existing 4-arg call sites in tests valid). New final branch (after the
+  second `max_iter` check, matching acados order): if
+  `timeout_max_time > 0 && timeout_max_time <= elapsed + estimate` →
+  `kTimeout`. The kSolved branch (branch 3) fires first, so a converged
+  iterate is never killed by a tight budget — matching acados.
+- `SqpSolver::solve`: reset `timeout_estimated_per_iter_ = 0` at entry;
+  capture `t_start = steady_clock::now()` before the loop; before each
+  `check_termination`, if `timeout_max_time > 0`, compute `elapsed` as
+  wall-clock seconds since entry, and (for `iter > 0`) update the estimate
+  per the heuristic: LAST → `est = prev_iter_time`; MAX → `est = max(est,
+  prev_iter_time)`; AVERAGE → `est = 0.5*prev + 0.5*est`; ZERO → unchanged
+  (0). Track `timeout_prev_time_tot = elapsed` each iteration. Pass `elapsed`
+  to `check_termination`.
+- Test (`tests/sqp/timeout_3f.cpp`, registered in `sqp_unit`):
+  - Direct `check_termination` branch: `elapsed > budget` → `kTimeout`;
+    `elapsed < budget` → `kUnset`; boundary equality → `kTimeout`;
+    `timeout_max_time = 0` → inert (`kUnset` even at `elapsed = 1e9`).
+  - End-to-end `solve()`: `timeout_max_time = 1e-9` (smaller than any
+    iteration's wall-clock) → `kTimeout` at iter 0, one stat row,
+    `qp_iter = 0`.
+  - All four heuristic values (0–3) with a generous budget (`1e9` s) on
+    DI N=10 → `kSolved` (no spurious timeout; exercises every branch of
+    the estimate-update switch).
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `timeout (3f)` suite),
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.

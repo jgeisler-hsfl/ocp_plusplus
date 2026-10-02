@@ -60,8 +60,8 @@ target_compile_options(qp_unit PRIVATE ${OCP_WARN_FLAGS})
 add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
                         tests/sqp/apply_step_2b.cpp tests/sqp/residuals_2c.cpp
                         tests/sqp/merit_2d.cpp tests/sqp/options_2e.cpp
-                        tests/sqp/assemble_2f.cpp tests/sqp/driver_2g.cpp
-                        tests/sqp/warm_start_3c.cpp)
+                         tests/sqp/assemble_2f.cpp tests/sqp/driver_2g.cpp
+                         tests/sqp/warm_start_3c.cpp tests/sqp/timeout_3f.cpp)
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE ${OCP_WARN_FLAGS})
 
