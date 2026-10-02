@@ -632,3 +632,45 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit`, `sqp_unit` (incl. the new `warm_start (3c)` suite),
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3e — HPIPM `abs_form` (absolute formulation)
+
+- Re-read the HPIPM abs path line-by-line and mirrored it: `solve_abs`
+  (branch on `opts_.abs_form` in `solve()`), helpers `fill_abs_rhs` (KKT RHS
+  = original `grad/b/d`, HPIPM `x_ocp_qp_ipm.c:2990-2992`),
+  `transform_abs_res_m` (`res_m <- -res_m - 2 m`, AXPBY at `:2075`),
+  `subtract_iterate` (AXPY `-1.0` at `:2096-2099`, `step -=` current
+  iterate), `inline_mu` (`mean(lam*t - m)`, `:3036-3043`). The per-iteration
+  `OCP_QP_RES_COMPUTE` is skipped (the abs loop `:3022-3051` recomputes only
+  `res_m`/`mu`), and the mu-exit (`|mu - tau_min| <= res_m_max`, `:3026`)
+  replaces the relative-mode multi-residual test. The shared KKT machinery
+  (`fact_solve_kkt`/`solve_kkt`, `compute_gamma`, `compute_mu_aff`,
+  `apply_centering`, `compute_alpha`, `update_vars`) is reused unchanged.
+- **Convergence profile (verified, not a bug).** The abs form aliases
+  `qp_step->d = qp->d` *once* at setup (`:2992`), so its stage gamma
+  (`(res_m - lam*res_d)/t`, `x_core_qp_ipm_aux.c:69`) is built from the
+  constant bound offset rather than the feasibility residual. With active
+  bounds this damping does not vanish at convergence, so the abs iterate
+  drives feasibility + complementarity to machine precision but stops (on
+  the `|mu - tau_min|` test) with the stationarity / dynamics residuals at
+  ~1e-3 — a lightly-regularized point. The HPIPM `SPEED_ABS` preset sets
+  `res_g_max/res_b_max/res_d_max = 1e0 // not used` precisely for this
+  reason (05-hpipm-qp-solver.md §6.1). A QP with no active bounds has no
+  such residual, so the abs form converges exactly there. Confirmed
+  empirically: MS (bound-free) abs == relative to ~1e-14; DI (active box
+  bounds) abs feasibility/complementarity exact, stationarity ~1e-3,
+  objective within 5% of the relative optimum; disabling the mu-exit and
+  forcing extra iterations makes stationarity diverge, so the mu-exit is the
+  intended stop.
+- Tests (`tests/hpipm/abs_form_3e.cpp`, registered in `qp_unit`): for a
+  bound-free QP (MS, N=1/2 and NH=2) the abs solution is asserted to agree
+  with the relative solution field-by-field to 1e-6 and to meet the full KKT
+  residual tolerances; for the bounded DI the test asserts the abs form's own
+  guarantees (`kSolved`, `|mu - tau_min| <= res_m_max`, feasibility
+  `res_d <= res_d_max`, complementarity `res_m`, objective within 5% of the
+  relative optimum) instead of exact fields. `CMakeLists.txt` adds the new
+  file to the `qp_unit` target.
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit` (incl. the new `abs_form (3e)` suite), `sqp_unit`,
+  `double_integrator`, `sqp_double_integrator`, `sqp_mass_spring`,
+  `sqp_acados_ref`.

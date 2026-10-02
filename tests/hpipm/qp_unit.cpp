@@ -115,6 +115,7 @@ int run_solve_1h_tests();
 int run_suite_1i_tests();
 int run_split_step_3b_tests();
 int run_lq_itref_3d_tests();
+int run_abs_form_3e_tests();
 
 int main()
 {
@@ -131,6 +132,7 @@ int main()
     failures += run_suite_1i_tests();
     failures += run_split_step_3b_tests();
     failures += run_lq_itref_3d_tests();
+    failures += run_abs_form_3e_tests();
 
     if (failures == 0)
     {

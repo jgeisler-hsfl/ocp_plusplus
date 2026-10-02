@@ -386,6 +386,12 @@ public:
             return solve_unconstr(in, out);
         }
 
+        // 3e: absolute formulation (HPIPM OCP_QP_IPM_SOLVE abs branch)
+        if (opts_.abs_form)
+        {
+            return solve_abs(in, out);
+        }
+
         // interior-point initialization (worklog 1c) + mask absolute lam
         init_point(in, out);
         mask_abs_lam(in, out);
@@ -2015,6 +2021,275 @@ private:
         compute_residuals(in, out, ws_.res);
         fill_stat_residuals(stat_.row(0), ws_.res);
         if (!out.ux_first.allFinite() || !out.ux_term.allFinite())
+        {
+            stat_.status = Status::kNanDetected;
+            return Status::kNanDetected;
+        }
+        stat_.status = Status::kSolved;
+        return Status::kSolved;
+    }
+
+    // ==================================================================
+    //  3e: absolute formulation (SQP_PHASE3_PLAN 3e)
+    // ==================================================================
+    //
+    // HPIPM OCP_QP_IPM_SOLVE abs branch + OCP_QP_IPM_ABS_STEP
+    // (x_ocp_qp_ipm.c:2777-3051, 2053-2228). Orthogonal to split_step
+    // (shares compute_alpha / update_vars). The KKT right-hand side is the
+    // ORIGINAL QP vectors (rqz = grad, b, d) rather than the KKT residuals;
+    // the complementarity RHS is transformed each iteration
+    // (res_m <- -(lam*t - m) - 2*m, then tau-shifted); each KKT solve
+    // returns the NEW iterate, from which the current iterate is subtracted
+    // to recover the delta; the exit test is the scalar |mu - tau_min|
+    // (mu = mean |lam*t - m| over active sides) plus the alpha guards, with
+    // no per-iteration OCP_QP_RES_COMPUTE. No iterative refinement in the
+    // abs path.
+
+    /// Subtract the current iterate `cur` from `step` in place: the
+    /// absolute-form KKT solve returns the new iterate; the Newton delta is
+    /// new - current (HPIPM AXPY -1.0, x_ocp_qp_ipm.c:2096-2099).
+    void subtract_iterate(const QpSol<P, NH>& cur, QpSol<P, NH>& step) const
+    {
+        const int N = step.N;
+        step.ux_first -= cur.ux_first;
+        for (int k = 1; k < N; ++k)
+        {
+            step.ux_path[k - 1] -= cur.ux_path[k - 1];
+        }
+        step.ux_term -= cur.ux_term;
+        for (int k = 0; k < N; ++k)
+        {
+            step.pi[k] -= cur.pi[k];
+        }
+        step.lam_first -= cur.lam_first;
+        for (int k = 1; k < N; ++k)
+        {
+            step.lam_path[k - 1] -= cur.lam_path[k - 1];
+        }
+        step.lam_term -= cur.lam_term;
+        step.t_first -= cur.t_first;
+        for (int k = 1; k < N; ++k)
+        {
+            step.t_path[k - 1] -= cur.t_path[k - 1];
+        }
+        step.t_term -= cur.t_term;
+    }
+
+    /// Scalar barrier parameter of the absolute iterate: mu = mean
+    /// |lam*t - m| over the active sides (HPIPM inline mu in the abs loop,
+    /// x_ocp_qp_ipm.c:3034-3044).
+    S inline_mu(const Qp<P, NH>& in, const QpSol<P, NH>& out) const
+    {
+        S sum = S(0);
+        int nc = 0;
+        auto acc = [&](const auto& lam, const auto& t, const auto& m,
+                       const auto& dmask)
+        {
+            const int n = static_cast<int>(lam.size());
+            for (int i = 0; i < n; ++i)
+            {
+                if (dmask(i) > S(0.5))
+                {
+                    sum += std::fabs(lam(i) * t(i) - m(i));
+                    ++nc;
+                }
+            }
+        };
+        acc(out.lam_first, out.t_first, in.first.m, in.first.d_mask);
+        for (int k = 1; k < in.N; ++k)
+        {
+            acc(out.lam_path[k - 1], out.t_path[k - 1], in.path[k - 1].m,
+                in.path[k - 1].d_mask);
+        }
+        acc(out.lam_term, out.t_term, in.term.m, in.term.d_mask);
+        return (nc > 0) ? sum / nc : S(0);
+    }
+
+    /// Absolute-form KKT right-hand side: the ORIGINAL QP vectors
+    /// (res_g = grad, res_b = b, res_d = d) rather than the KKT residuals
+    /// (HPIPM sets qp_step->rqz/b/d to the original QP when abs_form = 1,
+    /// x_ocp_qp_ipm.c:2990-2992). res_m is filled separately each iteration
+    /// by transform_abs_res_m + shift_res_m.
+    void fill_abs_rhs(const Qp<P, NH>& in, QpRes<P, NH>& rhs) const
+    {
+        rhs.res_g_first = in.first.grad;
+        for (int k = 1; k < in.N; ++k)
+        {
+            rhs.res_g_path[k - 1] = in.path[k - 1].grad;
+        }
+        rhs.res_g_term = in.term.grad;
+        rhs.res_b[0] = in.first.b;
+        for (int k = 1; k < in.N; ++k)
+        {
+            rhs.res_b[k] = in.path[k - 1].b;
+        }
+        rhs.res_d_first = in.first.d;
+        for (int k = 1; k < in.N; ++k)
+        {
+            rhs.res_d_path[k - 1] = in.path[k - 1].d;
+        }
+        rhs.res_d_term = in.term.d;
+    }
+
+    /// Absolute-form m-RHS transform (HPIPM AXPBY, x_ocp_qp_ipm.c:2075):
+    /// res_m <- -(lam*t - m) - 2*m = -lam*t - m (element-wise; v1 m = 0).
+    void transform_abs_res_m(const Qp<P, NH>& in, const QpSol<P, NH>& out,
+                             QpRes<P, NH>& res) const
+    {
+        res.res_m_first =
+            -(out.lam_first.cwiseProduct(out.t_first)) - in.first.m;
+        for (int k = 1; k < in.N; ++k)
+        {
+            res.res_m_path[k - 1] =
+                -(out.lam_path[k - 1].cwiseProduct(out.t_path[k - 1]))
+                - in.path[k - 1].m;
+        }
+        res.res_m_term =
+            -(out.lam_term.cwiseProduct(out.t_term)) - in.term.m;
+    }
+
+    /// Absolute-formulation IPM (see section banner). Mirrors the relative
+    /// solve() loop with the absolute KKT right-hand side, the per-iteration
+    /// current-iterate subtraction, and the scalar |mu - tau_min| exit test.
+    Status solve_abs(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    {
+        const int N = in.N;
+        ws_.resize(N);
+        stat_.init(opts_.stat_max);
+
+        QpRes<P, NH> abs_rhs(N);
+        QpRes<P, NH> abs_bkp(N);
+        fill_abs_rhs(in, abs_rhs);
+
+        init_point(in, out);
+        mask_abs_lam(in, out);
+        ws_.alpha_prim = S(1);
+        ws_.alpha_dual = S(1);
+        ws_.force_lq = false;
+        ws_.preg_last = S(opts_.reg_prim);
+
+        // pre-iteration residuals (stat row 0) + initial mu
+        compute_residuals(in, out, ws_.res);
+        S mu = inline_mu(in, out);
+        fill_stat_residuals(stat_.row(0), ws_.res);
+        stat_.row(0).mu = mu;
+
+        QpSol<P, NH> step(N);
+        for (int kk = 0; kk < opts_.iter_max; ++kk)
+        {
+            // exit test (x_ocp_qp_ipm.c:3022-3027)
+            if (ws_.alpha_prim <= opts_.alpha_min
+                    or ws_.alpha_dual <= opts_.alpha_min)
+            {
+                break;
+            }
+            if (std::fabs(mu - opts_.tau_min) <= opts_.res_m_max)
+            {
+                break;
+            }
+
+            // --- predictor (OCP_QP_IPM_ABS_STEP) ---
+            transform_abs_res_m(in, out, abs_rhs);
+            abs_bkp = abs_rhs;
+            abs_bkp.res_mu = mu;
+            shift_res_m(in, abs_rhs, opts_.tau_min);
+
+            const Status fs = delta_factor_solve(in, out, abs_rhs, step);
+            if (fs != Status::kSolved)
+            {
+                stat_.iter = kk;
+                stat_.status = Status::kQpFailure;
+                return Status::kQpFailure;
+            }
+            subtract_iterate(out, step);
+            mask_step(in, step);
+
+            compute_alpha(in, out, step);
+            HpipmIteration* row = stat_row(kk);
+            if (row)
+            {
+                row->alpha_prim_aff = ws_.alpha_prim;
+                row->alpha_dual_aff = ws_.alpha_dual;
+            }
+
+            // Mehrotra predictor-corrector (abs: same structure, abs RHS)
+            if (opts_.pred_corr)
+            {
+                const S mu_aff_pred = compute_mu_aff(in, out, step);
+                if (row)
+                {
+                    row->mu_aff = mu_aff_pred;
+                }
+                apply_centering(in, abs_bkp, step, /*correction=*/true,
+                                abs_rhs);
+                solve_kkt(in, out, abs_rhs, step);
+                subtract_iterate(out, step);
+                mask_step(in, step);
+                compute_alpha(in, out, step);
+                if (row)
+                {
+                    row->sigma = ws_.sigma;
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
+                }
+                if (opts_.cond_pred_corr)
+                {
+                    const S mu_aff_corr = compute_mu_aff(in, out, step);
+                    if (mu_aff_corr > S(2) * mu_aff_pred)
+                    {
+                        apply_centering(in, abs_bkp, step,
+                                        /*correction=*/false, abs_rhs);
+                        solve_kkt(in, out, abs_rhs, step);
+                        subtract_iterate(out, step);
+                        mask_step(in, step);
+                        compute_alpha(in, out, step);
+                        if (row)
+                        {
+                            row->alpha_prim = ws_.alpha_prim;
+                            row->alpha_dual = ws_.alpha_dual;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (row)
+                {
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
+                }
+            }
+
+            update_vars(out, step);
+            mask_abs_lam(in, out);
+
+            mu = inline_mu(in, out);
+            if (row)
+            {
+                row->mu = mu;
+            }
+            stat_.iter = kk + 1;
+        }
+
+        // final residuals (HPIPM comp_res_exit for the abs branch) + status
+        compute_residuals(in, out, ws_.res);
+        if (stat_.iter > 0 && stat_.iter < stat_.stat_max)
+        {
+            fill_stat_residuals(stat_.row(stat_.iter), ws_.res);
+        }
+
+        if (stat_.iter == opts_.iter_max)
+        {
+            stat_.status = Status::kMaxIterations;
+            return Status::kMaxIterations;
+        }
+        if (ws_.alpha_prim <= opts_.alpha_min
+                or ws_.alpha_dual <= opts_.alpha_min)
+        {
+            stat_.status = Status::kMinStep;
+            return Status::kMinStep;
+        }
+        if (std::isnan(mu))
         {
             stat_.status = Status::kNanDetected;
             return Status::kNanDetected;
