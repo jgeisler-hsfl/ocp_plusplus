@@ -37,6 +37,7 @@
 #include "../hpipm/qp.hpp"
 #include "../hpipm/hpipm.hpp"
 #include "globalize.hpp"
+#include "qpscaling.hpp"
 #include "regularize.hpp"
 
 namespace ocp
@@ -580,8 +581,22 @@ struct SqpOptions
                                           // 3 = AVERAGE (acados
                                           // ocp_nlp_timeout_heuristic_t)
     double timeout_max_time = 0.0;        // 3f: wall-clock budget; 0 = none
-    bool scale_qp_objective = false;      // phase 3 (inert in v1)
-    bool scale_qp_constraints = false;
+    bool scale_qp_objective = false;      // 3h: Gershgorin objective scaling
+    bool scale_qp_constraints = false;    // 3h: inf-norm constraint scaling
+    double ub_max_abs_eig = 1e5;          // 3h: objective-scaling upper bound
+    double lb_norm_inf_grad_obj = 1e-4;   // 3h: objective-scaling grad floor
+    // 3h: per-iteration QP tolerance strategy
+    // (ocp_nlp_common.c:4522-4574; acados types.h:102-107).
+    //   0 = kFixedQpTol              (HPIPM defaults, no per-iter update)
+    //   1 = kAdaptiveCurrentResJoint (from the NLP residuals)
+    //   2 = kAdaptiveQpScaling       (from the scaling factors)
+    int nlp_qp_tol_strategy = 0;
+    double nlp_qp_tol_reduction_factor = 1e-1;
+    double nlp_qp_tol_safety_factor = 0.1;
+    double nlp_qp_tol_min_stat = 1e-9;
+    double nlp_qp_tol_min_eq = 1e-10;
+    double nlp_qp_tol_min_ineq = 1e-10;
+    double nlp_qp_tol_min_comp = 1e-11;
     double tau_min = 1e-16;               // res_comp floor (plan sec. 1.4)
     GlobOptions glob;
 };
@@ -677,7 +692,18 @@ public:
 
     explicit SqpSolver(SqpOptions opts = SqpOptions{})
         : opts_(opts)
+        , scaler_(make_scaler_opts(opts))
     {
+    }
+
+    static typename QpScaler<P, NH>::Opts make_scaler_opts(const SqpOptions& o)
+    {
+        typename QpScaler<P, NH>::Opts so;
+        so.scale_objective = o.scale_qp_objective;
+        so.scale_constraints = o.scale_qp_constraints;
+        so.ub_max_abs_eig = o.ub_max_abs_eig;
+        so.lb_norm_inf_grad_obj = o.lb_norm_inf_grad_obj;
+        return so;
     }
 
     /// Assemble the staged QP at the current NLP iterate into qp_in_.
@@ -785,6 +811,7 @@ public:
     {
         qp_in_.resize(n_stages);
         qp_out_.resize(n_stages);
+        scaler_.resize(n_stages);
         trial_.resize(n_stages);
         slacks_.resize(n_stages);
     }
@@ -924,6 +951,11 @@ public:
             }
             add_lm_term(qp_in_, lm);
 
+            // 3h: scale the assembled QP into the solver's working copy
+            // (acados ocp_nlp_sqp.c:594-597); the regularizer and the QP
+            // solver then act on the scaled copy.
+            scaler_.scale_qp(qp_in_);
+
             const NlpResiduals res =
                 compute_nlp_residuals(problem, sol, opts_.tau_min);
 
@@ -933,9 +965,9 @@ public:
             }
 
             // Before the termination check (acados ocp_nlp_sqp.c:599-600):
-            // the returned QP is the one that would be solved at a
-            // stationary iterate.
-            reg_.regularize(qp_in_);
+            // the regularized (scaled-space) QP is the one that would be
+            // solved at a stationary iterate.
+            reg_.regularize(scaler_.scaled_in());
 
             // Phase 3f: update the per-iteration time estimate before the
             // termination check (acados ocp_nlp_sqp.c:606-644).
@@ -987,18 +1019,24 @@ public:
                 return term;
             }
 
+            // 3h: per-iteration QP tolerance strategy (acados
+            // ocp_nlp_common.c:4522-4574), applied right before the QP solve.
+            // No-op when nlp_qp_tol_strategy == 0 (kFixedQpTol).
+            update_qp_tolerances(res);
+
             // QP warm start (phase 3c, acados ocp_qp_hpipm.c:327-336 +
             // ocp_nlp_sqp.c:660-691): the primal step is always cold; only
-            // the duals (pi / lam / t) carried in qp_out_ from the previous
-            // QP are reused. The first QP is cold unless
-            // warm_start_first_qp is set.
+            // the duals (pi / lam / t) carried in the scaled-space output
+            // from the previous QP are reused (acados warm-starts the scaled
+            // QP with the previous scaled_qp_out). The first QP is cold
+            // unless warm_start_first_qp is set.
             {
-                qp_out_.ux_first.setZero();
+                scaler_.scaled_out().ux_first.setZero();
                 for (int k = 1; k < N; ++k)
                 {
-                    qp_out_.ux_path[k - 1].setZero();
+                    scaler_.scaled_out().ux_path[k - 1].setZero();
                 }
-                qp_out_.ux_term.setZero();
+                scaler_.scaled_out().ux_term.setZero();
                 int ws = opts_.qp_warm_start;
                 if (iter == 0 && !opts_.warm_start_first_qp)
                 {
@@ -1007,7 +1045,8 @@ public:
                 qp_.set_warm_start(ws);
             }
 
-            const Status qp_st = qp_.solve(qp_in_, qp_out_);
+            const Status qp_st =
+                qp_.solve(scaler_.scaled_in(), scaler_.scaled_out());
             qp_status_ = static_cast<int>(qp_st);
             qp_iter_ = qp_.statistics().iter;
             if (qp_st != Status::kSolved &&
@@ -1026,6 +1065,12 @@ public:
                 }
                 return Status::kQpFailure;
             }
+
+            // 3h: map the scaled-space solution back to original space
+            // (acados ocp_nlp_qpscaling_rescale_solution, :327-375 /
+            // :668-686). qp_out_ then carries the original-space step and
+            // duals, as in v1.
+            scaler_.rescale_solution(qp_out_);
 
             step_norm_ = primal_step_norm_inf(qp_out_);
 
@@ -1088,6 +1133,52 @@ private:
         row.step_norm = step_norm_;
         row.alpha = alpha_;
         return row;
+    }
+
+    /// Per-iteration QP tolerance update (acados
+    /// ocp_nlp_common.c:4522-4574, called inside
+    /// ocp_nlp_solve_qp_and_correct_dual). No-op when strategy is 0
+    /// (kFixedQpTol).
+    void update_qp_tolerances(const NlpResiduals& res)
+    {
+        if (opts_.nlp_qp_tol_strategy == 0)
+        {
+            return;
+        }
+        double ts = 0, te = 0, ti = 0, tc = 0;
+        if (opts_.nlp_qp_tol_strategy == 1)
+        {
+            // ADAPTIVE_CURRENT_RES_JOINT
+            const double rf = opts_.nlp_qp_tol_reduction_factor;
+            ts = std::min(rf * res.res_stat, 1e-2);
+            te = std::min(rf * res.res_eq, 1e-2);
+            ti = std::min(rf * res.res_ineq, 1e-2);
+            tc = std::min(rf * res.res_comp, 1e-2);
+            const double joint = std::max(
+                ts, std::max(te, std::max(ti, tc)));
+            const double sf = opts_.nlp_qp_tol_safety_factor;
+            ts = std::max(sf * opts_.tol_stat, joint);
+            te = std::max(sf * opts_.tol_eq, joint);
+            ti = std::max(sf * opts_.tol_ineq, joint);
+            tc = std::max(sf * opts_.tol_comp, joint);
+        }
+        else
+        {
+            // ADAPTIVE_QPSCALING
+            const double mcs = scaler_.min_constr_scaling();
+            const double sf = opts_.nlp_qp_tol_safety_factor;
+            const double stat_factor = std::min(
+                scaler_.obj_factor(), mcs);
+            ts = sf * opts_.tol_stat * stat_factor;
+            te = sf * opts_.tol_eq * 1.0;
+            ti = sf * opts_.tol_ineq * mcs;
+            tc = sf * opts_.tol_comp * mcs;
+            ts = std::max(ts, opts_.nlp_qp_tol_min_stat);
+            te = std::max(te, opts_.nlp_qp_tol_min_eq);
+            ti = std::max(ti, opts_.nlp_qp_tol_min_ineq);
+            tc = std::max(tc, opts_.nlp_qp_tol_min_comp);
+        }
+        qp_.set_residual_tolerances(ts, te, ti, tc);
     }
 
     /// Inf-norm of the primal step, max over stages (acados
@@ -2683,6 +2774,7 @@ private:
     // ---------------------------------------------------------------
 
     SqpOptions opts_;
+    QpScaler<P, NH> scaler_;
     QpSolver qp_;
     Regularizer reg_;
     Globalizer glob_;

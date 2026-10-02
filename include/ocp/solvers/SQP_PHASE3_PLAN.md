@@ -770,3 +770,79 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit`, `sqp_unit` (incl. the new `adaptive LM (3g)` suite),
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3h — QP scaling + adaptive QP tolerances
+
+- Re-read `ocp_nlp_qpscaling.c` (`compute_obj_scaling_factor` `483-540`,
+  `scale_objective` `379-392`, `out_scale_duals` `396-407`,
+  `scale_constraints` `545-618`, `rescale_solution_constraint_scaling`
+  `327-375`, `rescale_solution` `668-686`), `ocp_nlp_common.c:4522-4574`
+  (tolerance strategy), `utils/math.c` (Gershgorin). Confirmed:
+  - Objective scaling: `max_abs_eig = max(ershgorin(H_ux), ||Z||inf)` per
+    stage; `obj_factor = ub/max_abs_eig` when `max_abs_eig > ub`, else `1`
+    with a grad-floor upscale. Hessian/grad scaled by `obj_factor`; the duals
+    (`pi`, `lam`) are rescaled by `1/obj_factor` on the way back.
+  - Constraint scaling (general rows only): `s_j = 1/max(1,
+    max(bound_max, ||DC(u;x) row j||inf))`; the (u;x) Jacobian + `d` are
+    x `s_j`, the slack Hessian diagonal is / `s_j^2`, the slack gradient is
+    / `s_j`. On the way back: the row's `lam` x `s_j`, the slack `ux` / `s_j`,
+    the slack `lam` x `s_j`. `min_constraint_scaling = min_j s_j`.
+  - Tolerance strategy 1 (`ADAPTIVE_CURRENT_RES_JOINT`):
+    `tmp_X = min(r*res_X, 1e-2)`, `joint = max(tmp_X)`,
+    `tol_X = max(safety*tol_X, joint)`. Strategy 2
+    (`ADAPTIVE_QPSCALING`): `stat_factor = min(obj_factor,
+    min_constraint_scaling)`, scale each of the four, floor at
+    `tol_min_*`. Strategy 0 (`FIXED_QP_TOL`): no-op.
+- **New `acados/qpscaling.hpp`** — `QpScaler<P, NH>`: `scale_qp(const Qp&)`
+  copies the assembled QP into `scaled_in_` and applies objective + constraint
+  scaling; `rescale_solution(QpSol&)` maps the solved scaled-space solution
+  back to original space. Holds `obj_factor_`, `min_constr_scaling_` and the
+  per-stage per-row `s_j` (contiguous general rows from `row_off(g_ineq)`).
+  `compute_obj_scaling_factor` is a static (Gershgorin over the full
+  (u;x;s) Hessian block, which equals `max(ershgorin(H_ux), max Z)` since the
+  slack block is diagonal and decoupled) so it is unit-testable without an
+  instance.
+- `HpipmQpSolver::set_residual_tolerances(g, b, d, m)` (new) sets the four
+  per-residual IPM exit tolerances in place (mapping acados
+  `tol_stat/eq/ineq/comp` to `res_g/b/d/m_max`).
+- `SqpOptions`: kept the `scale_qp_objective` / `scale_qp_constraints`
+  booleans (no enum churn) and added `ub_max_abs_eig`,
+  `lb_norm_inf_grad_obj`, `nlp_qp_tol_strategy` (0/1/2, default 0 = fixed),
+  `nlp_qp_tol_reduction_factor` (`1e-1`), `nlp_qp_tol_safety_factor` (`0.1`),
+  `nlp_qp_tol_min_{stat,eq,ineq,comp}` (acados defaults `1e-9/1e-10/1e-10/
+  1e-11`).
+- **Driver wiring** (`sqp.hpp`): after `add_lm_term`, `scaler_.scale_qp(qp_in_)`;
+  the regularizer now acts on `scaler_.scaled_in()` (the scaled copy);
+  `update_qp_tolerances(res)` (new private helper, no-op for strategy 0) is
+  called right before the QP solve; the warm-start zeroes
+  `scaler_.scaled_out()` primal (duals warm-started from the previous
+  scaled-space solution, as in acados); `qp_.solve(scaled_in, scaled_out)`;
+  `scaler_.rescale_solution(qp_out_)` maps the solution back to original space
+  before the step-norm / globalization (which therefore see original-space
+  `qp_out_` as in v1).
+- Deviations: (i) the regularizer now runs on `scaler_.scaled_in()` (a copy),
+  so `last_qp()` returns the *un-regularized* LM-shifted QP, not the
+  regularized one — matching acados (the returned QP is not regularized) and
+  behaviorally identical to v1 when scaling is off (identity rescale, same
+  warm start). Verified no existing test relies on `last_qp()` being
+  regularized. (ii) When both scalings are off, the driver still routes through
+  the scaler (a plain copy) so the code path is uniform.
+- Tests (`tests/sqp/qpscaling_3h.cpp`, registered in `sqp_unit`):
+  - `compute_obj_scaling_factor` against hand-computed `obj_factor`
+    (no-scale 1.0; downscale `ub/eig`; small-grad upscale `lb/grad` capped by
+    `max_upscale`).
+  - Constraint scaling on a probe QP (first-stage ineq row with bound 10 /
+    coeff 3 -> `s_j = 0.1`; a lin row with bound 4 -> `s_j = 0.25`): asserts
+    the scaled `DC`/`d`/slack-Hessian and `min_constr_scaling`.
+  - Rescale round trip on a fabricated scaled-space solution: ineq slack `ux`
+    `/= s_j`, hi `lam` `*= s_j`, slack `lam` `*= s_j`; untouched entries
+    unchanged.
+  - End-to-end: DI (N=10) with both scalings on vs off -> same cost (to
+    `1e-6`) and `x`/`u` to `1e-8`; both `kSolved`.
+  - Adaptive-tolerance strategies 1 and 2 (strategy 2 with constraint scaling
+    on) -> `kSolved`, >= 1 iteration.
+  - All-features-on end-to-end (both scalings + strategy 2) -> `kSolved`.
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `QP scaling (3h)` suite),
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.

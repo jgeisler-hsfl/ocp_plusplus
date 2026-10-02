@@ -18,6 +18,7 @@ int run_driver_2g_tests();
 int run_warm_start_3c_tests();
 int run_timeout_3f_tests();
 int run_adaptive_lm_3g_tests();
+int run_qpscaling_3h_tests();
 
 int main()
 {
@@ -31,6 +32,7 @@ int main()
     failures += run_warm_start_3c_tests();
     failures += run_timeout_3f_tests();
     failures += run_adaptive_lm_3g_tests();
+    failures += run_qpscaling_3h_tests();
 
     if (failures == 0)
     {

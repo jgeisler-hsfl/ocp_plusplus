@@ -1836,6 +1836,18 @@ public:
     /// hot (acados mapping).
     void set_warm_start(int ws) { opts_.warm_start = ws; }
 
+    /// Override the per-residual exit tolerances for subsequent solve()
+    /// calls (phase 3h; the SQP driver sets these per QP solve when an
+    /// adaptive tolerance strategy is active).
+    void set_residual_tolerances(double res_g_max, double res_b_max,
+                                 double res_d_max, double res_m_max)
+    {
+        opts_.res_g_max = res_g_max;
+        opts_.res_b_max = res_b_max;
+        opts_.res_d_max = res_d_max;
+        opts_.res_m_max = res_m_max;
+    }
+
 private:
     HpipmOptions opts_;
     HpipmStatistics stat_;
