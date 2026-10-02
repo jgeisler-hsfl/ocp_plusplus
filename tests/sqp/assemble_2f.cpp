@@ -38,6 +38,15 @@ void check_close(double a, double b, const char* msg)
     }
 }
 
+void check_bool(bool cond, const char* msg)
+{
+    if (!cond)
+    {
+        std::fprintf(stderr, "FAIL: %s\n", msg);
+        ++failures;
+    }
+}
+
 // ---------------------------------------------------------------------
 // QuadTest: nx = 1, nu = 1, x_0 free, one soft ineq (stage), one soft
 // terminal equality; non-zero dynamics / ineq / terminal-eq HVPs.
@@ -337,6 +346,136 @@ public:
 };
 
 // ---------------------------------------------------------------------
+// SoftBoxProbe: nx = 2, nu = 2, fixed x_0, N = 2.
+// Verifies (phase 3a) that soft box rows carry +1 (lo) / -1 (hi) slack
+// columns in DC, that the box-slack Hessian diagonals equal w, and that
+// hard box rows carry no slack column at all.
+//
+//   dynamics:  x_{k+1} = x_k + u_k       (df_dx = I, df_du = I)
+//   stage cost: 0.5 (||x||^2 + ||u||^2)  (Hess = I over [u; x])
+//   terminal:   0.5 ||x||^2
+//   box:        state  {0 soft w=2, 1 hard}
+//               control {0 soft w=5, 1 hard}
+//               terminal state {0 soft w=3, 1 hard}
+//   no ineq / eq / lin constraints.
+// ---------------------------------------------------------------------
+
+struct SoftBoxDims
+{
+    static constexpr int nx = 2;
+    static constexpr int nu = 2;
+    static constexpr int ng = 0;
+    static constexpr int ne = 0;
+    static constexpr int nl = 0;
+    static constexpr int ng_t = 0;
+    static constexpr int ne_t = 0;
+    static constexpr int nl_t = 0;
+    static constexpr bool fixed_initial_state = true;
+    static constexpr bool has_dynamics_hess_prod = false;
+    static constexpr bool has_constr_hess_prod = false;
+    static constexpr std::array<int, 2> state_box_idx = {0, 1};
+    static constexpr std::array<int, 2> control_box_idx = {0, 1};
+    static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
+    static constexpr std::array<int, 1> state_box_soft_idx = {0};
+    static constexpr std::array<int, 1> control_box_soft_idx = {0};
+    static constexpr std::array<int, 1> terminal_state_box_soft_idx = {0};
+    static constexpr std::array<int, 0> ineq_soft_idx = {};
+    static constexpr std::array<int, 0> eq_soft_idx = {};
+    static constexpr std::array<int, 0> lin_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_eq_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_lin_soft_idx = {};
+};
+
+class SoftBoxProbe : public ocp::Problem<SoftBoxDims>
+{
+public:
+    static constexpr double w_bx = 2.0;
+    static constexpr double w_bu = 5.0;
+    static constexpr double w_bx_t = 3.0;
+
+    state_t initial_state() const
+    {
+        state_t x0;
+        x0 << 0.3, 0.1;
+        return x0;
+    }
+
+    state_t dynamics_next_state(int, const state_t& x, const control_t& u) const
+    {
+        return x + u;
+    }
+
+    void dynamics_jacobian(int, const state_t&, const control_t&,
+                           dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    {
+        df_dx.setIdentity();
+        df_du.setIdentity();
+    }
+
+    double stage_cost_value(int, const state_t& x, const control_t& u) const
+    {
+        return 0.5 * (x.squaredNorm() + u.squaredNorm());
+    }
+
+    stage_grad_t stage_cost_gradient(int, const state_t& x,
+                                     const control_t& u) const
+    {
+        stage_grad_t g;
+        g.head(nu) = u;
+        g.tail(nx) = x;
+        return g;
+    }
+
+    stage_hess_t stage_cost_hessian(int, const state_t&, const control_t&) const
+    {
+        return stage_hess_t::Identity();
+    }
+
+    double terminal_cost_value(const state_t& x) const
+    {
+        return 0.5 * x.squaredNorm();
+    }
+
+    term_grad_t terminal_cost_gradient(const state_t& x) const
+    {
+        return x;
+    }
+
+    term_hess_t terminal_cost_hessian(const state_t&) const
+    {
+        return term_hess_t::Identity();
+    }
+
+    state_box_t stage_state_box_constr(int) const
+    {
+        state_box_t spec;
+        spec.lo << -10.0, -10.0;
+        spec.hi << 10.0, 10.0;
+        spec.soft_penalty << w_bx, 0.0;
+        return spec;
+    }
+
+    control_box_t stage_control_box_constr(int) const
+    {
+        control_box_t spec;
+        spec.lo << -1.0, -1.0;
+        spec.hi << 1.0, 1.0;
+        spec.soft_penalty << w_bu, 0.0;
+        return spec;
+    }
+
+    term_state_box_t terminal_state_box_constr() const
+    {
+        term_state_box_t spec;
+        spec.lo << -10.0, -10.0;
+        spec.hi << 10.0, 10.0;
+        spec.soft_penalty << w_bx_t, 0.0;
+        return spec;
+    }
+};
+
+// ---------------------------------------------------------------------
 // Check A: DoubleIntegrator, N = 2, fixed x_0.
 // ---------------------------------------------------------------------
 
@@ -621,6 +760,138 @@ void check_quad()
 }
 
 // ---------------------------------------------------------------------
+// Check B2: SoftBoxProbe, N = 2, fixed x_0.
+// Verifies soft box DC slack columns (+1 lo / -1 hi), box-slack Hessian
+// diagonals (= w), and that hard box rows carry no slack column.
+// ---------------------------------------------------------------------
+
+void check_softbox_assembly()
+{
+    SoftBoxProbe prob;
+    static constexpr int N = 2;
+
+    Solution<SoftBoxProbe> sol(N);
+    sol.x[0] << 0.3, 0.1;
+    sol.x[1] << 0.4, 0.2;
+    sol.x[2] << 0.5, 0.3;
+    sol.u[0] << 0.1, 0.2;
+    sol.u[1] << 0.3, 0.4;
+
+    SqpOptions opts;
+    SqpSolver<SoftBoxProbe> solver(opts);
+    solver.resize(N);
+
+    const Status st = solver.assemble_qp(prob, sol);
+    if (st != Status::kSolved)
+    {
+        std::fprintf(stderr,
+                     "FAIL: SoftBoxProbe assemble_qp status %d (want kSolved)\n",
+                     static_cast<int>(st));
+        ++failures;
+        return;
+    }
+
+    const auto& qp = solver.last_qp();
+    using D = QpDim<SoftBoxProbe>;
+
+    // --- first stage: control box row 0 soft (w=5), row 1 hard --------
+    {
+        const auto& s = qp.first;
+        const auto& lay = D::lay_first;
+        const int rbu = lay.row_off(detail::g_bu);
+
+        const int r = rbu + SoftBoxProbe::control_box_soft_idx[0];
+        const int cl = D::idxs_lo_first[r];
+        const int ch = D::idxs_hi_first[r];
+        const int bv = D::idxb_first[D::nbx_first + SoftBoxProbe::control_box_soft_idx[0]];
+        check_close(s.DC(r, bv), 1.0, "SB first bu soft unit");
+        check_close(s.DC(r, cl), 1.0, "SB first bu soft lo +1");
+        check_close(s.DC(r, ch), -1.0, "SB first bu soft hi -1");
+        check_close(s.hess(cl, cl), SoftBoxProbe::w_bu, "SB first bu slack lo hess");
+        check_close(s.hess(ch, ch), SoftBoxProbe::w_bu, "SB first bu slack hi hess");
+
+        const int rh = rbu + 1;
+        check_bool(D::idxs_lo_first[rh] < 0, "SB first bu hard idxs_lo < 0");
+        check_bool(D::idxs_hi_first[rh] < 0, "SB first bu hard idxs_hi < 0");
+        for (int c = D::nu + D::nx; c < D::nvar_first; ++c)
+            check_close(s.DC(rh, c), 0.0, "SB first bu hard no slack col");
+    }
+
+    // --- path stage (k = 1): state box + control box ------------------
+    {
+        const auto& s = qp.path[0];
+        const auto& lay = D::lay_path;
+        const int rbx = lay.row_off(detail::g_bx);
+        const int rbu = lay.row_off(detail::g_bu);
+
+        // soft state box row (row 0), w = 2
+        {
+            const int r = rbx + SoftBoxProbe::state_box_soft_idx[0];
+            const int cl = D::idxs_lo_path[r];
+            const int ch = D::idxs_hi_path[r];
+            const int bv = D::idxb_path[SoftBoxProbe::state_box_soft_idx[0]];
+            check_close(s.DC(r, bv), 1.0, "SB path bx soft unit");
+            check_close(s.DC(r, cl), 1.0, "SB path bx soft lo +1");
+            check_close(s.DC(r, ch), -1.0, "SB path bx soft hi -1");
+            check_close(s.hess(cl, cl), SoftBoxProbe::w_bx, "SB path bx slack lo hess");
+            check_close(s.hess(ch, ch), SoftBoxProbe::w_bx, "SB path bx slack hi hess");
+        }
+        // hard state box row (row 1)
+        {
+            const int rh = rbx + 1;
+            check_bool(D::idxs_lo_path[rh] < 0, "SB path bx hard idxs_lo < 0");
+            check_bool(D::idxs_hi_path[rh] < 0, "SB path bx hard idxs_hi < 0");
+            for (int c = D::nu + D::nx; c < D::nvar_path; ++c)
+                check_close(s.DC(rh, c), 0.0, "SB path bx hard no slack col");
+        }
+
+        // soft control box row (row 0), w = 5
+        {
+            const int r = rbu + SoftBoxProbe::control_box_soft_idx[0];
+            const int cl = D::idxs_lo_path[r];
+            const int ch = D::idxs_hi_path[r];
+            const int bv = D::idxb_path[D::nbx + SoftBoxProbe::control_box_soft_idx[0]];
+            check_close(s.DC(r, bv), 1.0, "SB path bu soft unit");
+            check_close(s.DC(r, cl), 1.0, "SB path bu soft lo +1");
+            check_close(s.DC(r, ch), -1.0, "SB path bu soft hi -1");
+            check_close(s.hess(cl, cl), SoftBoxProbe::w_bu, "SB path bu slack lo hess");
+            check_close(s.hess(ch, ch), SoftBoxProbe::w_bu, "SB path bu slack hi hess");
+        }
+        // hard control box row (row 1)
+        {
+            const int rh = rbu + 1;
+            check_bool(D::idxs_lo_path[rh] < 0, "SB path bu hard idxs_lo < 0");
+            check_bool(D::idxs_hi_path[rh] < 0, "SB path bu hard idxs_hi < 0");
+            for (int c = D::nu + D::nx; c < D::nvar_path; ++c)
+                check_close(s.DC(rh, c), 0.0, "SB path bu hard no slack col");
+        }
+    }
+
+    // --- terminal stage: state box row 0 soft (w=3), row 1 hard --------
+    {
+        const auto& s = qp.term;
+        const auto& lay = D::lay_term;
+        const int rbx = lay.row_off(detail::g_bx);
+
+        const int r = rbx + SoftBoxProbe::terminal_state_box_soft_idx[0];
+        const int cl = D::idxs_lo_term[r];
+        const int ch = D::idxs_hi_term[r];
+        const int bv = D::idxb_term[SoftBoxProbe::terminal_state_box_soft_idx[0]];
+        check_close(s.DC(r, bv), 1.0, "SB term bx soft unit");
+        check_close(s.DC(r, cl), 1.0, "SB term bx soft lo +1");
+        check_close(s.DC(r, ch), -1.0, "SB term bx soft hi -1");
+        check_close(s.hess(cl, cl), SoftBoxProbe::w_bx_t, "SB term bx slack lo hess");
+        check_close(s.hess(ch, ch), SoftBoxProbe::w_bx_t, "SB term bx slack hi hess");
+
+        const int rh = rbx + 1;
+        check_bool(D::idxs_lo_term[rh] < 0, "SB term bx hard idxs_lo < 0");
+        check_bool(D::idxs_hi_term[rh] < 0, "SB term bx hard idxs_hi < 0");
+        for (int c = D::nx; c < D::nvar_term; ++c)
+            check_close(s.DC(rh, c), 0.0, "SB term bx hard no slack col");
+    }
+}
+
+// ---------------------------------------------------------------------
 // Check C: DegProbe -> first-stage degeneracy => kInfeasible.
 // ---------------------------------------------------------------------
 
@@ -655,6 +926,7 @@ int run_assemble_2f_tests()
 {
     check_double_integrator();
     check_quad();
+    check_softbox_assembly();
     check_degeneracy();
     return failures;
 }

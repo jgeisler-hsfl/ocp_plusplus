@@ -128,6 +128,46 @@ struct TermConstr : ocp::Problem<TermConstrDims>
 };
 
 // ---------------------------------------------------------------------
+// SoftBox (phase 3a): 1 state / 1 control, pinned x_0, one soft control
+// box (first stage) and one soft terminal state box. The inactive side of
+// each box is masked (d_mask = 0, mirroring an -inf bound). No ineq / eq /
+// lin rows, so the only slacks are the four box slacks. The QP data is
+// filled by hand in case3_softbox; only the compile-time dimensions /
+// index sets are used.
+// ---------------------------------------------------------------------
+
+struct SoftBoxDims
+{
+    static constexpr int nx = 1;
+    static constexpr int nu = 1;
+    static constexpr int ng = 0;
+    static constexpr int ne = 0;
+    static constexpr int nl = 0;
+    static constexpr int ng_t = 0;
+    static constexpr int ne_t = 0;
+    static constexpr int nl_t = 0;
+    static constexpr bool fixed_initial_state = true;
+    static constexpr bool has_dynamics_hess_prod = false;
+    static constexpr bool has_constr_hess_prod = false;
+    static constexpr std::array<int, 1> state_box_idx = {0};
+    static constexpr std::array<int, 1> control_box_idx = {0};
+    static constexpr std::array<int, 1> terminal_state_box_idx = {0};
+    static constexpr std::array<int, 0> ineq_soft_idx = {};
+    static constexpr std::array<int, 0> eq_soft_idx = {};
+    static constexpr std::array<int, 0> lin_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_eq_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_lin_soft_idx = {};
+    static constexpr std::array<int, 1> state_box_soft_idx = {0};
+    static constexpr std::array<int, 1> control_box_soft_idx = {0};
+    static constexpr std::array<int, 1> terminal_state_box_soft_idx = {0};
+};
+
+struct SoftBox : ocp::Problem<SoftBoxDims>
+{
+};
+
+// ---------------------------------------------------------------------
 // Per-stage accessors into a Qp (Dynamic-extent mirrors for the oracle).
 // ---------------------------------------------------------------------
 
@@ -1161,6 +1201,201 @@ void case2_soft(const char* name, int N, const VecD& x0, const VecD& jg,
 }
 
 // ---------------------------------------------------------------------
+// Case 3 fill (phase 3a): soft box rows carry the idxs_rev slack columns.
+//
+//   N = 1, x_0 = 0 pinned.  dynamics: x_1 = u_0 + x_0   (BA = [1 1], b = 0).
+//   stage cost:  0.5 (u^2 + x_0^2) + g*u      (g = -12 pulls u up, or +12
+//                                              pulls u down)
+//   terminal:    0.5 x_1^2
+//   box:         -1 <= u <= 1   (soft, w = 4)   [first stage]
+//                -1 <= x_1 <= 1  (soft, w = 25)  [terminal]
+//   inactive box sides are masked (d_mask = 0, d = -1e3), mirroring -inf.
+//
+// Because x_1 = u, both boxes see the same value, so the violated side is
+// whichever the gradient pushes into. The weighted-slack KKT on the active
+// side is lambda = w * s, and the dense oracle (active side + zeroed
+// opposite slack) reproduces z / pi / obj.
+// ---------------------------------------------------------------------
+
+template <class P, int NH>
+void fill_softbox(Qp<P, NH>& qp, bool lo_violated)
+{
+    using D = QpDim<P>;
+    const double BIG = 1e3;
+    const double g = lo_violated ? 12.0 : -12.0;
+
+    // first stage: (u; x; s_bu_lo; s_bu_hi)
+    {
+        auto& st = qp.first;
+        st.hess.setZero();
+        st.hess(0, 0) = 1.0;
+        st.hess(1, 1) = 1.0;
+        st.hess(2, 2) = 4.0;  // s_bu_lo
+        st.hess(3, 3) = 4.0;  // s_bu_hi
+        st.grad(0) = g;
+        st.grad(1) = 0.0;
+        st.BA(0, 0) = 1.0;
+        st.BA(0, 1) = 1.0;
+        // rows: 0 = pin, 1 = bu
+        st.DC(0, D::idx_x0[0]) = 1.0;
+        st.DC(1, D::idxb_first[0]) = 1.0;
+        st.DC(1, D::idxs_lo_first[1]) = 1.0;
+        st.DC(1, D::idxs_hi_first[1]) = -1.0;
+        // sides: 0=pin lo, 1=bu lo, 2=pin hi, 3=bu hi, 4=s_bu_lo, 5=s_bu_hi
+        st.d(0) = 0.0;
+        st.d_mask(0) = 1.0;
+        st.d(2) = 0.0;
+        st.d_mask(2) = 1.0;
+        st.d(3) = -1.0;  // bu hi: -hi
+        st.d_mask(3) = 1.0;
+        st.d(4) = 0.0;
+        st.d_mask(4) = 1.0;
+        st.d(5) = 0.0;
+        st.d_mask(5) = 1.0;
+        if (lo_violated)
+        {
+            st.d(1) = -1.0;   // bu lo: lo - w_cur = -1
+            st.d_mask(1) = 1.0;
+        }
+        else
+        {
+            st.d(1) = -BIG;   // bu lo masked (-inf analogue)
+            st.d_mask(1) = 0.0;
+        }
+    }
+
+    // terminal stage: (x; s_bx_lo; s_bx_hi)
+    {
+        auto& st = qp.term;
+        st.hess.setZero();
+        st.hess(0, 0) = 1.0;
+        st.hess(1, 1) = 25.0;  // s_bx_lo
+        st.hess(2, 2) = 25.0;  // s_bx_hi
+        // grad zero
+        st.DC(0, D::idxb_term[0]) = 1.0;
+        st.DC(0, D::idxs_lo_term[0]) = 1.0;
+        st.DC(0, D::idxs_hi_term[0]) = -1.0;
+        // sides: 0=bx lo, 1=bx hi, 2=s_lo, 3=s_hi
+        st.d(1) = -1.0;   // bx hi: -hi
+        st.d_mask(1) = 1.0;
+        st.d(2) = 0.0;
+        st.d_mask(2) = 1.0;
+        st.d(3) = 0.0;
+        st.d_mask(3) = 1.0;
+        if (lo_violated)
+        {
+            st.d(0) = -1.0;   // bx lo: lo - w_cur = -1
+            st.d_mask(0) = 1.0;
+        }
+        else
+        {
+            st.d(0) = -BIG;   // bx lo masked (-inf analogue)
+            st.d_mask(0) = 0.0;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Case 3: soft box rows (phase 3a). Verifies the weighted-slack KKT on the
+// violated side (lambda = w * s, s >= 0) and cross-checks z / pi / obj /
+// active multipliers against the dense full-KKT oracle.
+// ---------------------------------------------------------------------
+
+template <class P, int NH = Eigen::Dynamic>
+void case3_softbox(const char* name, bool lo_violated)
+{
+    const std::string p = name;
+    Qp<P, NH> qp(1);
+    QpSol<P, NH> sol(1);
+    fill_softbox(qp, lo_violated);
+
+    HpipmQpSolver<P, NH> solver;
+    const Status st = solver.solve(qp, sol);
+    check(st == Status::kSolved,
+          p + ": status kSolved (got " +
+              std::to_string(static_cast<int>(st)) + ")");
+    if (st != Status::kSolved)
+    {
+        return;
+    }
+
+    using D = QpDim<P>;
+    const auto& lay_f = D::lay_first;
+    const auto& lay_t = D::lay_term;
+    const int r_bu = lay_f.row_off(detail::g_bu);
+    const int r_bx = lay_t.row_off(detail::g_bx);
+    const int which = lo_violated ? 0 : 1;  // 0 = lo, 1 = hi
+
+    const int s_lo_f = D::idxs_lo_first[r_bu];
+    const int s_hi_f = D::idxs_hi_first[r_bu];
+    const int s_lo_t = D::idxs_lo_term[r_bx];
+    const int s_hi_t = D::idxs_hi_term[r_bx];
+    const double s_f = (which == 0) ? sol.ux_first(s_lo_f)
+                                    : sol.ux_first(s_hi_f);
+    const double s_t = (which == 0) ? sol.ux_term(s_lo_t)
+                                    : sol.ux_term(s_hi_t);
+    check(s_f >= 0.0, p + ": box slack (bu) >= 0");
+    check(s_t >= 0.0, p + ": box slack (term bx) >= 0");
+    check(s_f > 1e-3, p + ": box slack (bu) positive (s=" +
+                          std::to_string(s_f) + ")");
+    check(s_t > 1e-3, p + ": box slack (term bx) positive (s=" +
+                          std::to_string(s_t) + ")");
+
+    // weighted-slack KKT: lambda_side == w * s on the violated side
+    const int side_f = (which == 0) ? lay_f.side_lo(r_bu)
+                                    : lay_f.side_hi(r_bu);
+    const int side_t = (which == 0) ? lay_t.side_lo(r_bx)
+                                    : lay_t.side_hi(r_bx);
+    check_close_scalar(sol.lam_first(side_f), 4.0 * s_f, 1e-6,
+                       p + ": weighted-slack bu (lam == 4*s)");
+    check_close_scalar(sol.lam_term(side_t), 25.0 * s_t, 1e-6,
+                       p + ": weighted-slack term bx (lam == 25*s)");
+
+    check_kkt_residuals(solver, qp, sol, p);
+
+    // dense oracle: the violated side active + the opposite (zero) box
+    // slacks pinned (their slack sides are active at s = 0)
+    Stg<P, NH> sg{qp, 1};
+    const std::vector<ActiveRow> act = {{0, r_bu, which}, {1, r_bx, which}};
+    const int other = (which == 0) ? 1 : 0;
+    const std::vector<ActiveSlack> act_s = {{0, other}, {1, other}};
+    VecD x0 = VecD::Zero(D::nx);
+    OracleOut<P, NH> ref = dense_oracle(sg, x0, act, act_s);
+    check(ref.ok, p + ": dense oracle (soft box) factorised");
+    if (ref.ok)
+    {
+        // The masked (-inf) box side keeps a tiny positive multiplier in the
+        // solver, so its slack is s = lam/w ~ 1e-5 instead of exactly 0; zero
+        // those entries out before the tight comparison.
+        const int mask_f = (which == 0) ? s_hi_f : s_lo_f;
+        const int mask_t = (which == 0) ? s_hi_t : s_lo_t;
+        check(std::fabs(sol.ux_first(mask_f)) < 1e-3,
+              p + ": masked bu slack small");
+        check(std::fabs(sol.ux_term(mask_t)) < 1e-3,
+              p + ": masked term bx slack small");
+        VecD z0 = sol.ux_first;
+        z0(mask_f) = 0.0;
+        VecD zn = sol.ux_term;
+        zn(mask_t) = 0.0;
+        check_close(z0, ref.z[0], 1e-6, p + ": z_0 (soft box)");
+        check_close(zn, ref.z[1], 1e-6, p + ": z_N (soft box)");
+        check_close(sol.pi[0], ref.pi[0], 1e-5, p + ": pi_0 (soft box)");
+        check_close_scalar(ref.act_row_mult(0), sol.lam_first(side_f), 1e-6,
+                           p + ": oracle lam bu matches solver");
+        check_close_scalar(ref.act_row_mult(1), sol.lam_term(side_t), 1e-6,
+                           p + ": oracle lam term matches solver");
+    }
+
+    QpRes<P, NH> res(1);
+    solver.compute_residuals(qp, sol, res);
+    check_close_scalar(res.obj, ref.obj, 1e-6, p + ": objective (soft box)");
+    std::printf("  %s: N=1 s_bu=%.5f s_term=%.5f lam_bu=%.5f lam_term=%.5f "
+                "obj=%.6f res_g=%.1e\n",
+                name, s_f, s_t, sol.lam_first(side_f), sol.lam_term(side_t),
+                res.obj, res.res_g_max);
+}
+
+// ---------------------------------------------------------------------
 // Case 4 fill: terminal ineq / eq / lin + terminal box for TermConstr.
 // The terminal equality is active; ineq / lin / box are wide (non-binding).
 // ---------------------------------------------------------------------
@@ -1566,6 +1801,12 @@ int run_suite_1i_tests()
         jg << 0.0, 0.0, 1.0;  // g = v - vmax  (u; x0; x1)
         case2_soft<DI, NH>("DI soft N=1", 1, x0_di, jg, 100.0);
         case2_soft<DI, NH>("DI soft N=2", 2, x0_di, jg, 100.0);
+    }
+
+    // (3) soft box rows (phase 3a): idxs_rev slack columns in the box DC
+    {
+        case3_softbox<SoftBox, NH>("SB soft box (hi violated)", false);
+        case3_softbox<SoftBox, NH>("SB soft box (lo violated)", true);
     }
 
     // (4) terminal ineq / eq / lin + terminal box

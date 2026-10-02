@@ -1631,6 +1631,17 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_first[j]) = 1;
+                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                const int cl = D::idxs_lo_first[r];
+                if (cl >= 0)
+                {
+                    st.DC(r, cl) = 1;
+                }
+                const int ch = D::idxs_hi_first[r];
+                if (ch >= 0)
+                {
+                    st.DC(r, ch) = -1;
+                }
             }
         }
 
@@ -1641,6 +1652,17 @@ private:
             {
                 const int r = lay.row_off(detail::g_bu) + j;
                 st.DC(r, D::idxb_first[D::nbx_first + j]) = 1;
+                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                const int cl = D::idxs_lo_first[r];
+                if (cl >= 0)
+                {
+                    st.DC(r, cl) = 1;
+                }
+                const int ch = D::idxs_hi_first[r];
+                if (ch >= 0)
+                {
+                    st.DC(r, ch) = -1;
+                }
             }
         }
 
@@ -1742,6 +1764,17 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_path[j]) = 1;
+                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                const int cl = D::idxs_lo_path[r];
+                if (cl >= 0)
+                {
+                    st.DC(r, cl) = 1;
+                }
+                const int ch = D::idxs_hi_path[r];
+                if (ch >= 0)
+                {
+                    st.DC(r, ch) = -1;
+                }
             }
         }
         if constexpr (D::nbu > 0)
@@ -1750,6 +1783,17 @@ private:
             {
                 const int r = lay.row_off(detail::g_bu) + j;
                 st.DC(r, D::idxb_path[D::nbx + j]) = 1;
+                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                const int cl = D::idxs_lo_path[r];
+                if (cl >= 0)
+                {
+                    st.DC(r, cl) = 1;
+                }
+                const int ch = D::idxs_hi_path[r];
+                if (ch >= 0)
+                {
+                    st.DC(r, ch) = -1;
+                }
             }
         }
         if constexpr (D::ng > 0)
@@ -1844,6 +1888,17 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_term[j]) = 1;
+                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                const int cl = D::idxs_lo_term[r];
+                if (cl >= 0)
+                {
+                    st.DC(r, cl) = 1;
+                }
+                const int ch = D::idxs_hi_term[r];
+                if (ch >= 0)
+                {
+                    st.DC(r, ch) = -1;
+                }
             }
         }
         if constexpr (D::ng_t > 0)
