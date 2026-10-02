@@ -396,7 +396,7 @@ void test_full_step()
     double alpha = 0.0;
     glob.initialize(prob, cur);
     const Status st = glob.find_acceptable_iterate(
-        prob, cur, step, sl, scratch, alpha);
+        prob, cur, Qp<MeritProb>(N), step, sl, scratch, alpha);
 
     check(st == Status::kSolved, p + "status");
     check_close(alpha, 1.0, p + "alpha");
@@ -459,7 +459,7 @@ void test_backtracking()
     double alpha = 0.0;
     glob.initialize(prob, cur);
     const Status st = glob.find_acceptable_iterate(
-        prob, cur, step, sl, scratch, alpha);
+        prob, cur, Qp<MeritProb>(N), step, sl, scratch, alpha);
 
     check(st == Status::kSolved, p + "status");
     check_close(alpha, 0.49, p + "alpha");
@@ -504,7 +504,7 @@ void test_min_step()
     double alpha = 0.0;
     glob.initialize(prob, cur);
     const Status st = glob.find_acceptable_iterate(
-        prob, cur, step, sl, scratch, alpha);
+        prob, cur, Qp<MeritProb>(N), step, sl, scratch, alpha);
 
     check(st == Status::kMinStep, p + "status");
     check_close(alpha, std::pow(0.7, 8), p + "alpha");
@@ -544,7 +544,7 @@ void test_nan_detected()
     double alpha = 0.0;
     glob.initialize(prob, cur);
     const Status st = glob.find_acceptable_iterate(
-        prob, cur, step, sl, scratch, alpha);
+        prob, cur, Qp<MeritProb>(N), step, sl, scratch, alpha);
 
     check(st == Status::kNanDetected, p + "status");
     check_close(cur.x[1](0), 0.0, p + "x1 untouched");

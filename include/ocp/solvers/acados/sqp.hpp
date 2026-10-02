@@ -30,6 +30,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -613,6 +614,10 @@ struct SqpIteration
     double res_stat = 0.0, res_eq = 0.0, res_ineq = 0.0, res_comp = 0.0;
     int qp_status = 0, qp_iter = 0;
     double step_norm = 0.0, alpha = 0.0;
+    // Funnel accept type (0='-', 1='f', 2='h', 3='b', 4='p'); -1 when the
+    // active globalizer is not a funnel (SQP_PHASE3_PLAN sec. 3i).
+    int funnel_iter_type = -1;
+    double funnel_width = 0.0;
 };
 
 /// Per-iteration records of a SQP solve (acados `stat` matrix analogue).
@@ -672,6 +677,21 @@ inline void print_sqp_iteration(int iter, const SqpIteration& row)
 // =========================================================================
 //  SqpSolver (sub-step 2f: QP assembly + LM term)
 // =========================================================================
+
+namespace detail
+{
+/// Detects a `last_iter_type()` accessor (funnel accept-type logging, 3i).
+template <class G, class = void>
+struct has_iter_type : std::false_type
+{
+};
+template <class G>
+struct has_iter_type<
+    G, std::void_t<decltype(std::declval<const G&>().last_iter_type())>>
+    : std::true_type
+{
+};
+}  // namespace detail
 
 /// SQP driver (phase 2).
 ///
@@ -1077,7 +1097,7 @@ public:
             // Advances sol in place on kSolved / kMinStep (2d); leaves it
             // untouched on kNanDetected.
             const Status gstatus = glob_.find_acceptable_iterate(
-                problem, sol, qp_out_, slacks_, trial_, alpha_);
+                problem, sol, qp_in_, qp_out_, slacks_, trial_, alpha_);
             if (gstatus == Status::kSolved || gstatus == Status::kMinStep)
             {
                 update_slacks(qp_out_, alpha_);
@@ -1132,6 +1152,11 @@ private:
         row.qp_iter = qp_iter_;
         row.step_norm = step_norm_;
         row.alpha = alpha_;
+        if constexpr (detail::has_iter_type<Globalizer>::value)
+        {
+            row.funnel_iter_type = glob_.last_iter_type();
+            row.funnel_width = glob_.funnel_width();
+        }
         return row;
     }
 

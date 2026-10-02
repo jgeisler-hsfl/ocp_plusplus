@@ -606,6 +606,7 @@ struct MeritBacktracking
     /// or kMinStep. Leaves `cur` untouched on kNanDetected.
     Status find_acceptable_iterate(const P& problem,
                                    Solution<P, NH>& cur,
+                                   const Qp<P, NH>& /*qp*/,
                                    const QpSol<P, NH>& step,
                                    const SqpSlacks<P, NH>& slacks,
                                    Solution<P, NH>& scratch,
@@ -1059,8 +1060,461 @@ private:
                     static_cast<double>(
                         lin_spec.bounds.hi(j));
                 m += static_cast<double>(w_lin_term(j))
-                   * (std::max(0.0, lo - s_lo - v)
-                      + std::max(0.0, v - s_hi - hi));
+                    * (std::max(0.0, lo - s_lo - v)
+                       + std::max(0.0, v - s_hi - hi));
+            }
+        }
+        return m;
+    }
+};
+
+// =========================================================================
+//  Funnel globalization line search (sub-step 3i)
+// =========================================================================
+
+/// Funnel globalization (acados ocp_nlp_globalization_funnel.c).
+///
+/// Merit:  rho * F + L1
+/// where F = raw stage + terminal cost (no slack penalty) and
+/// L1 = L1 infeasibility (full |gap| on the dynamics, positive-part on
+/// the constraint residuals with slacks absorbed; pin rows excluded).
+///
+/// Accept tree (f / h / b / p):
+///   inside funnel (L1_trial <= width) and not in penalty mode:
+///     - switching + Armijo on objective -> 'f'
+///     - L1_trial <= c_sd * width        -> 'h' + shrink funnel
+///     - L1_trial < L1_cur + Armijo on merit -> 'b', enter penalty mode
+///   in penalty mode:
+///     - Armijo on merit -> 'p'; shrink + leave penalty mode if
+///       L1_trial <= c_sd * width
+///   outside funnel (not merit-only): reject
+///
+/// On kMinStep the iterate is NOT advanced (acados funnel.c:525-529),
+/// unlike merit backtracking which commits the post-shrink step.
+template <class P, int NH = Eigen::Dynamic>
+struct Funnel
+{
+    using D = QpDim<P>;
+    using S = typename P::scalar_t;
+
+    GlobOptions glob;
+
+    // acados ocp_nlp_globalization_funnel_opts defaults
+    double initialization_increase_factor = 15.0;
+    double initialization_upper_bound = 1.0;
+    double sufficient_decrease_factor = 0.9;
+    double kappa = 0.9;
+    double fraction_switching_condition = 1e-3;
+    double initial_penalty_parameter = 1.0;
+    double penalty_contraction = 5e-1;
+    double penalty_eta = 1e-6;
+    bool use_merit_fun_only = false;
+
+    mutable int N_ = 0;
+    mutable double funnel_width_ = 0.0;
+    mutable double l1_infeasibility_ = 0.0;
+    mutable double penalty_parameter_ = 1.0;
+    mutable bool funnel_penalty_mode_ = false;
+    mutable int funnel_iter_type_ = 0;  // 0='-', 1='f', 2='h', 3='b', 4='p'
+    mutable bool width_initialized_ = false;
+
+    /// Last accepted step type: 0='-', 1='f', 2='h', 3='b', 4='p'.
+    int last_iter_type() const { return funnel_iter_type_; }
+
+    /// Current funnel width (0 until the first line search).
+    double funnel_width() const { return funnel_width_; }
+
+    /// Call once per solve() at iteration 0.
+    void initialize(const P& /*problem*/, const Solution<P, NH>& sol)
+    {
+        N_ = sol.N;
+        funnel_width_ = 0.0;
+        l1_infeasibility_ = 0.0;
+        penalty_parameter_ = initial_penalty_parameter;
+        funnel_penalty_mode_ = false;
+        funnel_iter_type_ = 0;
+        width_initialized_ = false;
+    }
+
+    /// Backtracking line search. Advances `cur` in place on kSolved;
+    /// leaves `cur` untouched on kMinStep / kNanDetected.
+    Status find_acceptable_iterate(const P& problem,
+                                   Solution<P, NH>& cur,
+                                   const Qp<P, NH>& qp,
+                                   const QpSol<P, NH>& step,
+                                   const SqpSlacks<P, NH>& slacks,
+                                   Solution<P, NH>& scratch,
+                                   double& alpha) const
+    {
+        const int N = cur.N;
+        assert(N_ == N && step.N == N && slacks.N == N
+               && scratch.N == N);
+
+        if (!width_initialized_)
+        {
+            l1_infeasibility_ = l1(problem, cur, slacks);
+            funnel_width_ = std::max(
+                initialization_upper_bound,
+                initialization_increase_factor * l1_infeasibility_);
+            width_initialized_ = true;
+        }
+
+        const double cur_l1 = l1(problem, cur, slacks);
+        const double cur_cost = raw_cost(problem, cur);
+        const double pred_obj = -directional_derivative(qp, step);
+        const double pred_infeas = cur_l1;
+
+        update_penalty(pred_obj, pred_infeas);
+
+        const double cur_merit =
+            penalty_parameter_ * cur_cost + cur_l1;
+        const double pred_merit_red =
+            penalty_parameter_ * pred_obj + pred_infeas;
+
+        SqpSlacks<P, NH> trial_slacks(N);
+        double a = 1.0;
+
+        while (true)
+        {
+            detail::apply_sqp_step_primal<P, NH>(cur, step, a, scratch);
+            detail::shift_slacks(slacks, step, a, trial_slacks);
+            const double tri_cost = raw_cost(problem, scratch);
+            const double tri_l1 = l1(problem, scratch, trial_slacks);
+            const double tri_merit =
+                penalty_parameter_ * tri_cost + tri_l1;
+            const double act_obj_red = cur_cost - tri_cost;
+            const double act_merit_red = cur_merit - tri_merit;
+
+            bool accept = false;
+            const bool inside =
+                use_merit_fun_only || (tri_l1 <= funnel_width_);
+
+            if (inside)
+            {
+                if (!funnel_penalty_mode_)
+                {
+                    const bool switch_cond =
+                        a * pred_obj >=
+                        fraction_switching_condition * pred_infeas;
+                    if (switch_cond &&
+                        armijo(act_obj_red, pred_obj, a))
+                    {
+                        accept = true;
+                        funnel_iter_type_ = 1;  // 'f'
+                    }
+                    else if (tri_l1 <=
+                             sufficient_decrease_factor * funnel_width_)
+                    {
+                        accept = true;
+                        funnel_iter_type_ = 2;  // 'h'
+                        shrink_funnel(tri_l1);
+                    }
+                    else if (tri_l1 < cur_l1 &&
+                             armijo(act_merit_red, pred_merit_red, a))
+                    {
+                        accept = true;
+                        funnel_iter_type_ = 3;  // 'b'
+                        funnel_penalty_mode_ = true;
+                    }
+                }
+                else
+                {
+                    if (armijo(act_merit_red, pred_merit_red, a))
+                    {
+                        accept = true;
+                        funnel_iter_type_ = 4;  // 'p'
+                        if (tri_l1 <=
+                            sufficient_decrease_factor * funnel_width_)
+                        {
+                            shrink_funnel(tri_l1);
+                            funnel_penalty_mode_ = false;
+                        }
+                    }
+                }
+            }
+
+            if (accept)
+            {
+                alpha = a;
+                l1_infeasibility_ = tri_l1;
+                apply_sqp_step<P, NH>(cur, step, a,
+                                       glob.full_step_dual, cur);
+                return Status::kSolved;
+            }
+
+            if (a < glob.alpha_min)
+            {
+                alpha = a;
+                return Status::kMinStep;
+            }
+            a *= glob.alpha_reduction;
+        }
+    }
+
+private:
+    void shrink_funnel(double tri_l1) const
+    {
+        funnel_width_ = (1.0 - kappa) * tri_l1
+                       + kappa * funnel_width_;
+    }
+
+    void update_penalty(double pred_obj, double pred_infeas) const
+    {
+        if (pred_obj < 0.0 && pred_obj > -1e-4)
+        {
+            pred_obj = 0.0;
+        }
+        if (penalty_parameter_ * pred_obj + pred_infeas
+            < penalty_eta * pred_infeas)
+        {
+            penalty_parameter_ = std::max(
+                0.0, std::min(
+                    penalty_contraction * penalty_parameter_,
+                    ((1.0 - penalty_eta) * pred_infeas) /
+                    (-pred_obj + 1e-9)));
+        }
+    }
+
+    bool armijo(double actual_red, double pred_red, double a) const
+    {
+        return actual_red >=
+               glob.eps_sufficient_descent * a *
+               std::max(0.0, pred_red - 1e-9);
+    }
+
+    static double raw_cost(const P& problem,
+                           const Solution<P, NH>& sol)
+    {
+        double m = 0.0;
+        for (int k = 0; k < sol.N; ++k)
+        {
+            m += static_cast<double>(
+                problem.stage_cost_value(k, sol.x[k], sol.u[k]));
+        }
+        m += static_cast<double>(
+            problem.terminal_cost_value(sol.x[sol.N]));
+        return m;
+    }
+
+    /// QP directional derivative  sum_k ux_k . rqz_k  (the QP `rqz . d`).
+    static double directional_derivative(const Qp<P, NH>& qp,
+                                         const QpSol<P, NH>& step)
+    {
+        double d = 0.0;
+        d += static_cast<double>(step.ux_first.dot(qp.first.grad));
+        for (int k = 1; k < step.N; ++k)
+        {
+            d += static_cast<double>(
+                step.ux_path[k - 1].dot(qp.path[k - 1].grad));
+        }
+        d += static_cast<double>(step.ux_term.dot(qp.term.grad));
+        return d;
+    }
+
+    /// L1 infeasibility: full |gap| on dynamics + positive-part on
+    /// constraint residuals (slacks absorbed; pin rows excluded).
+    double l1(const P& problem, const Solution<P, NH>& sol,
+              const SqpSlacks<P, NH>& sl) const
+    {
+        const int N = sol.N;
+        double m = 0.0;
+        for (int k = 0; k < N; ++k)
+        {
+            const auto gap = (problem.dynamics_next_state(
+                                  k, sol.x[k], sol.u[k])
+                              - sol.x[k + 1])
+                                 .eval();
+            for (int j = 0; j < D::nx; ++j)
+            {
+                m += std::fabs(static_cast<double>(gap(j)));
+            }
+        }
+        for (int k = 0; k < N; ++k)
+            m += stage_l1(problem, sol, sl, k);
+        m += term_l1(problem, sol, sl);
+        return m;
+    }
+
+    // -- positive-part constraint L1 (stage) --------------------------
+
+    template <class SV, class IdxLo, class IdxHi>
+    double stage_l1_impl(const P& problem, const Solution<P, NH>& sol,
+                         const SV& sv, const IdxLo& idxl,
+                         const IdxHi& idxh,
+                         const detail::QpLayout& lay,
+                         int base, int k) const
+    {
+        const auto& x = sol.x[k];
+        const auto& u = sol.u[k];
+        const int R = static_cast<int>(idxl.size());
+
+        typename P::ineq_t gv{};
+        typename P::eq_t ev{};
+        typename P::lin_t lv{};
+        typename P::stage_linear_t lin_spec{};
+        if constexpr (D::ng > 0)
+            gv = problem.stage_inequality_constr(k, x, u);
+        if constexpr (D::ne > 0)
+            ev = problem.stage_equality_constr(k, x, u);
+        if constexpr (D::nl > 0)
+        {
+            lin_spec = problem.stage_linear_constr(k);
+            lv = lin_spec.A * x + lin_spec.B * u;
+        }
+
+        double m = 0.0;
+        for (int r = 0; r < R; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g == detail::g_pin)
+                continue;
+            const int j = r - lay.row_off(g);
+            const double s_lo = (idxl[r] >= 0)
+                ? static_cast<double>(sv[idxl[r] - base])
+                : 0.0;
+            const double s_hi = (idxh[r] >= 0)
+                ? static_cast<double>(sv[idxh[r] - base])
+                : 0.0;
+
+            if (g == detail::g_bx)
+            {
+                if constexpr (P::nbx > 0)
+                {
+                    const auto spec =
+                        problem.stage_state_box_constr(k);
+                    const double v = static_cast<double>(
+                        x(P::state_box_idx[j]));
+                    m += std::max(0.0,
+                        static_cast<double>(spec.lo(j)) - s_lo - v);
+                    m += std::max(0.0,
+                        v - static_cast<double>(spec.hi(j)) - s_hi);
+                }
+            }
+            else if (g == detail::g_bu)
+            {
+                if constexpr (P::nbu > 0)
+                {
+                    const auto spec =
+                        problem.stage_control_box_constr(k);
+                    const double v = static_cast<double>(
+                        u(P::control_box_idx[j]));
+                    m += std::max(0.0,
+                        static_cast<double>(spec.lo(j)) - s_lo - v);
+                    m += std::max(0.0,
+                        v - static_cast<double>(spec.hi(j)) - s_hi);
+                }
+            }
+            else if (g == detail::g_ineq)
+            {
+                const double v = static_cast<double>(gv(j));
+                m += std::max(0.0, v - s_hi);
+            }
+            else if (g == detail::g_eq)
+            {
+                const double e = static_cast<double>(ev(j));
+                m += std::max(0.0, -s_lo - e);
+                m += std::max(0.0, e - s_hi);
+            }
+            else  // g_lin
+            {
+                const double v = static_cast<double>(lv(j));
+                const double lo =
+                    static_cast<double>(lin_spec.bounds.lo(j));
+                const double hi =
+                    static_cast<double>(lin_spec.bounds.hi(j));
+                m += std::max(0.0, lo - s_lo - v);
+                m += std::max(0.0, v - s_hi - hi);
+            }
+        }
+        return m;
+    }
+
+    double stage_l1(const P& problem, const Solution<P, NH>& sol,
+                    const SqpSlacks<P, NH>& sl, int k) const
+    {
+        if (k == 0)
+        {
+            return stage_l1_impl(problem, sol, sl.first,
+                                 D::idxs_lo_first, D::idxs_hi_first,
+                                 D::lay_first,
+                                 D::nvar_first - D::nslack_first, 0);
+        }
+        return stage_l1_impl(problem, sol, sl.path[k - 1],
+                             D::idxs_lo_path, D::idxs_hi_path,
+                             D::lay_path,
+                             D::nvar_path - D::nslack_path, k);
+    }
+
+    double term_l1(const P& problem, const Solution<P, NH>& sol,
+                   const SqpSlacks<P, NH>& sl) const
+    {
+        const auto& x = sol.x[sol.N];
+        const auto& sv = sl.term;
+        const auto& idxl = D::idxs_lo_term;
+        const auto& idxh = D::idxs_hi_term;
+        const int base = D::nvar_term - D::nslack_term;
+        const detail::QpLayout& lay = D::lay_term;
+
+        typename P::ineq_term_t gv{};
+        typename P::eq_term_t ev{};
+        typename P::lin_term_t lv{};
+        typename P::term_linear_t lin_spec{};
+        if constexpr (D::ng_t > 0)
+            gv = problem.terminal_inequality_constr(x);
+        if constexpr (D::ne_t > 0)
+            ev = problem.terminal_equality_constr(x);
+        if constexpr (D::nl_t > 0)
+        {
+            lin_spec = problem.terminal_linear_constr();
+            lv = lin_spec.A * x;
+        }
+
+        double m = 0.0;
+        for (int r = 0; r < D::nrow_term; ++r)
+        {
+            const int g = lay.group_of(r);
+            const int j = r - lay.row_off(g);
+            const double s_lo = (idxl[r] >= 0)
+                ? static_cast<double>(sv[idxl[r] - base])
+                : 0.0;
+            const double s_hi = (idxh[r] >= 0)
+                ? static_cast<double>(sv[idxh[r] - base])
+                : 0.0;
+
+            if (g == detail::g_bx)
+            {
+                if constexpr (P::nbx_t > 0)
+                {
+                    const auto spec =
+                        problem.terminal_state_box_constr();
+                    const double v = static_cast<double>(
+                        x(P::terminal_state_box_idx[j]));
+                    m += std::max(0.0,
+                        static_cast<double>(spec.lo(j)) - s_lo - v);
+                    m += std::max(0.0,
+                        v - static_cast<double>(spec.hi(j)) - s_hi);
+                }
+            }
+            else if (g == detail::g_ineq)
+            {
+                const double v = static_cast<double>(gv(j));
+                m += std::max(0.0, v - s_hi);
+            }
+            else if (g == detail::g_eq)
+            {
+                const double e = static_cast<double>(ev(j));
+                m += std::max(0.0, -s_lo - e);
+                m += std::max(0.0, e - s_hi);
+            }
+            else  // g_lin
+            {
+                const double v = static_cast<double>(lv(j));
+                const double lo =
+                    static_cast<double>(lin_spec.bounds.lo(j));
+                const double hi =
+                    static_cast<double>(lin_spec.bounds.hi(j));
+                m += std::max(0.0, lo - s_lo - v);
+                m += std::max(0.0, v - s_hi - hi);
             }
         }
         return m;

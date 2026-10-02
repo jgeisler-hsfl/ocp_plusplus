@@ -846,3 +846,76 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit`, `sqp_unit` (incl. the new `QP scaling (3h)` suite),
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3i — funnel globalization
+
+- Re-read `ocp_nlp_globalization_funnel.c` (`initialize_funnel_width` `229-233`,
+  `initialize_funnel_penalty_parameter` `235-238`,
+  `update_funnel_penalty_parameter` `240-263`, `decrease_funnel` `265-268`,
+  `is_iterate_inside_of_funnel` `270-280`,
+  `is_funnel_sufficient_decrease_satisfied` `282-292`,
+  `is_switching_condition_satisfied` `294-304`,
+  `is_armijo_condition_satisfied` `306-317`,
+  `is_trial_iterate_acceptable_to_funnel` `319-413`,
+  `backtracking_line_search` `415-533`,
+  `find_acceptable_iterate` `536-555`, `initialize_memory` `588-605`),
+  `ocp_nlp_common.c:2626-2644` (`gradient_directional_derivative`),
+  `:2714-2749` (`get_l1_infeasibility`), `ocp_nlp_sqp.c:517,573-576,753-759,778`
+  (driver pre-feed + call). Confirmed:
+  - **Merit** = `rho * F + L1`, where `F` = raw stage+terminal cost (no slack
+    penalty) and `L1` = L1 infeasibility: full `|f - x_next|` on the dynamics,
+    positive-part on constraint residuals with slacks absorbed (`max(0, v - s_hi)`,
+    `max(0, lo - s_lo - v)`, etc.), pin rows excluded.
+  - `predicted_optimality_reduction = -sum_k ux_k . rqz_k` (the QP `rqz . d`;
+    acados `rqz` is the cost gradient, so our `qp_in_.grad` is the faithful
+    analog). `predicted_infeasibility_reduction` = the current-iterate L1
+    (documented acados quirk: a level, not a reduction).
+  - **Penalty update** (before the loop, each iter): clamp tiny-negative
+    `pred_obj in (-1e-4, 0)` to 0; if `rho*pred_obj + pred_infeas <
+    eta(1e-6)*pred_infeas` then `rho = max(0, min(contraction(0.5)*rho,
+    (1-eta)*pred_infeas / (-pred_obj + 1e-9)))`. Never increases.
+  - **Accept tree** (f/h/b/p): inside funnel (`L1_trial <= width`) and not in
+    penalty mode: switching (`a*pred_obj >= c_sw(1e-3)*pred_infeas`) +
+    Armijo(on objective) -> `'f'`; else `L1_trial <= c_sd(0.9)*width` ->
+    `'h'` + shrink funnel; else `L1_trial < L1_cur` + Armijo(on merit) ->
+    `'b'`, enter penalty mode. In penalty mode: Armijo(on merit) -> `'p'`, and
+    if `L1_trial <= c_sd*width` also shrink + leave penalty mode. Outside the
+    funnel (not merit-only): reject.
+  - **Funnel shrink**: `width <- (1-kappa)*L1_trial + kappa*width` (kappa
+    0.9). **Init**: `L1 <- L1_infeasibility(cur)`,
+    `width <- max(upper(1.0), factor(15)*L1_init)`, `rho <- 1.0`, `alpha = 1`,
+    `iter_type = '-'`, penalty mode off.
+  - On `kMinStep` the funnel does **not** advance the iterate (unlike merit
+    backtracking, which commits the post-shrink step) — matches
+    `funnel.c:525-529`.
+- **New `Funnel<P, NH>`** in `globalize.hpp`: same duck-typed
+  `find_acceptable_iterate` contract as `MeritBacktracking`, plus `last_iter_type()`
+  (accept-type for stats) and `funnel_width()` accessors. Holds the acados
+  funnel options as public members (defaults above) and a `GlobOptions glob`
+  for `alpha_min` / `alpha_reduction` / `eps_sufficient_descent` /
+  `full_step_dual`. L1/width/penalty/iter-type are `mutable` per-solve state
+  (the funnel recomputes `L1_init` lazily on the first line search, so the
+  driver's `initialize(problem, sol)` signature is unchanged).
+- **Driver** (`sqp.hpp`): `find_acceptable_iterate` now passes the assembled
+  `qp_in_` (original-space, un-regularized — the LM shift only touches the
+  Hessian, not `grad`) so the funnel can compute `rqz . d`. `MeritBacktracking`
+  ignores the new `const Qp&` param. `SqpIteration` gained `funnel_iter_type`
+  (default -1) and `funnel_width` (default 0), populated via a
+  `detail::has_iter_type` SFINAE so non-funnel globalizers leave them
+  defaulted; `make_row` fills both when present.
+- Deviations: (i) the funnel uses the raw NLP cost (no slack penalty) for the
+  merit `F` — matches acados's `cost_value` to the extent the examples carry no
+  soft slacks, and keeps the funnel self-contained; (ii) `L1_init` / width are
+  computed lazily on the first line search rather than in `initialize_memory`,
+  leaving the driver's `initialize` signature unchanged.
+- Tests (`tests/sqp/funnel_3i.cpp`, registered in `sqp_unit`):
+  - End-to-end: funnel on DI (N=10) -> `kSolved`, all four NLP residuals <
+    `1e-8`.
+  - `funnel_width` monotonically non-increasing across logged iterations.
+  - Accept-type (`funnel_iter_type`) is logged in the statistics.
+  - Funnel solution matches the merit-backtracking reference (cost to `1e-6`,
+    `x`/`u` to `1e-6`).
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `funnel globalization (3i)` suite),
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.
