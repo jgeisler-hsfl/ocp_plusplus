@@ -282,7 +282,8 @@ public:
         S mu = 0;
         S mu_aff = 0;
         S sigma = 0;
-        S alpha = 0;
+        S alpha_prim = 0;  // accepted primal step length (drives v, t)
+        S alpha_dual = 0;  // accepted dual step length (drives pi, lam)
         S reg = 0;  // current reg_prim (grown on Cholesky failure)
 
         int iter = 0;
@@ -361,7 +362,8 @@ public:
         // interior-point initialization (worklog 1c) + mask absolute lam
         init_point(in, out);
         mask_abs_lam(in, out);
-        ws_.alpha = S(1);
+        ws_.alpha_prim = S(1);
+        ws_.alpha_dual = S(1);
 
         // pre-iteration residuals (stat row 0; x_ocp_qp_ipm.c:3085-3107)
         compute_residuals(in, out, ws_.res);
@@ -371,8 +373,10 @@ public:
         QpSol<P, NH> step(N);
         for (int kk = 0; kk < opts_.iter_max; ++kk)
         {
-            // exit test (x_ocp_qp_ipm.c:3119-3128)
-            if (ws_.alpha <= opts_.alpha_min)
+            // exit test (x_ocp_qp_ipm.c:3119-3128): both step lengths must
+            // stay above alpha_min (single value when split_step = 0).
+            if (ws_.alpha_prim <= opts_.alpha_min
+                    or ws_.alpha_dual <= opts_.alpha_min)
             {
                 break;
             }
@@ -403,12 +407,12 @@ public:
             mask_step(in, step);
 
             // 3) predictor step length (stat 0, 1)
-            const S alpha_aff = compute_alpha(in, out, step);
+            compute_alpha(in, out, step);
             HpipmIteration* row = stat_row(kk);
             if (row)
             {
-                row->alpha_prim_aff = alpha_aff;
-                row->alpha_dual_aff = alpha_aff;
+                row->alpha_prim_aff = ws_.alpha_prim;
+                row->alpha_dual_aff = ws_.alpha_dual;
             }
 
             // 4) Mehrotra predictor-corrector (worklog 1g)
@@ -424,12 +428,12 @@ public:
                                 ws_.res);
                 solve_kkt(in, out, ws_.res, step);
                 mask_step(in, step);
-                const S alpha_corr = compute_alpha(in, out, step);
+                compute_alpha(in, out, step);
                 if (row)
                 {
                     row->sigma = ws_.sigma;
-                    row->alpha_prim = alpha_corr;
-                    row->alpha_dual = alpha_corr;
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
                 }
                 // conditional pure centering (x_ocp_qp_ipm.c:2564-2605)
                 if (opts_.cond_pred_corr)
@@ -441,11 +445,11 @@ public:
                                         /*correction=*/false, ws_.res);
                         solve_kkt(in, out, ws_.res, step);
                         mask_step(in, step);
-                        const S alpha_pc = compute_alpha(in, out, step);
+                        compute_alpha(in, out, step);
                         if (row)
                         {
-                            row->alpha_prim = alpha_pc;
-                            row->alpha_dual = alpha_pc;
+                            row->alpha_prim = ws_.alpha_prim;
+                            row->alpha_dual = ws_.alpha_dual;
                         }
                     }
                 }
@@ -454,8 +458,8 @@ public:
             {
                 if (row)
                 {
-                    row->alpha_prim = ws_.alpha;
-                    row->alpha_dual = ws_.alpha;
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
                 }
             }
 
@@ -487,7 +491,8 @@ public:
             stat_.status = Status::kMaxIterations;
             return Status::kMaxIterations;
         }
-        if (ws_.alpha <= opts_.alpha_min)
+        if (ws_.alpha_prim <= opts_.alpha_min
+                or ws_.alpha_dual <= opts_.alpha_min)
         {
             stat_.status = Status::kMinStep;
             return Status::kMinStep;
@@ -889,13 +894,25 @@ public:
     }
 
     /// Maximum step length keeping λ ≥ 0, t ≥ 0, and (when m ≠ 0)
-    /// λ·t ≥ m_safe·m (HPIPM COMPUTE_ALPHA_QP,
-    /// x_core_qp_ipm_aux.c:193; split_step = 0 branch).
+    /// λ·t ≥ m_safe·m (HPIPM COMPUTE_ALPHA_QP, x_core_qp_ipm_aux.c:193).
+    ///
+    /// split_step = 0: a single α drives λ and t (α_prim = α_dual = α).
+    /// split_step = 1: separate α_prim (drives t, the primal side) and
+    /// α_dual (drives λ, the dual side), computed by a three-pass line
+    /// search (x_core_qp_ipm_aux.c:219-374):
+    ///   pass 1: feasibility + one-sided complementarity (the dlam < 0 ∧
+    ///           dt < 0 case is deferred),
+    ///   pass 2: quadratic complementarity correction for the remaining
+    ///           dlam < 0 ∧ dt < 0 sides (r = (−b − √disc)/(2a) scaling of
+    ///           both alphas; 0 if the root is non-positive or c ≤ 0),
+    ///   pass 3: re-apply the complementarity adjustment any pass-2
+    ///           scaling may have left violated (no feasibility check in
+    ///           the source).
     ///
     /// Call `mask_step` before this so that dlam / dt are zero on absent
-    /// sides.  Stores the result in ws_.alpha.
-    S compute_alpha(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                    const QpSol<P, NH>& step)
+    /// sides.  Stores the result in ws_.alpha_prim / ws_.alpha_dual.
+    void compute_alpha(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                       const QpSol<P, NH>& step)
     {
         // m_zero: true when all m entries are zero
         // (x_ocp_qp_ipm.c:2966-2973)
@@ -908,8 +925,204 @@ public:
         const bool m_zero = (m_norm == 0.0);
 
         S m_safe = std::min(std::max(S(opts_.m_safe), S(0)), S(1));
-        S alpha = S(1);
 
+        if (opts_.split_step == 1)
+        {
+            S a_p = S(1);
+            S a_d = S(1);
+            if (m_zero)
+            {
+                // Separate feasibility pass
+                // (x_core_qp_ipm_aux.c:222-239).
+                auto feas =
+                    [&](const auto& lam, const auto& t, const auto& dlam,
+                        const auto& dt)
+                {
+                    const int n = static_cast<int>(lam.size());
+                    for (int i = 0; i < n; ++i)
+                    {
+                        if (lam(i) + a_d * dlam(i) < S(0))
+                        {
+                            a_d = -lam(i) / dlam(i);
+                        }
+                        if (t(i) + a_p * dt(i) < S(0))
+                        {
+                            a_p = -t(i) / dt(i);
+                        }
+                    }
+                };
+                feas(iter.lam_first, iter.t_first, step.lam_first,
+                     step.t_first);
+                for (int k = 1; k < in.N; ++k)
+                {
+                    feas(iter.lam_path[k - 1], iter.t_path[k - 1],
+                         step.lam_path[k - 1], step.t_path[k - 1]);
+                }
+                feas(iter.lam_term, iter.t_term, step.lam_term,
+                     step.t_term);
+            }
+            else
+            {
+                // Pass 1 (x_core_qp_ipm_aux.c:244-287).
+                auto pass1 =
+                    [&](const auto& lam, const auto& t, const auto& dlam,
+                        const auto& dt, const auto& m, const auto& dmask)
+                {
+                    const int n = static_cast<int>(lam.size());
+                    for (int i = 0; i < n; ++i)
+                    {
+                        S lam1 = lam(i) + a_d * dlam(i);
+                        S t1 = t(i) + a_p * dt(i);
+                        if (lam1 < S(0))
+                        {
+                            a_d = -lam(i) / dlam(i);
+                            lam1 = lam(i) + a_d * dlam(i);
+                        }
+                        if (t1 < S(0))
+                        {
+                            a_p = -t(i) / dt(i);
+                            t1 = t(i) + a_p * dt(i);
+                        }
+                        const S m1 = m_safe * (m(i) * dmask(i));
+                        if (lam1 * t1 - m1 < S(-1e-12))
+                        {
+                            if (dlam(i) < S(0))
+                            {
+                                if (dt(i) >= S(0))
+                                {
+                                    a_d = (m1 - lam(i) * t1) / (dlam(i) * t1);
+                                }
+                                // dt < 0: deferred to pass 2.
+                            }
+                            else if (dt(i) < S(0))
+                            {
+                                a_p = (m1 - t(i) * lam1) / (dt(i) * lam1);
+                            }
+                        }
+                    }
+                };
+                pass1(iter.lam_first, iter.t_first, step.lam_first,
+                      step.t_first, in.first.m, in.first.d_mask);
+                for (int k = 1; k < in.N; ++k)
+                {
+                    pass1(iter.lam_path[k - 1], iter.t_path[k - 1],
+                          step.lam_path[k - 1], step.t_path[k - 1],
+                          in.path[k - 1].m, in.path[k - 1].d_mask);
+                }
+                pass1(iter.lam_term, iter.t_term, step.lam_term,
+                      step.t_term, in.term.m, in.term.d_mask);
+
+                // Pass 2 (x_core_qp_ipm_aux.c:292-340).
+                auto pass2 =
+                    [&](const auto& lam, const auto& t, const auto& dlam,
+                        const auto& dt, const auto& m, const auto& dmask)
+                {
+                    const int n = static_cast<int>(lam.size());
+                    for (int i = 0; i < n; ++i)
+                    {
+                        if (!(dlam(i) < S(0) and dt(i) < S(0)))
+                        {
+                            continue;
+                        }
+                        S lam1 = lam(i) + a_d * dlam(i);
+                        S t1 = t(i) + a_p * dt(i);
+                        const S m1 = m_safe * (m(i) * dmask(i));
+                        if (lam1 * t1 - m1 < S(-1e-12))
+                        {
+                            const S c = lam(i) * t(i) - m1;
+                            if (c > S(0))
+                            {
+                                const S adlam = a_d * dlam(i);
+                                const S adt = a_p * dt(i);
+                                const S aa = adlam * adt;
+                                const S b = adlam * t(i) + lam(i) * adt;
+                                const S disc = b * b - S(4) * aa * c;
+                                if (disc >= S(0))
+                                {
+                                    const S r =
+                                        (-b - std::sqrt(disc)) *
+                                        (S(0.5) / aa);
+                                    if (r > S(0))
+                                    {
+                                        a_d *= r;
+                                        a_p *= r;
+                                    }
+                                    else
+                                    {
+                                        a_d = S(0);
+                                        a_p = S(0);
+                                    }
+                                }
+                                else
+                                {
+                                    a_d = S(0);
+                                    a_p = S(0);
+                                }
+                            }
+                            else
+                            {
+                                a_d = S(0);
+                                a_p = S(0);
+                            }
+                        }
+                    }
+                };
+                pass2(iter.lam_first, iter.t_first, step.lam_first,
+                      step.t_first, in.first.m, in.first.d_mask);
+                for (int k = 1; k < in.N; ++k)
+                {
+                    pass2(iter.lam_path[k - 1], iter.t_path[k - 1],
+                          step.lam_path[k - 1], step.t_path[k - 1],
+                          in.path[k - 1].m, in.path[k - 1].d_mask);
+                }
+                pass2(iter.lam_term, iter.t_term, step.lam_term,
+                      step.t_term, in.term.m, in.term.d_mask);
+
+                // Pass 3 (x_core_qp_ipm_aux.c:343-369).
+                auto pass3 =
+                    [&](const auto& lam, const auto& t, const auto& dlam,
+                        const auto& dt, const auto& m, const auto& dmask)
+                {
+                    const int n = static_cast<int>(lam.size());
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const S lam1 = lam(i) + a_d * dlam(i);
+                        const S t1 = t(i) + a_p * dt(i);
+                        const S m1 = m_safe * (m(i) * dmask(i));
+                        if (lam1 * t1 - m1 < S(-1e-12))
+                        {
+                            if (dlam(i) < S(0))
+                            {
+                                if (dt(i) >= S(0))
+                                {
+                                    a_d = (m1 - lam(i) * t1) / (dlam(i) * t1);
+                                }
+                            }
+                            else if (dt(i) < S(0))
+                            {
+                                a_p = (m1 - t(i) * lam1) / (dt(i) * lam1);
+                            }
+                        }
+                    }
+                };
+                pass3(iter.lam_first, iter.t_first, step.lam_first,
+                      step.t_first, in.first.m, in.first.d_mask);
+                for (int k = 1; k < in.N; ++k)
+                {
+                    pass3(iter.lam_path[k - 1], iter.t_path[k - 1],
+                          step.lam_path[k - 1], step.t_path[k - 1],
+                          in.path[k - 1].m, in.path[k - 1].d_mask);
+                }
+                pass3(iter.lam_term, iter.t_term, step.lam_term,
+                      step.t_term, in.term.m, in.term.d_mask);
+            }
+            ws_.alpha_prim = a_p;
+            ws_.alpha_dual = a_d;
+            return;
+        }
+
+        // split_step = 0: a single α drives both λ and t.
+        S alpha = S(1);
         auto process =
             [&](const auto& lam, const auto& t, const auto& dlam,
                 const auto& dt, const auto& m, const auto& dmask)
@@ -965,27 +1178,34 @@ public:
                 step.lam_term, step.t_term,
                 in.term.m, in.term.d_mask);
 
-        ws_.alpha = alpha;
-        return alpha;
+        ws_.alpha_prim = alpha;
+        ws_.alpha_dual = alpha;
     }
 
+    /// Accepted step lengths from the most recent `compute_alpha` call
+    /// (equal when split_step = 0).
+    S alpha_prim() const { return ws_.alpha_prim; }
+    S alpha_dual() const { return ws_.alpha_dual; }
+
     /// Apply the Newton step to the iterate (HPIPM UPDATE_VAR_QP,
-    /// x_core_qp_ipm_aux.c:472; split_step = 0, t_lam_min = 2).
+    /// x_core_qp_ipm_aux.c:472; t_lam_min = 2).
     ///
-    /// Damped step length: α' = α·(0.99(1−α) + 0.9999999·α) when α < 1.
+    /// Damping: when min(α_p, α_d) < 1, each is damped independently
+    /// via α' = α·(0.99(1−α) + 0.9999999·α).
     /// Applied: ux += α_p·δz, π += α_d·δπ,
     /// λ += α_d·δλ (clip ≥ lam_min), t += α_p·δt (clip ≥ t_min).
-    /// α_p = α_d = α' (split_step = 0).
+    /// With split_step = 0, α_p = α_d so behaviour is identical.
     void update_vars(QpSol<P, NH>& iter, const QpSol<P, NH>& step) const
     {
         const int N = iter.N;
-        S alpha = ws_.alpha;
-        S alpha_p = alpha, alpha_d = alpha;
-        if (alpha < S(1))
+        S alpha_p = ws_.alpha_prim;
+        S alpha_d = ws_.alpha_dual;
+        if (std::min(alpha_p, alpha_d) < S(1))
         {
-            alpha_p = alpha * (S(0.99) * (S(1) - alpha)
-                               + S(0.9999999) * alpha);
-            alpha_d = alpha_p;
+            alpha_p = alpha_p * (S(0.99) * (S(1) - alpha_p)
+                                 + S(0.9999999) * alpha_p);
+            alpha_d = alpha_d * (S(0.99) * (S(1) - alpha_d)
+                                 + S(0.9999999) * alpha_d);
         }
 
         iter.ux_first += alpha_p * step.ux_first;
@@ -1020,15 +1240,17 @@ public:
     /// COMPUTE_MU_AFF_QP, x_core_qp_ipm_aux.c:636):
     ///   mu_aff = (1 / nc_mask) * sum_sides | -m_i + (lam_i + a_d dlam_i)
     ///                                       * (t_i + a_p dt_i) |
-    /// over the active sides (d_mask = 1); a_p = a_d = ws_.alpha
-    /// (split_step = 0). `m` is the QP's complementarity RHS (in.*, zero in
-    /// v1), NOT the workspace res_m. Must be called after compute_alpha so
-    /// that ws_.alpha holds the accepted (predictor) step length. Stores the
-    /// result in ws_.mu_aff and returns it.
+    /// over the active sides (d_mask = 1); a_p / a_d from
+    /// ws_.alpha_prim / ws_.alpha_dual.
+    /// `m` is the QP's complementarity RHS (in.*, zero in v1), NOT the
+    /// workspace res_m. Must be called after compute_alpha so that
+    /// ws_.alpha_prim / ws_.alpha_dual hold the accepted step lengths.
+    /// Stores the result in ws_.mu_aff and returns it.
     S compute_mu_aff(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
                      const QpSol<P, NH>& step)
     {
-        const S a = ws_.alpha;  // a_p = a_d (split_step = 0)
+        const S a_d = ws_.alpha_dual;  // drives λ
+        const S a_p = ws_.alpha_prim;  // drives t
         S sum = 0.0;
         int nc_mask = 0;
         auto add_stage = [&](const auto& m, const auto& lam, const auto& t,
@@ -1040,8 +1262,8 @@ public:
             {
                 if (dmask(i) > 0.5)
                 {
-                    const S lam1 = lam(i) + a * dlam(i);
-                    const S t1 = t(i) + a * dt(i);
+                    const S lam1 = lam(i) + a_d * dlam(i);
+                    const S t1 = t(i) + a_p * dt(i);
                     sum += std::fabs(-m(i) + lam1 * t1);
                     ++nc_mask;
                 }

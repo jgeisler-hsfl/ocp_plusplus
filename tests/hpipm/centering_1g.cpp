@@ -253,7 +253,8 @@ void pipeline_case(const char* name, int N)
         return;
     }
     solver.mask_step(qp, step);
-    const double alpha = solver.compute_alpha(qp, sol, step);
+    solver.compute_alpha(qp, sol, step);
+    const double alpha = solver.alpha_dual();  // split_step = 0: both equal
     check(alpha > solver.options().alpha_min, p + ": alpha > alpha_min");
     const double mu_aff = solver.compute_mu_aff(qp, sol, step);
     check(mu_aff < mu0,
@@ -282,7 +283,8 @@ int run_centering_1g_tests()
         set_uniform_sides(qp, iter, step, 1.0, 2.0, -0.5, -0.3, 0.0, 1.0);
 
         HpipmQpSolver<DI, NH> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 1.0, 1e-12, "mu_aff m=0: alpha = 1 (no binding)");
         const double mu_aff = solver.compute_mu_aff(qp, iter, step);
         // |0 + (1 + 1*(-0.5)) * (2 + 1*(-0.3))| = |0.5 * 1.7| = 0.85
@@ -298,7 +300,8 @@ int run_centering_1g_tests()
         set_uniform_sides(qp, iter, step, 1.0, 2.0, -0.5, -0.3, 0.3, 1.0);
 
         HpipmQpSolver<DI, NH> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 1.0, 1e-12, "mu_aff m=0.3: alpha = 1");
         const double mu_aff = solver.compute_mu_aff(qp, iter, step);
         // |-0.3 + (1 - 0.5) * (2 - 0.3)| = |-0.3 + 0.85| = 0.55
@@ -323,7 +326,8 @@ int run_centering_1g_tests()
         }
 
         HpipmQpSolver<DI, NH> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         const double mu_aff = solver.compute_mu_aff(qp, iter, step);
         // Active sides all have the same value: 0.5 * 1.7 = 0.85
         check_scalar(mu_aff, 0.85, 1e-12, "mu_aff masked: active-only");
@@ -415,7 +419,8 @@ int run_centering_1g_tests()
         set_uniform_sides(qp, iter, step, lam, t, dlam, dt, 0.0, 1.0);
 
         HpipmQpSolver<DI, NH> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 1.0, 1e-12, "sigma floor: alpha");
         const double mu_aff = solver.compute_mu_aff(qp, iter, step);
         check_scalar(mu_aff, 0.0, 1e-15, "sigma floor: mu_aff = 0");

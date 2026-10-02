@@ -535,3 +535,53 @@ Phase 3 marked done and any §12 open items updated.
 - Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
   `qp_unit`, `sqp_unit`, `double_integrator`, `mass_spring`,
   `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3b — HPIPM `split_step` (separate primal/dual step lengths)
+
+- Re-read `x_core_qp_ipm_aux.c:193-468` (`COMPUTE_ALPHA_QP`, the
+  `split_step==1` branch) and `:472-582` (`UPDATE_VAR_QP`). Confirmed the
+  three-pass structure: Pass 1 per-side feasibility clipping into
+  `alpha_prim` / `alpha_dual`; Pass 2 quadratic scaling for the still-violating
+  `dlam < 0 ∧ dt < 0` sides; Pass 3 re-applies the complementarity check only
+  (the C source does **not** re-run the Pass-1 feasibility clip in Pass 3 —
+  the §2 sub-step note was imprecise; the source is authoritative).
+- `compute_alpha` now returns `void` and stores both alphas in the workspace
+  (`ws_.alpha_prim`, `ws_.alpha_dual`); public accessors `alpha_prim()` /
+  `alpha_dual()` added. The `split_step==1` path implements the two alphas with
+  a defensive `disc >= 0` guard in Pass 2 (the C source has no guard; `disc < 0`
+  is mathematically impossible in practice, the guard is harmless). The
+  `split_step==0` path sets `alpha_prim = alpha_dual = alpha` (unchanged values).
+- `compute_mu_aff` uses `alpha_dual` for `dlam` and `alpha_prim` for `dt`
+  (matching `COMPUTE_MU_AFF_QP`, `x_core_qp_ipm_aux.c:636`).
+- `update_vars`: independent damping `α' = α·(0.99(1−α) + 0.9999999·α)` when
+  `min(α_p, α_d) < 1`; `ux` / `t` scaled by `alpha_prim`, `pi` / `lam` by
+  `alpha_dual` (with the `t` / `lam` floors).
+- `solve()` init sets both alphas to 1; the exit test maps to `kMinStep` when
+  **either** `alpha_prim` or `alpha_dual` falls at or below `alpha_min`
+  (`x_ocp_qp_ipm.c:3119-3128`).
+- Tests (`tests/hpipm/split_step_3b.cpp`): hand-computed `compute_alpha` cases
+  (no-binding, dual-binding only, primal-binding only, both-binding, and the
+  both-negative quadratic Pass-2 case); an `update_vars` case asserting
+  `ux`/`t` use `alpha_prim` and `pi`/`lam` use `alpha_dual`; a 5-iteration
+  predictor (affine) loop with `split_step=1` on DI/MS (N=1,2 dynamic + MS
+  NH=2 fixed-extent) asserting both alphas stay > `alpha_min`, `lam`/`t` stay
+  above their floors, and all values stay finite.
+- Deviations: (i) Pass 3 re-applies only the complementarity adjustment, not
+  the Pass-1 feasibility clipping, per the C source. (ii) The predictor-loop
+  test uses a well-conditioned fill (contractive dynamics `A = 0.5·I`, small
+  `DC`/`grad`/`d`) rather than the adversarial random fill of `alpha_1f`: the
+  split-step (asymmetric `α_p ≠ α_d`) predictor trajectory is more aggressive
+  and the adversarial fill drives the iterate to a singular stage Cholesky
+  within 5 iterations. (iii) The test does **not** assert residual decrease:
+  a predictor-only affine loop with the split dual step does not guarantee
+  monotone `res_g` / `res_b` decrease (line-search backtracking plus faster
+  dual movement can increase them); the guaranteed invariants (Cholesky
+  success, alpha floors, `lam`/`t` floors, finiteness) are asserted instead.
+- Also updated `tests/hpipm/alpha_1f.cpp` and
+  `tests/hpipm/centering_1g.cpp` for the `compute_alpha` void-return +
+  `alpha_prim()` / `alpha_dual()` accessors (behavior unchanged; the
+  `split_step=0` values are identical).
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit` (incl. the new `split_step (3b)` suite), `sqp_unit`,
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.

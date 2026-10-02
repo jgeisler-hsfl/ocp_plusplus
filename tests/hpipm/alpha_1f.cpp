@@ -118,8 +118,10 @@ void alpha_case(const char* name, int N, double lam, double t, double dlam,
     set_uniform_sides(qp, iter, step, lam, t, dlam, dt, mv, dmask);
 
     HpipmQpSolver<P, NH> solver;
-    const double alpha = solver.compute_alpha(qp, iter, step);
-    check_scalar(alpha, alpha_expect, tol, p + ": alpha");
+    solver.compute_alpha(qp, iter, step);
+    // split_step = 0: primal and dual step lengths coincide.
+    check(solver.alpha_prim() == solver.alpha_dual(), p + ": alpha_p == alpha_d");
+    check_scalar(solver.alpha_dual(), alpha_expect, tol, p + ": alpha");
 }
 
 // ---------------------------------------------------------------------
@@ -286,7 +288,8 @@ void predictor_loop(const char* name, int N)
         }
 
         solver.mask_step(qp, step);
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check(alpha > alpha_min,
               p + ": alpha > alpha_min iter " + std::to_string(it));
         solver.update_vars(iter, step);
@@ -407,7 +410,8 @@ int run_alpha_1f_tests()
         step.pi[0].setConstant(4.0);
 
         HpipmQpSolver<DI, Eigen::Dynamic> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 0.5, 1e-12, "update_vars: alpha (dual binding)");
         solver.update_vars(iter, step);
 
@@ -441,7 +445,8 @@ int run_alpha_1f_tests()
         step.pi[0].setConstant(0.1);
 
         HpipmQpSolver<DI, Eigen::Dynamic> solver;
-        const double alpha = solver.compute_alpha(qp, iter, step);
+        solver.compute_alpha(qp, iter, step);
+        const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 1.0, 1e-12, "update_vars clip: alpha = 1");
         solver.update_vars(iter, step);
         const double lam_min = solver.options().lam_min;
