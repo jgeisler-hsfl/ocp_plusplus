@@ -435,6 +435,7 @@ public:
         return Status::kQpFailure;
     }
     MockStats statistics() const { return MockStats{}; }
+    void set_warm_start(int) {}  // phase 3c driver wiring
 };
 
 class ZeroStepQp
@@ -469,6 +470,7 @@ public:
         return Status::kSolved;
     }
     MockStats statistics() const { return MockStats{}; }
+    void set_warm_start(int) {}  // phase 3c driver wiring
 };
 
 void test_solve_qp_failure()

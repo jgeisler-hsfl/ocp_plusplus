@@ -585,3 +585,50 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit` (incl. the new `split_step (3b)` suite), `sqp_unit`,
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3c — HPIPM `warm_start ≥ 2` (+ driver wiring)
+
+- Re-read `x_ocp_qp_ipm.c:1631-1794` (`OCP_QP_INIT_VAR` warm-start branches)
+  and the driver `ocp_qp_hpipm.c:327-336` (ux zeroing). Confirmed:
+  `warm_start >= 3` keeps the whole iterate (ux, pi, lam, t) and clips
+  lam/t to `lam0_min`/`t0_min`; `== 2` keeps pi/lam/t, clips to `thr0 = 1e-1`
+  and does **not** zero ux (the driver zeroes ux unconditionally); `<= 1`
+  zeroes ux/pi and inits lam/t (cold).
+- `init_point` (`hpipm.hpp`) now branches on `opts_.warm_start` using three
+  small mutators (`zero_primal`, `zero_dual`, `clip_lam_t`): `>= 3` clips to
+  the warm floors and returns; `== 2` clips to `thr0` and returns; `<= 1`
+  zeros primal+dual and runs the existing heuristic. New public setter
+  `set_warm_start(int)` for the driver.
+- **Driver wiring** (`sqp.hpp`): before each `qp_.solve(qp_in_, qp_out_)` the
+  driver zeroes `qp_out_.ux_*` (primal always cold) and sets the QP solver's
+  warm-start to `qp_warm_start` — except `warm_start = 0` on the very first
+  QP when `warm_start_first_qp` is false. The absolute pi/lam/t from
+  iteration k-1 become the IPM initial iterate for iteration k.
+- Tests (`tests/sqp/warm_start_3c.cpp`):
+  - `init_point` branch unit tests (ws=3 clip, ws=2 clip, ws=0 cold) on a
+    small assembled DI QP.
+  - QP-level warm start: a synthetic well-conditioned QP (PD Hessian
+    `I + R'R`, contractive `A = 0.5*I`, wide non-binding bounds, the pin
+    equality, `d_mask = 1`) solved cold (13 IPM iters) then hot re-solved
+    (`warm_start=3`, 1 iter) and warm-dual re-solved (`warm_start=2`); asserts
+    `hot iter < cold iter`, same `z`/`pi` to `1e-3`, `kSolved`.
+  - Driver-level: `SqpSolver` with `qp_warm_start = 2` vs `0` on DI N=10 —
+    both `kSolved`, same cost / terminal state, `total_ipm <= cold`.
+- Deviations: (i) `init_point` for `== 2` does **not** zero ux (C-faithful;
+  the driver does it) — the standalone QP test therefore seeds ux explicitly
+  for the warm-dual case. (ii) The plan's "== 2 heuristic repair" is omitted:
+  the C source only clips + returns (running `init_stage` would clobber the
+  preserved multipliers via `lam = mu0/t`). (iii) `warm_start <= 1` is treated
+  uniformly as cold (C keeps ux for `== 1`; the driver zeroes it, so they are
+  equivalent once driven). (iv) The DI QP (N=10, ~40 vars) is small and
+  well-conditioned, so the dual-warm start (primal always cold in the driver)
+  shows no measurable IPM-iteration reduction; the driver test asserts
+  correctness + no-regression (`<=`), while the QP-level synthetic test
+  (hot start keeps the primal) demonstrates the 13 → 1 iteration reduction.
+  The QP-level test uses a synthetic QP because the real DI QP is only PD
+  after the driver adds the LM/regularization terms, which a standalone QP
+  test does not replicate.
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `warm_start (3c)` suite),
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.

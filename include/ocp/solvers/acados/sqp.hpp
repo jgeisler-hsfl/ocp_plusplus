@@ -568,8 +568,8 @@ struct SqpOptions
     double levenberg_marquardt = 0.0;
     bool with_adaptive_lm = false;        // phase 3 (inert in v1)
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
-    int qp_warm_start = 0;                // v1: inert (HPIPM cold-starts each QP)
-    bool warm_start_first_qp = false;     // v1: inert
+    int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
+    bool warm_start_first_qp = false;     // also warm-start the very first QP
     bool eval_residual_at_max_iter = false;
     double timeout_max_time = 0.0;        // phase 3 (inert in v1)
     bool scale_qp_objective = false;      // phase 3 (inert in v1)
@@ -874,6 +874,26 @@ public:
                     print_sqp_iteration(iter, row);
                 }
                 return term;
+            }
+
+            // QP warm start (phase 3c, acados ocp_qp_hpipm.c:327-336 +
+            // ocp_nlp_sqp.c:660-691): the primal step is always cold; only
+            // the duals (pi / lam / t) carried in qp_out_ from the previous
+            // QP are reused. The first QP is cold unless
+            // warm_start_first_qp is set.
+            {
+                qp_out_.ux_first.setZero();
+                for (int k = 1; k < N; ++k)
+                {
+                    qp_out_.ux_path[k - 1].setZero();
+                }
+                qp_out_.ux_term.setZero();
+                int ws = opts_.qp_warm_start;
+                if (iter == 0 && !opts_.warm_start_first_qp)
+                {
+                    ws = 0;
+                }
+                qp_.set_warm_start(ws);
             }
 
             const Status qp_st = qp_.solve(qp_in_, qp_out_);

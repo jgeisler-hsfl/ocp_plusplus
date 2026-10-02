@@ -639,16 +639,21 @@ public:
     }
 
     /// Interior-point initialization (HPIPM `OCP_QP_INIT_VAR`,
-    /// x_ocp_qp_ipm.c:1632-2049; v1: warm_start = 0, var_init_scheme = 1,
-    /// t0_init = 2).
+    /// x_ocp_qp_ipm.c:1632-2049; var_init_scheme = 1, t0_init = 2).
     ///
-    /// Zeros the primal (u;x;s) steps and the dynamics multipliers, then
-    /// fills an interior (t, lam) pair: slacks s_j start at thr0 with
-    /// t_j = thr0; every bound side gets t_j = distance from the bound at
-    /// the current iterate (clipped to >= thr0, repairing the decision
-    /// variable of a bound row when both sides are violated); finally
-    /// lam_j = mu0 / t_j, so that lam_j * t_j = mu0 on every active side
-    /// (res_mu = mu0 at the initial iterate, m = 0 in v1).
+    /// Branches on opts_.warm_start (phase 3c):
+    ///   >= 3 (hot): keep the whole iterate (ux, pi, lam, t); clip lam/t to
+    ///       lam0_min / t0_min; return.
+    ///   == 2 (primal+dual): keep pi / lam / t; clip lam/t to thr0 = 1e-1;
+    ///       leave ux as handed in (the SQP driver zeroes it); return.
+    ///   <= 1 (cold): zero the primal (u;x;s) steps and the dynamics
+    ///       multipliers, then fill an interior (t, lam) pair: slacks s_j
+    ///       start at thr0 with t_j = thr0; every bound side gets t_j =
+    ///       distance from the bound at the current iterate (clipped to
+    ///       >= thr0, repairing the decision variable of a bound row when
+    ///       both sides are violated); finally lam_j = mu0 / t_j, so that
+    ///       lam_j * t_j = mu0 on every active side (res_mu = mu0 at the
+    ///       initial iterate, m = 0 in v1).
     ///
     /// Made public for the phase-1 tests (plan sec. 6 lists it private).
     void init_point(const Qp<P, NH>& in, QpSol<P, NH>& out)
@@ -656,29 +661,83 @@ public:
         const int N = in.N;
         assert(out.N == N);
 
-        // cold start (warm_start = 0): zero the primal steps, pi, lam, t
-        out.ux_first.setZero();
-        for (int k = 1; k < N; ++k)
+        // Per-stage iterate mutators (used by the warm-start branches).
+        auto zero_primal = [&]()
         {
-            out.ux_path[k - 1].setZero();
-        }
-        out.ux_term.setZero();
-        for (int k = 0; k < N; ++k)
+            out.ux_first.setZero();
+            for (int k = 1; k < N; ++k)
+            {
+                out.ux_path[k - 1].setZero();
+            }
+            out.ux_term.setZero();
+        };
+        auto zero_dual = [&]()
         {
-            out.pi[k].setZero();
-        }
-        out.lam_first.setZero();
-        for (int k = 1; k < N; ++k)
+            for (int k = 0; k < N; ++k)
+            {
+                out.pi[k].setZero();
+            }
+            out.lam_first.setZero();
+            for (int k = 1; k < N; ++k)
+            {
+                out.lam_path[k - 1].setZero();
+            }
+            out.lam_term.setZero();
+            out.t_first.setZero();
+            for (int k = 1; k < N; ++k)
+            {
+                out.t_path[k - 1].setZero();
+            }
+            out.t_term.setZero();
+        };
+        auto clip_lam_t = [&](S lam_flo, S t_flo)
         {
-            out.lam_path[k - 1].setZero();
-        }
-        out.lam_term.setZero();
-        out.t_first.setZero();
-        for (int k = 1; k < N; ++k)
+            auto clip = [&](auto& lam, auto& t)
+            {
+                const int n = static_cast<int>(lam.size());
+                for (int i = 0; i < n; ++i)
+                {
+                    if (lam(i) < lam_flo)
+                    {
+                        lam(i) = lam_flo;
+                    }
+                    if (t(i) < t_flo)
+                    {
+                        t(i) = t_flo;
+                    }
+                }
+            };
+            clip(out.lam_first, out.t_first);
+            for (int k = 1; k < N; ++k)
+            {
+                clip(out.lam_path[k - 1], out.t_path[k - 1]);
+            }
+            clip(out.lam_term, out.t_term);
+        };
+
+        // Hot start (warm_start >= 3, x_ocp_qp_ipm.c:1658-1675): keep the
+        // whole iterate (ux, pi, lam, t); enforce only the warm-start floors.
+        if (opts_.warm_start >= 3)
         {
-            out.t_path[k - 1].setZero();
+            clip_lam_t(opts_.lam0_min, opts_.t0_min);
+            return;
         }
-        out.t_term.setZero();
+
+        // Primal + dual warm start (warm_start == 2, x_ocp_qp_ipm.c:
+        // 1678-1694): keep pi / lam / t, clip to thr0 = 1e-1. The primal is
+        // left as handed in; the SQP driver zeroes ux before each solve, so
+        // the driven case is a cold primal + warm dual (matching acados).
+        if (opts_.warm_start == 2)
+        {
+            const S thr0 = S(1e-1);
+            clip_lam_t(thr0, thr0);
+            return;
+        }
+
+        // Cold start (warm_start <= 1, x_ocp_qp_ipm.c:1697-2042): zero the
+        // primal steps, pi, lam, t and build a heuristic interior (lam, t).
+        zero_primal();
+        zero_dual();
 
         const S thr0 = 1e-1;  // x_ocp_qp_ipm.c:1655
         const S mu0 = opts_.mu0;
@@ -1338,6 +1397,11 @@ public:
 
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
+
+    /// Override the warm-start mode for subsequent solve() calls (phase 3c;
+    /// the SQP driver sets this per QP solve). 0: cold, 2: primal+dual, 3:
+    /// hot (acados mapping).
+    void set_warm_start(int ws) { opts_.warm_start = ws; }
 
 private:
     HpipmOptions opts_;
