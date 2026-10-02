@@ -719,3 +719,54 @@ Phase 3 marked done and any §12 open items updated.
   `qp_unit`, `sqp_unit` (incl. the new `timeout (3f)` suite),
   `double_integrator`, `mass_spring`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`.
+
+### 3g — adaptive Levenberg-Marquardt
+
+- Re-read `ocp_nlp_common.c:3011-3032`
+  (`adaptive_levenberg_marquardt_update_mu`) and `:3034-3059`
+  (`ocp_nlp_add_levenberg_marquardt_term`). Confirmed:
+  - Full step (`alpha == 1.0`): `mu = max(mu_min, mu_bar / lam)`,
+    `mu_bar = mu_old`.
+  - Truncated step: `mu = min(lam * mu, 1.0)`, `mu_bar` unchanged.
+  - `iter == 0`: `mu = mu_bar = mu0`.
+  - Effective damping: `reg_param = obj_scalar * cost_value * mu` where
+    `cost_value` is the raw NLP objective (stage + terminal, no slack
+    penalty; `ocp_nlp_common.c:3908-3921`).
+  - Call site in the SQP loop: `ocp_nlp_sqp.c:564`, right after QP
+    assembly (before regularization and termination check).
+  - Defaults (`ocp_nlp_common.c:1265-1268`): `mu0 = 1e-3`, `lam = 5.0`,
+    `mu_min = 1e-16`, `obj_scalar = 2.0`, `with_adaptive_lm = false`.
+- `SqpOptions`: added `adaptive_lm_mu0`, `adaptive_lm_lam`,
+  `adaptive_lm_mu_min`, `adaptive_lm_obj_scalar` alongside the existing
+  `with_adaptive_lm` gate.
+- `SqpSolver`: new members `lm_mu_`, `lm_mu_bar_` (reset in `solve()`);
+  new public method `update_adaptive_lm_mu(int iter, double alpha)`
+  (port of the C function; exposed for unit-testing, mirroring
+  `check_termination`); new public accessors `adaptive_lm_mu()` /
+  `adaptive_lm_mu_bar()`; new private helper `raw_cost(problem, sol)`
+  (stage + terminal cost, no slack penalty) — `compute_cost` now
+  delegates to `raw_cost + slack_penalty`.
+- Solve loop: before `add_lm_term`, when `with_adaptive_lm` is true, call
+  `update_adaptive_lm_mu(iter, alpha_)` and compute
+  `lm = adaptive_lm_obj_scalar * raw_cost(problem, sol) * lm_mu_`; pass
+  `lm` to `add_lm_term` instead of the static `opts_.levenberg_marquardt`.
+- `add_lm_term` itself is unchanged (adds `mu * I` to the (u;x) block).
+- Test (`tests/sqp/adaptive_lm_3g.cpp`, registered in `sqp_unit`):
+  - `test_mu_schedule`: drives `update_adaptive_lm_mu` with a controlled
+    (iter, alpha) sequence; asserts the mu/mu_bar evolution matches the
+    hand-computed values (full-step decay, truncated-step growth, mu_bar
+    lag).
+  - `test_mu_min_floor`: 50 full steps → mu hits `mu_min = 1e-16`.
+  - `test_mu_cap_at_one`: truncated steps from `mu0 = 0.8` → mu caps at
+    1.0.
+  - `test_effective_damping`: two `SqpSolver` instances (NoRegularizer,
+    `max_iter = 0`) — one with adaptive LM off (baseline Hessian), one
+    with adaptive LM on; asserts the (u;x) Hessian diagonal difference on
+    every stage equals `obj_scalar * raw_cost * mu0` and off-diagonals are
+    unchanged.
+  - `test_solve_converges`: full end-to-end DI (N=10) with
+    `with_adaptive_lm = true` → `kSolved`.
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green:
+  `qp_unit`, `sqp_unit` (incl. the new `adaptive LM (3g)` suite),
+  `double_integrator`, `mass_spring`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`.

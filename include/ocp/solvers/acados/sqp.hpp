@@ -567,7 +567,11 @@ struct SqpOptions
     double tol_unbounded = -1e10;
     bool compute_hess = true;             // gates dynamics/constraint HVP terms
     double levenberg_marquardt = 0.0;
-    bool with_adaptive_lm = false;        // phase 3 (inert in v1)
+    bool with_adaptive_lm = false;        // 3g: adaptive LM (gates the mu schedule)
+    double adaptive_lm_mu0 = 1e-3;        // 3g: mu / mu_bar init (ocp_nlp_common.c:1265)
+    double adaptive_lm_lam = 5.0;         // 3g: growth/shrink factor
+    double adaptive_lm_mu_min = 1e-16;    // 3g: floor for the full-step decay
+    double adaptive_lm_obj_scalar = 2.0;  // 3g: mu_eff = obj_scalar * raw_cost * mu
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
     int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
@@ -742,6 +746,39 @@ public:
         }
     }
 
+    /// Update the adaptive Levenberg-Marquardt parameters (3g).
+    ///
+    /// Port of acados `adaptive_levenberg_marquardt_update_mu`
+    /// (ocp_nlp_common.c:3011-3032). `alpha` is the accepted step size of the
+    /// *previous* iteration (the driver's `alpha_` at the top of the loop; 0.0
+    /// at iter 0, where it is ignored). A full step (alpha == 1) shrinks mu
+    /// by 1/lam toward mu_min, carrying mu_bar = the old mu; a truncated step
+    /// grows mu by lam, capped at 1. Exposed (with `adaptive_lm_mu()` /
+    /// `adaptive_lm_mu_bar()`) so the schedule can be unit-tested, mirroring
+    /// `check_termination`.
+    void update_adaptive_lm_mu(int iter, double alpha)
+    {
+        if (iter == 0)
+        {
+            lm_mu_ = opts_.adaptive_lm_mu0;
+            lm_mu_bar_ = opts_.adaptive_lm_mu0;
+        }
+        else if (alpha == 1.0)
+        {
+            const double mu_old = lm_mu_;
+            lm_mu_ = std::max(opts_.adaptive_lm_mu_min,
+                               lm_mu_bar_ / opts_.adaptive_lm_lam);
+            lm_mu_bar_ = mu_old;
+        }
+        else
+        {
+            lm_mu_ = std::min(opts_.adaptive_lm_lam * lm_mu_, 1.0);
+        }
+    }
+
+    double adaptive_lm_mu() const { return lm_mu_; }
+    double adaptive_lm_mu_bar() const { return lm_mu_bar_; }
+
     /// Size the internal workspaces for a horizon of `n_stages` stages
     /// (dynamic-extent mode allocates; fixed-extent mode only asserts).
     void resize(int n_stages)
@@ -848,6 +885,8 @@ public:
         alpha_ = 0.0;
         step_norm_ = 0.0;
         timeout_estimated_per_iter_ = 0.0;
+        lm_mu_ = 0.0;
+        lm_mu_bar_ = 0.0;
 
         resize(N);
         if (slack_N_ != N)
@@ -872,7 +911,18 @@ public:
                 stat_.status = st;
                 return st;
             }
-            add_lm_term(qp_in_, opts_.levenberg_marquardt);
+            // 3g: the adaptive LM update (ocp_nlp_common.c:3011-3059) uses
+            // the *previous* iteration's accepted step size (alpha_), which
+            // is exactly what alpha_ holds at the top of the loop (0.0 at
+            // iter 0).
+            double lm = opts_.levenberg_marquardt;
+            if (opts_.with_adaptive_lm)
+            {
+                update_adaptive_lm_mu(iter, alpha_);
+                lm = opts_.adaptive_lm_obj_scalar *
+                     raw_cost(problem, sol) * lm_mu_;
+            }
+            add_lm_term(qp_in_, lm);
 
             const NlpResiduals res =
                 compute_nlp_residuals(problem, sol, opts_.tau_min);
@@ -1084,11 +1134,11 @@ private:
                      slacks_.term);
     }
 
-    /// NLP objective at the iterate: the problem's stage + terminal costs
-    /// plus the slack penalty 0.5 * w * s^2 per soft side (sec. 1.6; the
-    /// problem cost functions exclude the solver-internal slacks).
-    double compute_cost(const P& problem, const Solution<P, NH>& sol,
-                        const SqpSlacks<P, NH>& sl) const
+    /// Raw NLP objective: the problem's stage + terminal costs only,
+    /// excluding the solver-internal slack penalty. Acados' adaptive LM
+    /// uses this value as the `cost_value` scaling factor (ocp_nlp_common.c:
+    /// 3042).
+    double raw_cost(const P& problem, const Solution<P, NH>& sol) const
     {
         double m = 0.0;
         for (int k = 0; k < sol.N; ++k)
@@ -1097,7 +1147,16 @@ private:
                 problem.stage_cost_value(k, sol.x[k], sol.u[k]));
         }
         m += static_cast<double>(problem.terminal_cost_value(sol.x[sol.N]));
-        return m + slack_penalty(problem, sl);
+        return m;
+    }
+
+    /// NLP objective at the iterate: the problem's stage + terminal costs
+    /// plus the slack penalty 0.5 * w * s^2 per soft side (sec. 1.6; the
+    /// problem cost functions exclude the solver-internal slacks).
+    double compute_cost(const P& problem, const Solution<P, NH>& sol,
+                        const SqpSlacks<P, NH>& sl) const
+    {
+        return raw_cost(problem, sol) + slack_penalty(problem, sl);
     }
 
     /// Slack penalty 0.5 * w * s^2 over every soft side (same weights and
@@ -2639,6 +2698,8 @@ private:
     int qp_status_ = 0;  // last QP status (0 = none yet)
     int qp_iter_ = 0;    // last QP iteration count
     double timeout_estimated_per_iter_ = 0.0;  // 3f: per-iter time estimate
+    double lm_mu_ = 0.0;     // 3g: adaptive LM mu
+    double lm_mu_bar_ = 0.0; // 3g: adaptive LM mu_bar (previous mu)
 };
 
 }  // namespace ocp
