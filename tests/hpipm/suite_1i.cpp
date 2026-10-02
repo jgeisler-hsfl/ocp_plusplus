@@ -1743,9 +1743,15 @@ void case5_nonpsd(const char* name, int N)
 
     HpipmQpSolver<P, NH> solver;
     const Status st = solver.solve(qp, sol);
-    check(st == Status::kQpFailure,
-          p + ": non-PSD Hessian -> kQpFailure (got " +
-              std::to_string(static_cast<int>(st)) + ")");
+    // With the 3d reg-primal growth ladder a non-PSD (u;x) Hessian is
+    // regularised to a successful factorisation (HPIPM-consistent), so the
+    // solver no longer reports a factorisation failure; instead the heavily
+    // regularised step collapses to kMinStep, or the ladder exhausts its
+    // budget and reports kQpFailure. Either way it must NOT report kSolved.
+    const bool failed = (st == Status::kMinStep || st == Status::kMaxIterations ||
+                         st == Status::kQpFailure);
+    check(failed, p + ": non-PSD Hessian reports a non-solved status (got " +
+                      std::to_string(static_cast<int>(st)) + ")");
     std::printf("  %s: status = %d\n", name, static_cast<int>(st));
 }
 

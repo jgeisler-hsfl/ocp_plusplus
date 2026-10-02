@@ -448,7 +448,39 @@ acados examples.
    objective is `0.5·sᵀZ·s + r_sᵀs` with **no** implicit `sᵀs` (verified in
    `x_ocp_qp_res.c`; `COND_SLACKS_FACT` uses `1/(Z + reg_prim + Gamma)`, no
    `+2`). ⇒ slack Hessian diagonal = `w` (Z = w), `grad` slack part = 0.
-4. `dual_gap_max` default value (not in the doc's preset table).
+ 4. `dual_gap_max` default value (not in the doc's preset table).
+ 5. **Phase 3d — LQ fallback + iterative refinement (done, 2026-10-02).**
+    `factor_one_stage_lq` builds the wide matrix
+    `W_k = [ Lh | (sqrt(Gamma) C_k)^T | D_k^T L_{k+1,xx} ]` (HPIPM
+    `x_ocp_qp_kkt.c` COLSC/GELQF) and factors it via HouseholderQR of
+    `W_k^T` (Eigen 3.3.9 has no `matrixR()`; the top `nvar x nvar` upper block
+    of `R`, transposed, is the lower-triangular `L_k` with `L_k L_k^T = W_k
+    W_k^T`, sign-normalized per COLSC). The LQ path reuses `backward_reduced_stage`
+    / `forward_stage` / `closed_form_stage` with the LQ `L_k`.
+    `delta_factor_solve` dispatches on `lq_fact` (`2` = always LQ, `1` = auto:
+    switch to LQ only on a Cholesky failure, latched via `ws_.force_lq`,
+    `0` = Cholesky). The reg-primal ladder now grows `reg_prim` on a singular
+    factor for either path. Linearised residual (`compute_linear_residual`,
+    reuses `stage_residuals`) + iterative refinement (`refine_step` predictor /
+    corrector via `solve_kkt_reuse_gamma`, reusing the stored factors) + stat
+    columns 13-19 (`lq_fact`, `itref_corr`, `lin_res_*`). Two bugs fixed:
+    `Workspace::resize` did not resize the new `Lh_path` trajectory (crash for
+    N >= 2 path stages), and the LQ side-DC columns need a natural -> usx column
+    permute (`usx_permute_cols`) to line up with the usx-wide `W_k`.
+    *Tests* (`tests/hpipm/lq_itref_3d.cpp`): LQ (`lq_fact = 2`) matches the
+    Cholesky solution (DI/MS, dyn + NH=2); auto (`lq_fact = 1`) stays on
+    Cholesky (`lq_fact == 0`) for well-conditioned QPs; the itref machinery runs
+    cleanly (no-NaN, finite linearised residual, valid correction count) and
+    matches the unrefined LQ solution where it converges (DI).
+    *Known limitation (follow-up, not 3d-blocking):* iterative refinement
+    (`itref_pred_max` / `itref_corr_max > 0`) does not guarantee IPM convergence
+    on harder problems -- the mass-spring test QP diverges with itref on, and it
+    does so identically on the pure-Cholesky path (itref is off by default).
+    Root cause: `refine_step`'s shrink-guard checks the *linearised* residual,
+    which is discordant from the actual IPM residual for MS, so it accepts
+    corrections that reduce the former while increasing the latter. Follow-up:
+    re-derive the itref to minimise the KKT-solve residual (or guard on the
+    actual residual).
 
 ## 13. Future extensions (not in v1 scope)
 

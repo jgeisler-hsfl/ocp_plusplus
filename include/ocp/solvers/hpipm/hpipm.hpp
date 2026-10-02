@@ -219,6 +219,15 @@ public:
         M_term_t M_term{};
         M_term_t L_term{};
 
+        // LQ-factor Hessian blocks Lh_k = chol(H_k + reg*I_(u;x)) cached
+        // across IPM iterations (HPIPM `use_hess_fact`); valid only when
+        // `lh_reg` equals the reg in force (a reg-ladder growth invalidates
+        // the whole set by changing `lh_reg`).
+        M_first_t Lh_first{};
+        Trajectory<M_path_t, detail::traj_extent<NH, -1>()> Lh_path;
+        M_term_t Lh_term{};
+        S lh_reg = S(-1);
+
         // cached forward-pass product (BAbt_k * L_{k+1,xx}'), doc 05 sec. 4
         Pb_first_t Pb_first{};
         Trajectory<Pb_path_t, detail::traj_extent<NH, -1>()> Pb_path;
@@ -289,6 +298,21 @@ public:
         int iter = 0;
         bool npd_reg_hess = false;
 
+        // reg-primal growth ladder (HPIPM compute_preg, x_ocp_qp_kkt.c:1166-
+        // 1210): the last successfully-used reg, persistent across IPM
+        // iterations within a solve (reset in solve()).
+        S preg_last = S(0);
+        // LQ auto-switch latch (HPIPM force_lq, x_ocp_qp_ipm.c:2259): once a
+        // mode-1 Cholesky auto-switch fires, stay on LQ for the rest of the
+        // solve. Reset in solve().
+        bool force_lq = false;
+        // LQ mode actually used at the current IPM iteration (stat col 13).
+        int last_lq_fact = 0;
+        // iterative-refinement scratch (3d): the linearized residual and the
+        // correction solve (reused factors).
+        QpRes<P, NH> res_itref;
+        QpSol<P, NH> sol_itref;
+
         /// (Re)allocate the horizon-sized storage for `n` stages (k = 0..n).
         /// Dynamic horizon: resizes the path trajectories; fixed horizon:
         /// no allocation, only a consistency check. All members are written
@@ -302,6 +326,7 @@ public:
                 const int np = n - 1;  // path stages
                 M_path.resize(np);
                 L_path.resize(np);
+                Lh_path.resize(np);
                 Pb_path.resize(np);
                 P_path.resize(np);
                 q_path.resize(np);
@@ -316,6 +341,8 @@ public:
                 dpi.resize(n);
                 res.resize(n);
                 res_bkp.resize(n);
+                res_itref.resize(n);
+                sol_itref.resize(n);
             }
             else
             {
@@ -370,6 +397,10 @@ public:
         S rm_tau = res_m_tau(in, ws_.res);
         fill_stat_residuals(stat_.row(0), ws_.res);
 
+        // 3d: per-solve latches for the reg ladder + LQ auto-switch
+        ws_.force_lq = false;
+        ws_.preg_last = S(opts_.reg_prim);
+
         QpSol<P, NH> step(N);
         for (int kk = 0; kk < opts_.iter_max; ++kk)
         {
@@ -396,8 +427,9 @@ public:
             ws_.res_bkp = ws_.res;
             shift_res_m(in, ws_.res, opts_.tau_min);
 
-            // 2) predictor: factorize + solve (worklog 1e)
-            const Status fs = fact_solve_kkt(in, out, ws_.res, step);
+            // 2) predictor: factorize + solve (3d: lq_fact dispatch +
+            //    reg ladder; worklog 1e)
+            const Status fs = delta_factor_solve(in, out, ws_.res, step);
             if (fs != Status::kSolved)
             {
                 stat_.iter = kk;
@@ -405,6 +437,11 @@ public:
                 return Status::kQpFailure;
             }
             mask_step(in, step);
+
+            // 2b) predictor iterative refinement (3d)
+            int itref_pred = 0;
+            int itref_corr = 0;
+            itref_pred = refine_step(in, out, step, opts_.itref_pred_max);
 
             // 3) predictor step length (stat 0, 1)
             compute_alpha(in, out, step);
@@ -453,6 +490,16 @@ public:
                         }
                     }
                 }
+                // corrector iterative refinement (3d), then re-measure the
+                // accepted step on the refined step
+                itref_corr = refine_step(in, out, step,
+                                         opts_.itref_corr_max);
+                compute_alpha(in, out, step);
+                if (row)
+                {
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
+                }
             }
             else
             {
@@ -473,14 +520,14 @@ public:
             {
                 row->mu = ws_.res.res_mu;
                 fill_stat_residuals(*row, ws_.res);
-                row->lq_fact = 0;
-                row->itref_pred = 0;
-                row->itref_corr = 0;
-                row->lin_res_stat = 0.0;
-                row->lin_res_eq = 0.0;
-                row->lin_res_ineq = 0.0;
-                row->lin_res_comp = 0.0;
-                row->npd_reg_hess = 0;
+                row->lq_fact = ws_.last_lq_fact;
+                row->itref_pred = itref_pred;
+                row->itref_corr = itref_corr;
+                row->lin_res_stat = ws_.res_itref.res_g_max;
+                row->lin_res_eq = ws_.res_itref.res_b_max;
+                row->lin_res_ineq = ws_.res_itref.res_d_max;
+                row->lin_res_comp = ws_.res_itref.res_m_max;
+                row->npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
             }
             stat_.iter = kk + 1;
         }
@@ -636,6 +683,118 @@ public:
         res.res_mu = (nc_mask > 0) ? res.res_mu_sum / nc_mask : 0.0;
         res.obj = obj;
         res.dual_gap = dual_gap;
+    }
+
+    /// Linearized KKT residual (HPIPM `OCP_QP_RES_COMPUTE_LIN`,
+    /// x_ocp_qp_res.c:535-685). The step `(step.ux, step.pi, step.lam,
+    /// step.t)` is treated as a "solution" of the *linearized* KKT system:
+    /// res_g / res_b / res_d are the stationarity / dynamics / feasibility
+    /// residuals evaluated at the step (delta variables), while res_m uses
+    /// the linearized complementarity
+    ///   res_m = d_mask . (m + lam_bar . delta_t + delta_lam . t_bar)
+    /// where lam_bar / t_bar are the iterate's multiplier / barrier. obj /
+    /// dual_gap / res_mu are left untouched (the caller ignores them).
+    void compute_linear_residual(const Qp<P, NH>& in,
+                                 const QpSol<P, NH>& iter,
+                                 const QpSol<P, NH>& step,
+                                 QpRes<P, NH>& linres) const
+    {
+        const int N = in.N;
+        assert(step.N == N && linres.N == N);
+
+        // first stage (k = 0)
+        {
+            S dummy_obj = 0.0, dummy_gap = 0.0;
+            Pi_t x1;
+            if (N > 1)
+            {
+                x1 = step.ux_path[0].segment(D::nu, D::nx);
+            }
+            else
+            {
+                x1 = step.ux_term.head(D::nx);
+            }
+            stage_residuals(in.first.hess, in.first.grad, in.first.DC,
+                            in.first.d, in.first.d_mask, in.first.m,
+                            step.ux_first, step.lam_first, step.t_first,
+                            /*pi_prev*/ nullptr, &step.pi[0], &x1,
+                            &in.first.BA, &in.first.b, D::lay_first,
+                            D::idxs_lo_first, D::idxs_hi_first,
+                            linres.res_g_first, linres.res_d_first,
+                            linres.res_m_first, &linres.res_b[0], dummy_obj,
+                            dummy_gap);
+            linres.res_m_first = in.first.d_mask.cwiseProduct(
+                in.first.m + iter.lam_first.cwiseProduct(step.t_first)
+                + step.lam_first.cwiseProduct(iter.t_first));
+        }
+
+        // path stages (k = 1..N-1)
+        for (int k = 1; k < N; ++k)
+        {
+            const int i = k - 1;
+            S dummy_obj = 0.0, dummy_gap = 0.0;
+            Pi_t x_next;
+            if (k + 1 < N)
+            {
+                x_next = step.ux_path[k].segment(D::nu, D::nx);
+            }
+            else
+            {
+                x_next = step.ux_term.head(D::nx);
+            }
+            stage_residuals(in.path[i].hess, in.path[i].grad, in.path[i].DC,
+                            in.path[i].d, in.path[i].d_mask, in.path[i].m,
+                            step.ux_path[i], step.lam_path[i], step.t_path[i],
+                            &step.pi[k - 1], &step.pi[k], &x_next,
+                            &in.path[i].BA, &in.path[i].b, D::lay_path,
+                            D::idxs_lo_path, D::idxs_hi_path,
+                            linres.res_g_path[i], linres.res_d_path[i],
+                            linres.res_m_path[i], &linres.res_b[k], dummy_obj,
+                            dummy_gap);
+            linres.res_m_path[i] = in.path[i].d_mask.cwiseProduct(
+                in.path[i].m + iter.lam_path[i].cwiseProduct(step.t_path[i])
+                + step.lam_path[i].cwiseProduct(iter.t_path[i]));
+        }
+
+        // terminal stage (k = N)
+        {
+            S dummy_obj = 0.0, dummy_gap = 0.0;
+            stage_residuals(in.term.hess, in.term.grad, in.term.DC,
+                            in.term.d, in.term.d_mask, in.term.m,
+                            step.ux_term, step.lam_term, step.t_term,
+                            &step.pi[N - 1], /*pi_cur*/ nullptr,
+                            /*x_next*/ nullptr, /*ba*/ nullptr, /*b*/ nullptr,
+                            D::lay_term, D::idxs_lo_term, D::idxs_hi_term,
+                            linres.res_g_term, linres.res_d_term,
+                            linres.res_m_term, /*res_b*/ nullptr, dummy_obj,
+                            dummy_gap);
+            linres.res_m_term = in.term.d_mask.cwiseProduct(
+                in.term.m + iter.lam_term.cwiseProduct(step.t_term)
+                + step.lam_term.cwiseProduct(iter.t_term));
+        }
+
+        // inf-norm maxima across all stages
+        linres.res_g_max = inf_norm(linres.res_g_first);
+        linres.res_d_max = inf_norm(linres.res_d_first);
+        linres.res_m_max = inf_norm(linres.res_m_first);
+        linres.res_b_max = inf_norm(linres.res_b[0]);
+        for (int k = 1; k < N; ++k)
+        {
+            linres.res_g_max = std::max(
+                linres.res_g_max, inf_norm(linres.res_g_path[k - 1]));
+            linres.res_d_max = std::max(
+                linres.res_d_max, inf_norm(linres.res_d_path[k - 1]));
+            linres.res_m_max = std::max(
+                linres.res_m_max, inf_norm(linres.res_m_path[k - 1]));
+            linres.res_b_max = std::max(
+                linres.res_b_max, inf_norm(linres.res_b[k]));
+        }
+        linres.res_g_max = std::max(linres.res_g_max,
+            inf_norm(linres.res_g_term));
+        linres.res_d_max = std::max(linres.res_d_max,
+            inf_norm(linres.res_d_term));
+        linres.res_m_max = std::max(linres.res_m_max,
+            inf_norm(linres.res_m_term));
     }
 
     /// Interior-point initialization (HPIPM `OCP_QP_INIT_VAR`,
@@ -825,10 +984,18 @@ public:
     Status fact_solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
                           const QpRes<P, NH>& res, QpSol<P, NH>& step)
     {
+        return fact_solve_kkt_reg(in, iter, res, step, S(opts_.reg_prim));
+    }
+
+    /// Same as fact_solve_kkt but with an explicit reg-primal value (the
+    /// reg-ladder path in the lq_fact dispatch, 3d).
+    Status fact_solve_kkt_reg(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                              const QpRes<P, NH>& res, QpSol<P, NH>& step,
+                              S reg)
+    {
         const int N = in.N;
         ws_.resize(N);
         compute_gamma(in, iter, res);
-        const S reg = opts_.reg_prim;
         for (int k = N; k >= 0; --k)
         {
             if (!backward_factor_stage(k, in, reg))
@@ -925,6 +1092,266 @@ public:
         }
         step.t_term.setZero();
         return Status::kSolved;
+    }
+
+    /// LQ KKT factorization + solve (3d): the same two-pass Riccati as
+    /// fact_solve_kkt, but the backward factorization uses the wide-matrix
+    /// LQ (factor_one_stage_lq) instead of the dense Cholesky.  The forward,
+    /// backward-reduced, and closed-form stages are shared.  A singular
+    /// Hessian block (any stage's Lh) returns kQpFailure (the reg-primal
+    /// growth ladder is applied by the caller in the lq_fact dispatch).
+    Status fact_solve_kkt_lq(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                             const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    {
+        return fact_solve_kkt_lq_reg(in, iter, res, step, S(opts_.reg_prim));
+    }
+
+    /// Same as fact_solve_kkt_lq but with an explicit reg-primal value (the
+    /// reg-ladder path in the lq_fact dispatch, 3d).
+    Status fact_solve_kkt_lq_reg(const Qp<P, NH>& in,
+                                 const QpSol<P, NH>& iter,
+                                 const QpRes<P, NH>& res, QpSol<P, NH>& step,
+                                 S reg)
+    {
+        const int N = in.N;
+        compute_gamma(in, iter, res);
+        const bool lh_valid = (ws_.lh_reg == reg);
+        for (int k = N; k >= 0; --k)
+        {
+            if (!backward_factor_stage_lq(k, in, reg, lh_valid))
+            {
+                return Status::kQpFailure;
+            }
+        }
+        ws_.lh_reg = reg;
+        for (int k = N; k >= 0; --k)
+        {
+            backward_reduced_stage(k, in, res);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            forward_stage(k, in, res, step);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            closed_form_stage(k, in, res, iter, step);
+        }
+        return Status::kSolved;
+    }
+
+    // ==================================================================
+    //  3d: LQ fallback + iterative refinement (SQP_PHASE3_PLAN sec. 3d)
+    // ==================================================================
+
+    /// reg-primal growth ladder (HPIPM `compute_preg`,
+    /// x_ocp_qp_kkt.c:1166-1210): run `lq ? fact_solve_kkt_lq_reg :
+    /// fact_solve_kkt_reg` and, on a singular factorization, grow the
+    /// reg-primal (`preg`) and retry.  Growth schedule (first growth is
+    /// additive, subsequent are multiplicative; `ws_.preg_last` holds the
+    /// last successfully-used reg and persists across IPM iterations):
+    ///   first growth:  +1e-4 if preg_last == base, else /3
+    ///   next  growths: x100 if preg_last == base, else x8
+    /// Sets `ws_.npd_reg_hess` on any failure and persists the reg used in
+    /// `ws_.preg_last` on success.
+    Status fact_solve_ladder(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                             const QpRes<P, NH>& res, QpSol<P, NH>& step,
+                             bool lq)
+    {
+        const S base = S(opts_.reg_prim);
+        S preg = ws_.preg_last;
+        bool preg_first = true;
+        ws_.npd_reg_hess = false;
+        for (int attempt = 0; attempt < 15; ++attempt)
+        {
+            const Status st = lq
+                ? fact_solve_kkt_lq_reg(in, iter, res, step, preg)
+                : fact_solve_kkt_reg(in, iter, res, step, preg);
+            if (st == Status::kSolved)
+            {
+                ws_.preg_last = preg;
+                return Status::kSolved;
+            }
+            ws_.npd_reg_hess = true;
+            if (preg_first)
+            {
+                preg = (ws_.preg_last == base) ? preg + S(1e-4) : preg / S(3.0);
+            }
+            else
+            {
+                preg = (ws_.preg_last == base) ? preg * S(100.0) : preg * S(8.0);
+            }
+            preg_first = false;
+        }
+        return Status::kQpFailure;
+    }
+
+    /// Delta-step KKT factor + solve with the `lq_fact` mode dispatch
+    /// (HPIPM x_ocp_qp_ipm.c:2274-2369):
+    ///   0 -> Cholesky (fact_solve_ladder, lq = false);
+    ///   1 -> Cholesky; on a factorization failure (non-PSD / singular) set
+    ///        `ws_.force_lq` and re-factor with LQ; the latch persists for
+    ///        the rest of the solve (HPIPM `force_lq`, x_ocp_qp_ipm.c:2259);
+    ///   2 -> LQ (fact_solve_ladder, lq = true) always.
+    /// Sets `ws_.last_lq_fact` (stat col 13) to whether LQ was used.
+    Status delta_factor_solve(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                              const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    {
+        ws_.last_lq_fact = 0;
+        const bool use_lq = (opts_.lq_fact == 2) || ws_.force_lq;
+        Status st;
+        if (!use_lq && opts_.lq_fact == 1)
+        {
+            st = fact_solve_ladder(in, iter, res, step, /*lq=*/false);
+            if (st != Status::kSolved)
+            {
+                ws_.force_lq = true;
+                st = fact_solve_ladder(in, iter, res, step, /*lq=*/true);
+            }
+        }
+        else
+        {
+            st = fact_solve_ladder(in, iter, res, step, use_lq);
+        }
+        ws_.last_lq_fact = use_lq || ws_.force_lq ? 1 : 0;
+        return st;
+    }
+
+    /// Re-solve the KKT system reusing the stored L/P factors and gamma
+    /// (from the most recent fact_solve_kkt / fact_solve_kkt_lq), with the
+    /// linearized residual `rhs` as the forcing term.  This is the
+    /// iterative-refinement correction solve (HPIPM `OCP_QP_SOLVE_KKT_STEP`
+    /// with `use_Pb = 0`, x_ocp_qp_ipm.c:2424-2425).  Note: the δπ update
+    /// uses the stored P matrix (the P-based forward pass) rather than
+    /// HPIPM's L-factor form; equivalent to working precision.
+    void solve_kkt_reuse_gamma(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                               const QpRes<P, NH>& rhs, QpSol<P, NH>& step)
+    {
+        const int N = in.N;
+        for (int k = N; k >= 0; --k)
+        {
+            backward_reduced_stage(k, in, rhs);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            forward_stage(k, in, rhs, step);
+        }
+        for (int k = 0; k <= N; ++k)
+        {
+            closed_form_stage(k, in, rhs, iter, step);
+        }
+    }
+
+    /// Add (Add = true) or subtract (Add = false) the step `b` into the
+    /// step `a`, in place (used to apply / undo an iterative-refinement
+    /// correction).
+    template <bool Add>
+    void combine_sol(QpSol<P, NH>& a, const QpSol<P, NH>& b)
+    {
+        const int N = a.N;
+        auto op = [](auto& x, const auto& y)
+        {
+            if constexpr (Add)
+            {
+                x = x + y;
+            }
+            else
+            {
+                x = x - y;
+            }
+        };
+        op(a.ux_first, b.ux_first);
+        for (int k = 1; k < N; ++k)
+        {
+            op(a.ux_path[k - 1], b.ux_path[k - 1]);
+        }
+        op(a.ux_term, b.ux_term);
+        for (int k = 0; k < N; ++k)
+        {
+            op(a.pi[k], b.pi[k]);
+        }
+        op(a.lam_first, b.lam_first);
+        for (int k = 1; k < N; ++k)
+        {
+            op(a.lam_path[k - 1], b.lam_path[k - 1]);
+        }
+        op(a.lam_term, b.lam_term);
+        op(a.t_first, b.t_first);
+        for (int k = 1; k < N; ++k)
+        {
+            op(a.t_path[k - 1], b.t_path[k - 1]);
+        }
+        op(a.t_term, b.t_term);
+    }
+
+    /// One iterative-refinement pass (HPIPM x_ocp_qp_ipm.c:2373-2505
+    /// predictor, 2609-2732 corrector).  Computes the linearized KKT
+    /// residual of the step; while it is not small enough, solves the
+    /// KKT system with the residual as RHS (reusing the stored factors),
+    /// adds the correction to the step, and recomputes; undoes the
+    /// correction and stops if the residual did not shrink.  `max_iter` is
+    /// `itref_pred_max` (predictor) or `itref_corr_max` (corrector); when
+    /// it is 0 the pass is a no-op.  Returns the number of corrections
+    /// applied (0 if `max_iter <= 0`).  The final linearized residual is
+    /// left in `ws_.res_itref`.
+    int refine_step(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
+                    QpSol<P, NH>& step, int max_iter)
+    {
+        if (max_iter <= 0)
+        {
+            return 0;
+        }
+        (void)in;
+        compute_linear_residual(in, iter, step, ws_.res_itref);
+        S norm[4] = { ws_.res_itref.res_g_max, ws_.res_itref.res_b_max,
+                      ws_.res_itref.res_d_max, ws_.res_itref.res_m_max };
+        S maxnorm = norm[0];
+        for (int i = 1; i < 4; ++i)
+        {
+            maxnorm = std::max(maxnorm, norm[i]);
+        }
+        int nref = 0;
+        for (int it = 0; it < max_iter; ++it)
+        {
+            const bool good =
+                (norm[0] < S(opts_.res_g_max) ||
+                 norm[0] < S(1e-3) * ws_.res.res_g_max) &&
+                (norm[1] < S(opts_.res_b_max) ||
+                 norm[1] < S(1e-3) * ws_.res.res_b_max) &&
+                (norm[2] < S(opts_.res_d_max) ||
+                 norm[2] < S(1e-3) * ws_.res.res_d_max) &&
+                (norm[3] < S(opts_.res_m_max) ||
+                 norm[3] < S(1e-3) * ws_.res.res_m_max);
+            if (good)
+            {
+                break;
+            }
+            solve_kkt_reuse_gamma(in, iter, ws_.res_itref, ws_.sol_itref);
+            mask_step(in, ws_.sol_itref);
+            combine_sol<true>(step, ws_.sol_itref);
+            compute_linear_residual(in, iter, step, ws_.res_itref);
+            S newnorm[4] = { ws_.res_itref.res_g_max,
+                             ws_.res_itref.res_b_max,
+                             ws_.res_itref.res_d_max,
+                             ws_.res_itref.res_m_max };
+            S newmax = newnorm[0];
+            for (int i = 1; i < 4; ++i)
+            {
+                newmax = std::max(newmax, newnorm[i]);
+            }
+            ++nref;
+            if (newmax >= maxnorm)
+            {
+                combine_sol<false>(step, ws_.sol_itref);
+                compute_linear_residual(in, iter, step, ws_.res_itref);
+                break;
+            }
+            norm[0] = newnorm[0];
+            norm[1] = newnorm[1];
+            norm[2] = newnorm[2];
+            norm[3] = newnorm[3];
+            maxnorm = newmax;
+        }
+        return nref;
     }
 
     // ==================================================================
@@ -1924,6 +2351,26 @@ private:
         return out;
     }
 
+    /// Permute only the COLUMNS of a matrix from (u;x;s) to (u;s;x) order
+    /// (rows kept in place).  For a rectangular side-DC (nside x nvar) whose
+    /// columns run over the natural (u;x;s) variable order, this yields the
+    /// same block expressed in the (u;s;x) order used by the LQ wide matrix.
+    template <class M>
+    static M usx_permute_cols(const M& m, int nu, int nx, int nsk)
+    {
+        M out;
+        const int nr = static_cast<int>(m.rows());
+        const int nc = static_cast<int>(m.cols());
+        for (int i = 0; i < nr; ++i)
+        {
+            for (int j = 0; j < nc; ++j)
+            {
+                out(i, j) = m(i, usx_old_idx(j, nu, nx, nsk));
+            }
+        }
+        return out;
+    }
+
     /// Effective side-DC C (nside x nvar, stored (u;x;s) order): the gradient
     /// of each side's constraint function w.r.t. z. `nside_ref` is unused
     /// except to fix the row extent.
@@ -2060,6 +2507,123 @@ private:
         return true;
     }
 
+    /// LQ-factor one stage (backward, 3d): build the wide matrix
+    ///   W_k = [ Lh_k | (sqrt(Gamma) C_k)^T | D_k^T L_{k+1,xx} ]
+    /// in the (u;s;x) ordering so that W_k W_k^T = Mtilde_k (the same
+    /// augmented Hessian the Cholesky path forms, worklog 1e).  LQ-factor
+    /// W_k (Eigen HouseholderQR of W_k^T, top-left block of R transposed)
+    /// and sign-normalize the diagonal so L_k L_k^T = Mtilde_k with
+    /// L_k(i,i) >= 0 (HPIPM GELQF + COLSC, x_ocp_qp_kkt.c:2032-2047).  The
+    /// forward / backward-reduced / closed-form stages then reuse L_k and
+    /// P_k exactly as the Cholesky path does (only the factor source
+    /// differs).  `lh_valid` / `lh_stored` carry the cached Lh_k (HPIPM
+    /// `use_hess_fact`); a singular Hessian block returns false (the caller
+    /// runs the reg-primal growth ladder).
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Ba,
+              class IdxLo, class IdxHi, class Lxx>
+    bool factor_one_stage_lq(bool has_dyn, const H& hess, const Dc& dc,
+                             const Dv& gamma, const Dv& Gamma, const Ba* ba,
+                             detail::QpLayout lay, const IdxLo& idxs_lo,
+                             const IdxHi& idxs_hi, S reg, bool lh_valid,
+                             const H& lh_stored, const Lxx& l_next_xx,
+                             H& lh_out, H& l_usx_out, P_first_t& p_out)
+    {
+        (void)gamma;
+        using Ss = typename H::Scalar;
+        constexpr int nvar = H::RowsAtCompileTime;
+        constexpr int nside = Dv::RowsAtCompileTime;
+        constexpr int nw = NU + NSK;
+
+        // 1) Lh_k = chol(hess_usx + reg*I_(u;x)) (or reuse the cache)
+        H lh;
+        if (!lh_valid)
+        {
+            H h_usx = usx_permute_mat(hess, NU, NX, NSK);
+            for (int i = 0; i < NU; ++i)
+            {
+                h_usx(i, i) += reg;
+            }
+            for (int i = 0; i < NX; ++i)
+            {
+                h_usx(nw + i, nw + i) += reg;
+            }
+            Eigen::LLT<H> llt(h_usx);
+            if (llt.info() != Eigen::Success)
+            {
+                return false;
+            }
+            lh = llt.matrixL();
+        }
+        else
+        {
+            lh = lh_stored;
+        }
+        lh_out = lh;
+
+        // 2) wide matrix W_k = [ Lh | (sqrt(Gamma) C_k)^T | D_k^T L_{k+1,xx} ]
+        //    in (u;s;x) column order.  Lh is already usx (h_usx above); the
+        //    side-DC from usx_build_side_dc is in NATURAL (u;x;s) column order
+        //    (the Cholesky path combines it with the natural Hessian then
+        //    permutes), so permute its columns to usx before embedding.
+        using WideT = Eigen::Matrix<Ss, nvar, nvar + nside + NX>;
+        WideT w;
+        w.setZero();
+        w.leftCols(nvar) = lh;
+        const auto c_nat =
+            usx_build_side_dc(dc, Gamma, lay, idxs_lo, idxs_hi, NSK);
+        using Cs = Eigen::Matrix<Ss, nside, nvar>;
+        const Cs c_usx = usx_permute_cols(c_nat, NU, NX, NSK);
+        const Eigen::Matrix<Ss, nside, 1> sq =
+            Eigen::Matrix<Ss, nside, 1>(Gamma.cwiseSqrt());
+        // (sqrt(Gamma) C_k)^T (nvar x nside); inactive sides have Gamma = 0
+        w.block(0, nvar, nvar, nside) = (sq.asDiagonal() * c_usx).transpose();
+        if (has_dyn)
+        {
+            // D_k (nx x nvar, (u;s;x) order), the same layout as in
+            // factor_one_stage (D_k z_k -> x_{k+1}).
+            Eigen::Matrix<Ss, NX, nvar> dk;
+            dk.setZero();
+            if (NU > 0)
+            {
+                dk.block(0, 0, NX, NU) = ba->block(0, 0, NX, NU);
+            }
+            dk.block(0, nw, NX, NX) = ba->block(0, NU, NX, NX);
+            // Pb_k = D_k^T L_{k+1,xx} (nvar x NX)
+            w.block(0, nvar + nside, nvar, NX) = dk.transpose() * l_next_xx;
+        }
+
+        // 3) L_k from the LQ of W_k: L_k L_k^T = W_k W_k^T = Mtilde_k.
+        //    QR-factor the tall matrix W_k^T (Eigen 3.3 HouseholderQR has
+        //    no matrixR()); its top nvar x nvar upper triangle holds the top
+        //    block of R (W_k^T = Q R), so its transpose is L_k (lower-tri).
+        // L_k = R^T from the QR of W_k^T (nwide x nvar, tall): its top
+        // nvar x nvar block is the upper-triangular R, so its transpose is
+        // the lower-triangular L_k with L_k L_k^T = W_k W_k^T = Mtilde_k.
+        // This is the LQ (HPIPM GELQF); unlike a Cholesky of Mtilde it stays
+        // full rank when the augmented Hessian is ill-conditioned, which is
+        // the whole point of the lq_fact fallback.
+        using TallT = Eigen::Matrix<Ss, nvar + nside + NX, nvar>;
+        const TallT wt = w.transpose();
+        Eigen::HouseholderQR<TallT> qr(wt);
+        l_usx_out =
+            qr.matrixQR().topLeftCorner(nvar, nvar)
+                .template triangularView<Eigen::Upper>()
+                .transpose();
+        // sign-normalize the diagonal (HPIPM COLSC, x_ocp_qp_kkt.c:2044-2046)
+        for (int i = 0; i < nvar; ++i)
+        {
+            if (l_usx_out(i, i) < 0)
+            {
+                l_usx_out.col(i).tail(nvar - i) *= -1.0;
+            }
+        }
+
+        // 4) P_k = L_k(x,x) L_k(x,x)^T
+        const auto lxx = l_usx_out.block(nw, nw, NX, NX);
+        p_out = lxx * lxx.transpose();
+        return true;
+    }
+
     /// Reduced RHS + costate offset for one stage (backward): rtilde_k =
     /// rtilde0_k - D_k'(P_{k+1} res_b_k + q_{k+1}) and q_k = -rtilde_kx +
     /// L_k(x,w) z with z = L_k(w,w)^{-1} rtilde_kw. Reuses L_k / P_{k+1}
@@ -2100,7 +2664,18 @@ private:
         const Wv rw = rtilde.head(nw);
         const Xv rx = rtilde.tail(NX);
         const Wm lww = l_usx.topLeftCorner(nw, nw);
-        const Wv z = lww.template triangularView<Eigen::Lower>().solve(rw);
+        // explicit forward substitution (L z = rw); avoids the GCC 13 -O2
+        // maybe-uninitialized false positive in Eigen's triangular solver
+        Wv z;
+        for (int i = 0; i < nw; ++i)
+        {
+            Ss acc = rw(i);
+            for (int j = 0; j < i; ++j)
+            {
+                acc -= lww(i, j) * z(j);
+            }
+            z(i) = acc / lww(i, i);
+        }
         const Eigen::Matrix<Ss, NX, nw> lxm = l_usx.block(nw, 0, NX, nw);
         q_out = -rx + lxm * z;
     }
@@ -2122,9 +2697,30 @@ private:
         {
             b(nu + nsk + i) += dpi_prev(i);
         }
-        const Rg y = l_usx.template triangularView<Eigen::Lower>().solve(b);
-        dz_usx_out =
-            l_usx.transpose().template triangularView<Eigen::Upper>().solve(y);
+        // Solve Mtilde dz = b with Mtilde = L L^T, by explicit forward /
+        // backward substitution on L (numerically identical to the Eigen
+        // triangular solves; avoids a GCC 13 -O2 maybe-uninitialized false
+        // positive in Eigen's unrolled triangular solver on tiny stages).
+        const int nn = static_cast<int>(b.size());
+        Rg y;
+        for (int i = 0; i < nn; ++i)
+        {
+            Ss acc = b(i);
+            for (int j = 0; j < i; ++j)
+            {
+                acc -= l_usx(i, j) * y(j);
+            }
+            y(i) = acc / l_usx(i, i);
+        }
+        for (int i = nn - 1; i >= 0; --i)
+        {
+            Ss acc = y(i);
+            for (int j = i + 1; j < nn; ++j)
+            {
+                acc -= l_usx(j, i) * dz_usx_out(j);
+            }
+            dz_usx_out(i) = acc / l_usx(i, i);
+        }
         if (dpi_out != nullptr)
         {
             Pi_t dnext;
@@ -2201,6 +2797,55 @@ private:
             ws_.Gamma_path[k - 1], &st.BA, D::lay_path, D::idxs_lo_path,
             D::idxs_hi_path, reg, p_next, ws_.M_path[k - 1],
             ws_.L_path[k - 1], ws_.P_path[k - 1]);
+    }
+
+    /// LQ variant of backward_factor_stage (3d): fills L_k / P_k via the
+    /// wide-matrix LQ factor (factor_one_stage_lq) instead of the dense
+    /// Cholesky of Mtilde_k.  Reads the x-block of L_{k+1} (already factored,
+    /// we walk k = N..0) to build the dynamics column of W_k; zero at k = N.
+    bool backward_factor_stage_lq(int k, const Qp<P, NH>& in, S reg,
+                                  bool lh_valid)
+    {
+        const int N = in.N;
+        Eigen::Matrix<S, D::nx, D::nx> lnext_xx;
+        lnext_xx.setZero();
+        if (k < N)
+        {
+            if (k + 1 == N)
+            {
+                const int nw = D::nslack_term;
+                lnext_xx = ws_.L_term.block(nw, nw, D::nx, D::nx);
+            }
+            else
+            {
+                const int nw = D::nu + D::nslack_path;
+                lnext_xx = ws_.L_path[k].block(nw, nw, D::nx, D::nx);
+            }
+        }
+        if (k == 0)
+        {
+            const auto& st = in.first;
+            return factor_one_stage_lq<D::nu, D::nx, D::nslack_first>(
+                true, st.hess, st.DC, ws_.gamma_first, ws_.Gamma_first,
+                &st.BA, D::lay_first, D::idxs_lo_first, D::idxs_hi_first,
+                reg, lh_valid, ws_.Lh_first, lnext_xx, ws_.Lh_first,
+                ws_.L_first, ws_.P_first);
+        }
+        if (k == N)
+        {
+            const auto& st = in.term;
+            return factor_one_stage_lq<0, D::nx, D::nslack_term>(
+                false, st.hess, st.DC, ws_.gamma_term, ws_.Gamma_term,
+                static_cast<const Ba_t*>(nullptr), D::lay_term,
+                D::idxs_lo_term, D::idxs_hi_term, reg, lh_valid, ws_.Lh_term,
+                lnext_xx, ws_.Lh_term, ws_.L_term, ws_.P_term);
+        }
+        const auto& st = in.path[k - 1];
+        return factor_one_stage_lq<D::nu, D::nx, D::nslack_path>(
+            true, st.hess, st.DC, ws_.gamma_path[k - 1],
+            ws_.Gamma_path[k - 1], &st.BA, D::lay_path, D::idxs_lo_path,
+            D::idxs_hi_path, reg, lh_valid, ws_.Lh_path[k - 1], lnext_xx,
+            ws_.Lh_path[k - 1], ws_.L_path[k - 1], ws_.P_path[k - 1]);
     }
 
     void backward_reduced_stage(int k, const Qp<P, NH>& in,
