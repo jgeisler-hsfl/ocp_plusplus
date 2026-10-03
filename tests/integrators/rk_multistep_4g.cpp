@@ -11,6 +11,7 @@
 #include <string>
 
 #include "ocp/integrators/rk_explicit.hpp"
+#include "ocp/integrators/rk_implicit.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -284,22 +285,215 @@ void check_hess_prod()
                 max_err);
 }
 
+// ---------------------------------------------------------------------------
+//  IRK (implicit RK / Radau IIA) multi-step tests
+// ---------------------------------------------------------------------------
+
+// value: NumSteps sub-steps over 5 OCP steps (h=0.1) vs RK4 reference.
+template <int NumSteps>
+void check_value_irk()
+{
+    using Integ =
+        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+                                  NumSteps>;
+    const Integ integ(OdeXsqU{}, 0.1, 8);
+    state_t cur;
+    cur << 0.3, -0.7;
+    const control_t u(0.4);
+    for (int step = 0; step < 5; ++step)
+    {
+        integ.value(cur, u, cur);
+    }
+    const state_t ref = reference_value();
+    const double err = (cur - ref).cwiseAbs().maxCoeff();
+    check(err < 1e-4, "value Radau2 multi-step vs RK4 reference");
+    std::printf("  value Radau2 NS=%d  OK  (|err|=%.2e < 1.0e-04)\n",
+                NumSteps, err);
+}
+
+// jacobian: central FD of the composed one-OCP-step map, NumSteps sub-steps.
+template <int NumSteps>
+void check_jacobian_irk()
+{
+    using Integ =
+        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+                                  NumSteps>;
+    const Integ integ(OdeXsqU{}, 0.1, 8);
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+
+    df_dx_t Jx;
+    df_du_t Ju;
+    integ.jacobian(x, u, Jx, Ju);
+
+    const double d = 1e-6;
+    double max_err = 0.0;
+    for (int j = 0; j < nx; ++j)
+    {
+        state_t xp = x;
+        state_t xm = x;
+        state_t e;
+        e.setZero();
+        e(j) = d;
+        xp += e;
+        xm -= e;
+        state_t fdp;
+        state_t fdm;
+        integ.value(xp, u, fdp);
+        integ.value(xm, u, fdm);
+        for (int i = 0; i < nx; ++i)
+        {
+            max_err = std::max(
+                max_err, std::abs(Jx(i, j) - (fdp(i) - fdm(i)) / (2.0 * d)));
+        }
+    }
+    for (int j = 0; j < nu; ++j)
+    {
+        control_t up = u;
+        control_t um = u;
+        control_t e;
+        e.setZero();
+        e(j) = d;
+        up += e;
+        um -= e;
+        state_t fdp;
+        state_t fdm;
+        integ.value(x, up, fdp);
+        integ.value(x, um, fdm);
+        for (int i = 0; i < nx; ++i)
+        {
+            max_err = std::max(
+                max_err, std::abs(Ju(i, j) - (fdp(i) - fdm(i)) / (2.0 * d)));
+        }
+    }
+    check(max_err < 1e-6, "jacobian Radau2 multi-step FD");
+    std::printf("  jacobian Radau2 NS=%d  OK  (max|err|=%.2e < 1e-6)\n",
+                NumSteps, max_err);
+}
+
+// hess_prod: FD the Hessian of w^T Phi for 3 (w, v) pairs, NumSteps sub-steps.
+template <int NumSteps>
+void check_hess_prod_irk()
+{
+    using Integ =
+        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+                                  NumSteps>;
+    using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
+
+    const Integ integ(OdeXsqU{}, 0.1, 8);
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+    zvec_t z0;
+    z0(0) = x(0);
+    z0(1) = x(1);
+    z0(2) = u(0);
+
+    state_t w[3];
+    state_t vx[3];
+    control_t vu[3];
+    w[0] << 0.7, -0.3;
+    vx[0] << 0.4, 0.9;
+    vu[0] << -0.5;
+    w[1] << -0.2, 0.6;
+    vx[1] << 0.1, -0.8;
+    vu[1] << 0.3;
+    w[2] << 0.9, 0.9;
+    vx[2] << -0.5, 0.2;
+    vu[2] << 0.7;
+
+    const double d = 1e-4;
+    const int n = nx + nu;
+    double max_err = 0.0;
+    for (int p = 0; p < 3; ++p)
+    {
+        auto g = [&](const zvec_t& z) -> double
+        {
+            state_t xx;
+            xx(0) = z(0);
+            xx(1) = z(1);
+            control_t uu;
+            uu(0) = z(2);
+            state_t xn;
+            integ.value(xx, uu, xn);
+            return w[p].dot(xn);
+        };
+
+        Eigen::Matrix<double, n, n> H;
+        for (int a = 0; a < n; ++a)
+        {
+            for (int b = a; b < n; ++b)
+            {
+                if (a == b)
+                {
+                    zvec_t zp = z0;
+                    zvec_t zm = z0;
+                    zp(a) += d;
+                    zm(a) -= d;
+                    H(a, a) = (g(zp) - 2.0 * g(z0) + g(zm)) / (d * d);
+                }
+                else
+                {
+                    zvec_t zpp = z0;
+                    zvec_t zpm = z0;
+                    zvec_t zmp = z0;
+                    zvec_t zmm = z0;
+                    zpp(a) += d;
+                    zpp(b) += d;
+                    zpm(a) -= d;
+                    zpm(b) += d;
+                    zmp(a) += d;
+                    zmp(b) -= d;
+                    zmm(a) -= d;
+                    zmm(b) -= d;
+                    H(a, b) =
+                        (g(zpp) - g(zpm) - g(zmp) + g(zmm)) / (4.0 * d * d);
+                }
+                H(b, a) = H(a, b);
+            }
+        }
+
+        state_t hvx;
+        control_t hvu;
+        integ.hess_prod(x, u, w[p], vx[p], vu[p], hvx, hvu);
+
+        zvec_t v;
+        v(0) = vx[p](0);
+        v(1) = vx[p](1);
+        v(2) = vu[p](0);
+        const zvec_t ref = H * v;
+        for (int i = 0; i < nx; ++i)
+        {
+            max_err = std::max(max_err, std::abs(hvx(i) - ref(i)));
+        }
+        for (int i = 0; i < nu; ++i)
+        {
+            max_err = std::max(max_err, std::abs(hvu(i) - ref(nx + i)));
+        }
+    }
+    check(max_err < 1e-5, "hess_prod Radau2 multi-step FD");
+    std::printf("  hess_prod Radau2 NS=%d  OK  (max|err|=%.2e < 1e-5)\n",
+                NumSteps, max_err);
+}
+
 }  // namespace
 
 int run_multistep_4g_tests()
 {
-    // value (NumSteps=1 anchors the regression; 2 and 3 exercise sub-stepping)
+    // --- ERK (explicit) ---
     check_value<1>(2e-4);
     check_value<2>(1e-4);
     check_value<3>(1e-4);
-
-    // jacobian
     check_jacobian<2>();
-
-    // hess_prod (NS=1 anchors the regression against the 4b single-step path;
-    // NS=2 exercises the multi-step adjoint threading)
     check_hess_prod<1>();
     check_hess_prod<2>();
+
+    // --- IRK (implicit / Radau IIA) ---
+    check_value_irk<1>();
+    check_value_irk<2>();
+    check_value_irk<3>();
+    check_jacobian_irk<2>();
+    check_hess_prod_irk<1>();
+    check_hess_prod_irk<2>();
 
     if (failures != 0)
     {
