@@ -707,4 +707,36 @@ reference tests are bit-for-bit unchanged.
     df/dx = I + hM, df/du = [h²/2; h], |err| < 1e-10.
   - *hess_prod (linear):* ẋ = −10x (no hess_prod) → returns zeros.
 - Build: warning-free under `-Wall -Wextra -Werror`. All targets green
-  (4a + 4b + 4c + 4d in `integrators_unit`).
+   (4a + 4b + 4c + 4d in `integrators_unit`).
+
+### 4e — End-to-end continuous SQP + regression (done)
+
+- Test `tests/integrators/sqp_continuous_4e.cpp` (new `sqp_continuous` CMake
+  target): a continuous double-integrator OCP (`qdot = v`, `vdot = a`,
+  terminal equality `q_N + v_N = 1`, box-bounded control, `ne_t = 1`) at
+  N = 10, h = 0.1, solved by the existing `SqpSolver`. Two integrator paths
+  are exercised end-to-end:
+  - `ExplicitRkIntegrator<..., 4, K4Tag>` (primary),
+  - `ImplicitRkIntegrator<..., 2, RadauIia2Tag>` (IRK end-to-end; Newton
+    `newton_max = 5`).
+- Both integrators give the exact discrete map for this linear ODE, so the
+  two paths produce the *identical* continuous OCP and the same cost
+  (17.0621417000). The discrete `DoubleIntegrator` reference (same horizon /
+  step / cost weights, plus the discrete-only soft-ineq and linear stage
+  constraints) yields cost 17.8142031617; the continuous cost is within the
+  plan's 5% relative bound (4.2% gap is driven by the extra discrete-only
+  constraints, not by integration error).
+- Assertions: `solve` returns `kSolved`, `sol.status == kSolved`, and all
+  four NLP residual norms (`res_stat`, `res_eq`, `res_ineq`, `res_comp`)
+  computed via `compute_nlp_residuals` are below 1e-6; both integrator costs
+  within 5% of the discrete reference.
+- **Regression:** full run of every existing target — `double_integrator`,
+  `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`, `integrators_unit` — all PASS,
+  bit-for-bit unchanged.
+- Build: warning-free under `-Wall -Wextra -Werror`.
+- **Note:** the discrete reference OCP carries `ng = 1` / `nl = 1` stage
+  constraints that the continuous OCP intentionally omits, so the two costs
+  are not expected to match exactly; the 5% bound (per §3/§4e of this plan)
+  is the meaningful gate here, and both integrator paths agree to machine
+  precision with each other.

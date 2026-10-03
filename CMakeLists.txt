@@ -96,6 +96,12 @@ target_include_directories(integrators_unit
                             PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(integrators_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(sqp_continuous
+                tests/integrators/sqp_continuous_4e.cpp)
+target_include_directories(sqp_continuous
+                            PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_continuous PRIVATE ${OCP_WARN_FLAGS})
+
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
 if (Doxygen_FOUND)
