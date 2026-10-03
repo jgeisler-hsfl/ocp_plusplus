@@ -2,8 +2,8 @@
 - [x] Port selected acados problems to new interface for comparisons
 - [x] Write simple test for problem interface using a simple example from the acados repo: test discrete time simulation of model and evaluation of cost and constraint functions, output as csv file
 - [x] Reimplement acados SQP solver with HPIPM SQ solver
-- [] reimplement acados style explicit and implicit RK solver/integrator alloc free template class
-- [] Define a continuous time problem interface using an integrator class to implement the discrete time interface
+- [x] reimplement acados style explicit and implicit RK solver/integrator alloc free template class
+- [x] Define a continuous time problem interface using an integrator class to implement the discrete time interface
 - [] write matlab generator to write interface definition for new framework from AcadosOcp matlab object, reusing CasADi generated dynamics, cost and constraint code
 - [] write project README
 - [] rewrite options and statistics to use a dual access approach: direct via struct members or by name via a reference map. aim: make values "discoverable" and settable in an interactive environment.
