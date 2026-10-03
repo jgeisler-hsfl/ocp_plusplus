@@ -54,14 +54,14 @@ using control_t = CP::control_t;
 
 struct DoubleIntegratorOde
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         state_t r;
         r(0) = x(1);
         r(1) = u(0);
         return r;
     }
-    void jacobian(const state_t&, const control_t&,
+    void jacobian(const state_t&, const control_t&, double,
                   CP::dyn_df_dx_t& df_dx, CP::dyn_df_du_t& df_du) const
     {
         df_dx.setZero();

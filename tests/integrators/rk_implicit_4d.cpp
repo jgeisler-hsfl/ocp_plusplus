@@ -47,11 +47,11 @@ void check(bool cond, const char* msg)
 struct OdeLin
 {
     double lambda = 10.0;
-    state_t f(const state_t& x, const control_t&) const
+    state_t f(const state_t& x, const control_t&, double) const
     {
         return -lambda * x;
     }
-    void jacobian(const state_t&, const control_t&, df_dx_t& df_dx,
+    void jacobian(const state_t&, const control_t&, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = -lambda * df_dx_t::Identity();
@@ -62,17 +62,17 @@ struct OdeLin
 /// xdot = x.*x  (elementwise nonlinear; value test against x0/(1-x0*t)).
 struct OdeXsq
 {
-    state_t f(const state_t& x, const control_t&) const
+    state_t f(const state_t& x, const control_t&, double) const
     {
         return x.cwiseProduct(x);
     }
-    void jacobian(const state_t& x, const control_t&, df_dx_t& df_dx,
+    void jacobian(const state_t& x, const control_t&, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = (2.0 * x).asDiagonal();
         df_du.setZero();
     }
-    void hess_prod(const state_t&, const control_t&, const state_t& w,
+    void hess_prod(const state_t&, const control_t&, double, const state_t& w,
                    const state_t& v_x, const control_t&, state_t& hv_x,
                    control_t& hv_u) const
     {
@@ -85,11 +85,11 @@ struct OdeXsq
 /// blocks non-trivial and the composed map is nonlinear).
 struct OdeXsqU
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         return x.cwiseProduct(x) * u(0) + x;
     }
-    void jacobian(const state_t& x, const control_t& u, df_dx_t& df_dx,
+    void jacobian(const state_t& x, const control_t& u, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = df_dx_t::Identity();
@@ -99,9 +99,9 @@ struct OdeXsqU
         }
         df_du.col(0) = x.cwiseProduct(x);
     }
-    void hess_prod(const state_t& x, const control_t& u, const state_t& w,
-                   const state_t& v_x, const control_t& v_u, state_t& hv_x,
-                   control_t& hv_u) const
+    void hess_prod(const state_t& x, const control_t& u, double,
+                   const state_t& w, const state_t& v_x, const control_t& v_u,
+                   state_t& hv_x, control_t& hv_u) const
     {
         // f_i = x_i^2 u + x_i:  d2f_i/(dx_i dx_i) = 2 u,  d2f_i/(dx_i du) = 2 x_i.
         for (int j = 0; j < nx; ++j)
@@ -121,14 +121,14 @@ struct OdeXsqU
 /// nilpotent dynamics matrix the Radau collocation map is exact.
 struct OdeDoubleInt
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         state_t r;
         r(0) = x(1);
         r(1) = u(0);
         return r;
     }
-    void jacobian(const state_t&, const control_t&, df_dx_t& df_dx,
+    void jacobian(const state_t&, const control_t&, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx.setZero();
@@ -154,7 +154,7 @@ void check_value_stiff()
     control_t u(0.0);
     for (int step = 0; step < 10; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     // z = h*lambda = -3: the Radau IIA 2 stability function satisfies R(-3) = 0,
     // so the exact collocation map drives x to 0 in one step; A-stability then
@@ -176,7 +176,7 @@ void check_value_accuracy()
     control_t u(0.0);
     for (int step = 0; step < 20; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     const double expected = std::exp(-1.0);  // t = 20 * 0.05 = 1.0
     check(std::abs(cur(0) - expected) < 1e-4, "value accuracy xdot=-x");
@@ -195,7 +195,7 @@ void check_value_exact_linear()
     control_t u(0.7);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     const double t = 5 * 0.2;  // = 1.0
     const double q = 0.3 + (-0.5) * t + 0.5 * 0.7 * t * t;  // = 0.15
@@ -216,7 +216,7 @@ void check_value_xsq()
     control_t u(0.0);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     const double expected = 0.5 / (1.0 - 0.5 * 1.0);  // t = 1, x0 = 0.5 -> 1.0
     check(std::abs(cur(0) - expected) < 1e-2, "value xdot=x^2 c0");
@@ -237,11 +237,11 @@ void check_newton_convergence()
 
     const Integ few(OdeXsq{}, 0.2, 1);
     state_t x_out;
-    few.value(x, u, x_out);
+    few.value(x, u, 0.0, x_out);
     const double r_few = few.newton_residual_inf();
 
     const Integ many(OdeXsq{}, 0.2, 5);
-    many.value(x, u, x_out);
+    many.value(x, u, 0.0, x_out);
     const double r_many = many.newton_residual_inf();
 
     check(r_many < r_few, "newton residual decreases with more iterations");
@@ -264,7 +264,7 @@ void check_jacobian_fd()
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, Jx, Ju);
+    integ.jacobian(x, u, 0.0, Jx, Ju);
 
     const double d = 1e-6;
     for (int j = 0; j < nx; ++j)
@@ -278,8 +278,8 @@ void check_jacobian_fd()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, fdp);
-        integ.value(xm, u, fdm);
+        integ.value(xp, u, 0.0, fdp);
+        integ.value(xm, u, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -299,8 +299,8 @@ void check_jacobian_fd()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, fdp);
-        integ.value(x, um, fdm);
+        integ.value(x, up, 0.0, fdp);
+        integ.value(x, um, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -323,7 +323,7 @@ void check_jacobian_exact_linear()
     const control_t u(0.7);
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, Jx, Ju);
+    integ.jacobian(x, u, 0.0, Jx, Ju);
 
     const double h = 0.2;
     const double exp_qq = 1.0;
@@ -355,7 +355,7 @@ void check_hess_prod_linear()
     const control_t v_u(-0.5);
     state_t hv_x;
     control_t hv_u;
-    integ.hess_prod(x, u, w, v_x, v_u, hv_x, hv_u);
+    integ.hess_prod(x, u, 0.0, w, v_x, v_u, hv_x, hv_u);
     check(hv_x.isZero() && hv_u.isZero(), "hess_prod linear ODE == 0");
     std::printf("  hess_prod linear   OK  (zero, as expected)\n");
 }
@@ -387,7 +387,7 @@ void check_hess_prod_fd()
 
     const auto phi = [&integ](const z_t& z) {
         state_t out;
-        integ.value(z.head(nx), z.tail(nu), out);
+        integ.value(z.head(nx), z.tail(nu), 0.0, out);
         return out;
     };
     const auto g = [&](const state_t& w, const z_t& z) {
@@ -448,7 +448,7 @@ void check_hess_prod_fd()
         v.tail(nu) = c.v_u;
         state_t hv_x;
         control_t hv_u;
-        integ.hess_prod(x, u, c.w, c.v_x, c.v_u, hv_x, hv_u);
+        integ.hess_prod(x, u, 0.0, c.w, c.v_x, c.v_u, hv_x, hv_u);
         z_t actual;
         actual.head(nx) = hv_x;
         actual.tail(nu) = hv_u;

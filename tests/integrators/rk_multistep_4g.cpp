@@ -43,11 +43,11 @@ void check(bool cond, const char* msg)
 // u; both Jacobian blocks are non-trivial and the ODE Hessian is non-zero.
 struct OdeXsqU
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         return x.cwiseProduct(x) * u(0) + x;
     }
-    void jacobian(const state_t& x, const control_t& u, df_dx_t& df_dx,
+    void jacobian(const state_t& x, const control_t& u, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = df_dx_t::Identity();
@@ -57,9 +57,9 @@ struct OdeXsqU
         }
         df_du.col(0) = x.cwiseProduct(x);
     }
-    void hess_prod(const state_t& x, const control_t& u, const state_t& w,
-                   const state_t& v_x, const control_t& v_u, state_t& hv_x,
-                   control_t& hv_u) const
+    void hess_prod(const state_t& x, const control_t& u, double,
+                   const state_t& w, const state_t& v_x, const control_t& v_u,
+                   state_t& hv_x, control_t& hv_u) const
     {
         // f_i = x_i^2 u + x_i:  d2f_i/(dx_i^2) = 2u,  d2f_i/(dx_i du) = 2 x_i.
         for (int j = 0; j < nx; ++j)
@@ -79,10 +79,10 @@ struct OdeXsqU
 state_t rk4_step(const OdeXsqU& ode, const state_t& x, const control_t& u,
                  double h)
 {
-    const state_t k1 = ode.f(x, u);
-    const state_t k2 = ode.f(x + 0.5 * h * k1, u);
-    const state_t k3 = ode.f(x + 0.5 * h * k2, u);
-    const state_t k4 = ode.f(x + h * k3, u);
+    const state_t k1 = ode.f(x, u, 0.0);
+    const state_t k2 = ode.f(x + 0.5 * h * k1, u, 0.0);
+    const state_t k3 = ode.f(x + 0.5 * h * k2, u, 0.0);
+    const state_t k4 = ode.f(x + h * k3, u, 0.0);
     return x + (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
 }
 
@@ -114,7 +114,7 @@ void check_value(double tol)
     const control_t u(0.4);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     const state_t ref = reference_value();
     const double err = (cur - ref).cwiseAbs().maxCoeff();
@@ -135,7 +135,7 @@ void check_jacobian()
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, Jx, Ju);
+    integ.jacobian(x, u, 0.0, Jx, Ju);
 
     const double d = 1e-6;
     double max_err = 0.0;
@@ -150,8 +150,8 @@ void check_jacobian()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, fdp);
-        integ.value(xm, u, fdm);
+        integ.value(xp, u, 0.0, fdp);
+        integ.value(xm, u, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             max_err = std::max(
@@ -169,8 +169,8 @@ void check_jacobian()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, fdp);
-        integ.value(x, um, fdm);
+        integ.value(x, up, 0.0, fdp);
+        integ.value(x, um, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             max_err = std::max(
@@ -225,7 +225,7 @@ void check_hess_prod()
             control_t uu;
             uu(0) = z(2);
             state_t xn;
-            integ.value(xx, uu, xn);
+            integ.value(xx, uu, 0.0, xn);
             return w[p].dot(xn);
         };
 
@@ -264,7 +264,7 @@ void check_hess_prod()
 
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, w[p], vx[p], vu[p], hvx, hvu);
+        integ.hess_prod(x, u, 0.0, w[p], vx[p], vu[p], hvx, hvu);
 
         zvec_t v;
         v(0) = vx[p](0);
@@ -302,7 +302,7 @@ void check_value_irk()
     const control_t u(0.4);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
     const state_t ref = reference_value();
     const double err = (cur - ref).cwiseAbs().maxCoeff();
@@ -324,7 +324,7 @@ void check_jacobian_irk()
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, Jx, Ju);
+    integ.jacobian(x, u, 0.0, Jx, Ju);
 
     const double d = 1e-6;
     double max_err = 0.0;
@@ -339,8 +339,8 @@ void check_jacobian_irk()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, fdp);
-        integ.value(xm, u, fdm);
+        integ.value(xp, u, 0.0, fdp);
+        integ.value(xm, u, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             max_err = std::max(
@@ -358,8 +358,8 @@ void check_jacobian_irk()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, fdp);
-        integ.value(x, um, fdm);
+        integ.value(x, up, 0.0, fdp);
+        integ.value(x, um, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             max_err = std::max(
@@ -414,7 +414,7 @@ void check_hess_prod_irk()
             control_t uu;
             uu(0) = z(2);
             state_t xn;
-            integ.value(xx, uu, xn);
+            integ.value(xx, uu, 0.0, xn);
             return w[p].dot(xn);
         };
 
@@ -454,7 +454,7 @@ void check_hess_prod_irk()
 
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, w[p], vx[p], vu[p], hvx, hvu);
+        integ.hess_prod(x, u, 0.0, w[p], vx[p], vu[p], hvx, hvu);
 
         zvec_t v;
         v(0) = vx[p](0);

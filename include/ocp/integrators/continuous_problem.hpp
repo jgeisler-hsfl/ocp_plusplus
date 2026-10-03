@@ -7,8 +7,9 @@
 // ContinuousProblem and implementing the cost / constraint / initial-state
 // methods. The three dynamics methods (dynamics_next_state,
 // dynamics_jacobian, dynamics_hess_prod) are provided here and delegate to
-// the integrator; the stage index k is ignored because the ODE is
-// time-invariant this phase.
+// the integrator. The ODE may be time-varying: the adapter maps the stage
+// index to a physical time t_k = k * h and forwards it to the integrator
+// (the ODE itself is time-invariant if it simply ignores the t argument).
 //
 // The ODE model is stored by value; the integrator holds a const Ode&
 // pointing into this object. The integrator's mutable workspace makes its
@@ -43,39 +44,40 @@ public:
     /// @param args forwarded to the integrator constructor (typically
     ///             the step size h and possibly scheme options).
     template <class... Args>
-    explicit ContinuousProblem(const Ode& ode, Args&&... args)
-        : ode_(ode), integ_(ode_, std::forward<Args>(args)...)
+    explicit ContinuousProblem(const Ode& ode, double h, Args&&... args)
+        : ode_(ode), h_(h), integ_(ode_, h, std::forward<Args>(args)...)
     {
     }
 
     // ---------------------------------------------------------------
-    //  dynamics: delegate to the integrator (k ignored, time-invariant)
+    //  dynamics: delegate to the integrator, forwarding t_k = k * h_
     // ---------------------------------------------------------------
 
-    state_t dynamics_next_state(int /*k*/, const state_t& x,
+    state_t dynamics_next_state(int k, const state_t& x,
                                 const control_t& u) const
     {
         state_t x_next;
-        integ_.value(x, u, x_next);
+        integ_.value(x, u, k * h_, x_next);
         return x_next;
     }
 
-    void dynamics_jacobian(int /*k*/, const state_t& x, const control_t& u,
+    void dynamics_jacobian(int k, const state_t& x, const control_t& u,
                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
-        integ_.jacobian(x, u, df_dx, df_du);
+        integ_.jacobian(x, u, k * h_, df_dx, df_du);
     }
 
-    void dynamics_hess_prod(int /*k*/, const state_t& x, const control_t& u,
+    void dynamics_hess_prod(int k, const state_t& x, const control_t& u,
                             const state_t& w, const state_t& v_x,
                             const control_t& v_u, state_t& hv_x,
                             control_t& hv_u) const
     {
-        integ_.hess_prod(x, u, w, v_x, v_u, hv_x, hv_u);
+        integ_.hess_prod(x, u, k * h_, w, v_x, v_u, hv_x, hv_u);
     }
 
 private:
     Ode ode_;
+    double h_;
     Integ integ_;
 };
 

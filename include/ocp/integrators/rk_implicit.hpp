@@ -1,9 +1,11 @@
 // ocp/integrators/rk_implicit.hpp
 //
-// Allocation-free implicit Runge-Kutta / collocation integrator (phase 4d).
+// Allocation-free implicit Runge-Kutta / collocation integrator (phases 4d,
+// 4g, 4h).
 //
-// ImplicitRkIntegrator turns a time-invariant ODE  xdot = f(x, u)  into the
-// discrete dynamics  x_next = Phi(x, u)  via a fixed implicit RK scheme
+// ImplicitRkIntegrator turns a (possibly time-varying) ODE
+//  xdot = f(x, u, t)  into the discrete dynamics  x_next = Phi(x, u, t_k)
+//  via a fixed implicit RK scheme
 // (ButcherTableau<Dims, NS, Tag>, Radau IIA). Because the Butcher matrix A is
 // full (not strictly lower triangular), the stage equations
 //
@@ -114,7 +116,8 @@ struct IrkWorkspace
 
 }  // namespace detail
 
-/// Implicit Runge-Kutta (collocation) integrator for a time-invariant ODE.
+/// Implicit Runge-Kutta (collocation) integrator for a (possibly
+/// time-varying) ODE.
 ///
 /// `NS` is the number of RK stages (2..4 for the Radau IIA tags). `Tag`
 /// selects the Butcher scheme (RadauIia2Tag..RadauIia4Tag). `h` is the fixed
@@ -123,6 +126,11 @@ struct IrkWorkspace
 /// sub-step), the default of 1 being the plain single-step scheme. The ODE
 /// model must provide `f` and `jacobian`; a nonlinear ODE must also provide
 /// `hess_prod` (used by the nonlinear HVP path).
+///
+/// Time-varying (phase 4h): each method receives `t_k` (the physical time at
+/// the start of the OCP interval); the per-stage time
+///   t_s = t_k + h_ss * (ss + c[s])
+/// is forwarded to every ODE evaluation (f, jacobian, hess_prod).
 template <class Dims, class Ode, int NS, class Tag, int NumSteps = 1>
 class ImplicitRkIntegrator
 {
@@ -160,7 +168,8 @@ public:
     /// NumSteps sub-steps of size h/NumSteps. Each sub-step is a Newton solve,
     /// warm-started from the previous sub-step's converged K (acados
     /// `mem->xdot` pattern).
-    void value(const state_t& x, const control_t& u, state_t& x_next) const
+    void value(const state_t& x, const control_t& u, double t_k,
+               state_t& x_next) const
     {
         state_t x_cur = x;
         Kvec K_init;
@@ -169,7 +178,8 @@ public:
         {
             if (first)
             {
-                const state_t K0 = ode_.f(x_cur, u);
+                const state_t K0 =
+                    ode_.f(x_cur, u, t_k + ss * h_ss_);
                 for (int s = 0; s < NS; ++s)
                 {
                     K_init.segment(s * nx, nx) = K0;
@@ -183,7 +193,7 @@ public:
                     K_init.segment(s * nx, nx) = ws_.K[s];
                 }
             }
-            solve_newton(x_cur, u, K_init);
+            solve_newton(x_cur, u, K_init, t_k, ss);
             for (int s = 0; s < NS; ++s)
             {
                 if (Tab::b[s] != 0.0)
@@ -199,8 +209,8 @@ public:
     /// first-order sensitivity dK/d(x,u) = G^{-1} dR/d(x,u) gives the
     /// per-sub-step Jacobian (Jx_ss, Ju_ss); the composed Jacobian threads
     /// Sx = Jx_ss*Sx, Su = Jx_ss*Su + Ju_ss across the sub-steps.
-    void jacobian(const state_t& x, const control_t& u, df_dx_t& df_dx,
-                  df_du_t& df_du) const
+    void jacobian(const state_t& x, const control_t& u, double t_k,
+                  df_dx_t& df_dx, df_du_t& df_du) const
     {
         state_t x_cur = x;
         df_dx_t Sx = df_dx_t::Identity();
@@ -212,7 +222,7 @@ public:
         {
             if (first)
             {
-                const state_t K0 = ode_.f(x_cur, u);
+                const state_t K0 = ode_.f(x_cur, u, t_k + ss * h_ss_);
                 for (int s = 0; s < NS; ++s)
                 {
                     K_init.segment(s * nx, nx) = K0;
@@ -226,7 +236,7 @@ public:
                     K_init.segment(s * nx, nx) = ws_.K[s];
                 }
             }
-            solve_newton(x_cur, u, K_init);
+            solve_newton(x_cur, u, K_init, t_k, ss);
             for (int s = 0; s < NS; ++s)
             {
                 ws_.rhs_x.block(s * nx, 0, nx, nx) = ws_.dfdx[s];
@@ -268,8 +278,8 @@ public:
     ///
     /// A linear ODE (no `hess_prod`) has a zero composed Hessian and returns
     /// zeros.
-    void hess_prod(const state_t& x, const control_t& u, const state_t& w,
-                   const state_t& v_x, const control_t& v_u,
+    void hess_prod(const state_t& x, const control_t& u, double t_k,
+                   const state_t& w, const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
         if constexpr (ode_supports_hess_prod<Ode, Dims>)
@@ -277,13 +287,13 @@ public:
             if constexpr (NumSteps == 1)
             {
                 Kvec K_init;
-                const state_t K0 = ode_.f(x, u);
+                const state_t K0 = ode_.f(x, u, t_k);
                 for (int s = 0; s < NS; ++s)
                 {
                     K_init.segment(s * nx, nx) = K0;
                 }
-                solve_newton(x, u, K_init);
-                hess_prod_substep(u, w, v_x, v_u, hv_x, hv_u);
+                solve_newton(x, u, K_init, t_k, 0);
+                hess_prod_substep(u, t_k, 0, w, v_x, v_u, hv_x, hv_u);
             }
             else
             {
@@ -300,7 +310,8 @@ public:
                 {
                     if (first)
                     {
-                        const state_t K0 = ode_.f(x_cur, u);
+                        const state_t K0 =
+                            ode_.f(x_cur, u, t_k + ss * h_ss_);
                         for (int s = 0; s < NS; ++s)
                         {
                             K_init.segment(s * nx, nx) = K0;
@@ -314,7 +325,7 @@ public:
                             K_init.segment(s * nx, nx) = ws_.K[s];
                         }
                     }
-                    solve_newton(x_cur, u, K_init);
+                    solve_newton(x_cur, u, K_init, t_k, ss);
 
                     // Store per-sub-step Newton state.
                     for (int s = 0; s < NS; ++s)
@@ -397,7 +408,7 @@ public:
                     // Local HVP: lam^T D2Phi_ss (dx_traj[ss], v_u).
                     state_t local_hv_x;
                     control_t local_hv_u;
-                    hess_prod_substep(u, lam, ws_.dx_traj[ss], v_u,
+                    hess_prod_substep(u, t_k, ss, lam, ws_.dx_traj[ss], v_u,
                                       local_hv_x, local_hv_u);
 
                     // Accumulate: x-part threaded via R_ss; u-part gets the
@@ -448,20 +459,23 @@ private:
     }
 
     // ODE Jacobians at each stage state.
-    void eval_jacobians(const control_t& u) const
+    void eval_jacobians(const control_t& u, double t_k, int ss) const
     {
         for (int s = 0; s < NS; ++s)
         {
-            ode_.jacobian(ws_.x_stage[s], u, ws_.dfdx[s], ws_.dfdu[s]);
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+            ode_.jacobian(ws_.x_stage[s], u, t_s, ws_.dfdx[s], ws_.dfdu[s]);
         }
     }
 
     // Newton residual R_s = K_s - f(x_s, u).
-    void eval_residual(const control_t& u) const
+    void eval_residual(const control_t& u, double t_k, int ss) const
     {
         for (int s = 0; s < NS; ++s)
         {
-            ws_.res.segment(s * nx, nx) = ws_.K[s] - ode_.f(ws_.x_stage[s], u);
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+            ws_.res.segment(s * nx, nx) =
+                ws_.K[s] - ode_.f(ws_.x_stage[s], u, t_s);
         }
     }
 
@@ -493,7 +507,7 @@ private:
     // factored (with dfdx/dfdu and last_residual_ refreshed) at the converged
     // point, ready for value(), jacobian(), or the hess_prod forward sweep.
     void solve_newton(const state_t& x, const control_t& u,
-                      const Kvec& K_init) const
+                      const Kvec& K_init, double t_k, int ss) const
     {
         for (int s = 0; s < NS; ++s)
         {
@@ -502,8 +516,8 @@ private:
         for (int it = 0; it < newton_max_; ++it)
         {
             eval_stage_states(x);
-            eval_jacobians(u);
-            eval_residual(u);
+            eval_jacobians(u, t_k, ss);
+            eval_residual(u, t_k, ss);
             eval_block_jacobian();
             ws_.lu_.compute(ws_.G);
             Eigen::Matrix<typename P::scalar_t, NK, 1> dK =
@@ -521,8 +535,8 @@ private:
         // Refresh the factorization and residual at the converged K so the
         // sensitivity solves and the diagnostic are consistent.
         eval_stage_states(x);
-        eval_jacobians(u);
-        eval_residual(u);
+        eval_jacobians(u, t_k, ss);
+        eval_residual(u, t_k, ss);
         ws_.last_residual_ = ws_.res.cwiseAbs().maxCoeff();
         eval_block_jacobian();
         ws_.lu_.compute(ws_.G);
@@ -531,9 +545,10 @@ private:
     // Single-sub-step HVP (4f algorithm): assumes the Newton state
     // (ws_.x_stage, ws_.dfdx, ws_.dfdu, ws_.lu_) is set up for the current
     // sub-step. Computes w^T D2Phi_ss (v_x, v_u) = (hv_x, hv_u).
-    void hess_prod_substep(const control_t& u, const state_t& w,
-                           const state_t& v_x, const control_t& v_u,
-                           state_t& hv_x, control_t& hv_u) const
+    void hess_prod_substep(const control_t& u, double t_k, int ss,
+                           const state_t& w, const state_t& v_x,
+                           const control_t& v_u, state_t& hv_x,
+                           control_t& hv_u) const
     {
         using nIn_vec = Eigen::Matrix<scalar_t, nIn, 1>;
 
@@ -571,16 +586,17 @@ private:
             const Eigen::Matrix<scalar_t, nx, 1> am_s = ws_.jac_am * v;
 
             // ODE HVPs at stage s: (H_s . v) and (H_s . (Am_s, 0)).
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
             for (int i = 0; i < nx; ++i)
             {
                 const state_t e_i = state_t::Unit(i);
                 state_t hx;
                 control_t hu;
-                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, e_i,
+                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, t_s, e_i,
                                          v_x, v_u, hx, hu);
                 ws_.hvp_v.row(i).head(nx) = hx;
                 ws_.hvp_v.row(i).tail(nu) = hu;
-                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, e_i,
+                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, t_s, e_i,
                                          am_s, zero_u, hx, hu);
                 ws_.hvp_am.row(i).head(nx) = hx;
                 ws_.hvp_am.row(i).tail(nu) = hu;

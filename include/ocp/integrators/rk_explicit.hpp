@@ -1,9 +1,10 @@
 // ocp/integrators/rk_explicit.hpp
 //
-// Allocation-free explicit Runge-Kutta integrator (phases 4b, 4g).
+// Allocation-free explicit Runge-Kutta integrator (phases 4b, 4g, 4h).
 //
-// ExplicitRkIntegrator turns a time-invariant ODE  xdot = f(x, u)  into the
-// discrete dynamics  x_next = Phi(x, u)  via a fixed explicit RK scheme
+// ExplicitRkIntegrator turns a (possibly time-varying) ODE
+//  xdot = f(x, u, t)  into the discrete dynamics
+//  x_next = Phi(x, u, t_k)  via a fixed explicit RK scheme
 // (ButcherTableau<Dims, NS, Tag>). It implements the ODE-derivative contract
 // (value / jacobian / hess_prod, see ode_model.hpp) so that it can be wrapped
 // by ContinuousProblem into an ocp::Problem. Nothing downstream of the
@@ -16,15 +17,19 @@
 // backward adjoint sweep across all sub-steps. NumSteps = 1 (the default) is
 // the plain single-step integrator and is bit-for-bit identical to 4b.
 //
+// Time-varying (phase 4h): each method receives `t_k` (the start of the OCP
+// interval). The per-stage physical time is
+//     t_s = t_k + h_ss * (ss + c[s])
+// and is forwarded to every ODE evaluation (f, jacobian, hess_prod).
+//
 // Allocation-free: every scratch buffer is a fixed-size std::array of
 // compile-time Eigen objects, sized once on NS, NumSteps and Dims::nx/nu and
 // reused across calls. The methods are const; the ODE model is held by const
 // reference; the per-call scratch is `mutable`.
 //
-// All three methods recompute the stage states from (x, u) on each call (no
-// cached value is assumed), matching how the SQP invokes dynamics_* on its
-// own. The stage index is not a parameter: the ODE is time-invariant, so
-// every OCP stage uses the same f (ContinuousProblem ignores its `k`).
+// All three methods recompute the stage states from (x, u, t_k) on each call
+// (no cached value is assumed), matching how the SQP invokes dynamics_* on
+// its own.
 
 #pragma once
 
@@ -99,14 +104,17 @@ public:
     {
     }
 
-    /// Discrete map  x_next = Phi(x, u)  for the full OCP interval of size h,
-    /// advanced in NumSteps sub-steps of size h/NumSteps.
-    void value(const state_t& x, const control_t& u, state_t& x_next) const
+    /// Discrete map  x_next = Phi(x, u, t_k)  for the full OCP interval of
+    /// size h, advanced in NumSteps sub-steps of size h/NumSteps.
+    /// `t_k` is the physical time at the start of the OCP interval.
+    void value(const state_t& x, const control_t& u, double t_k,
+               state_t& x_next) const
     {
         state_t x_cur = x;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            ws_.K[ss][0] = ode_.f(x_cur, u);
+            const double t_0 = t_k + ss * h_ss_;
+            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss_ * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 state_t xs = x_cur;
@@ -117,7 +125,7 @@ public:
                         xs += h_ss_ * Tab::A[s][j] * ws_.K[ss][j];
                     }
                 }
-                ws_.K[ss][s] = ode_.f(xs, u);
+                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss_ * Tab::c[s]);
             }
             for (int s = 0; s < NS; ++s)
             {
@@ -134,8 +142,8 @@ public:
     /// computed by threading the first-order sensitivity forward across the
     /// sub-steps: start Sx = I, Su = 0; per sub-step form the per-sub-step
     /// Jacobian (Jx_ss, Ju_ss) and update Sx = Jx_ss*Sx, Su = Jx_ss*Su + Ju_ss.
-    void jacobian(const state_t& x, const control_t& u, df_dx_t& df_dx,
-                  df_du_t& df_du) const
+    void jacobian(const state_t& x, const control_t& u, double t_k,
+                  df_dx_t& df_dx, df_du_t& df_du) const
     {
         state_t x_cur = x;
         df_dx_t Sx = df_dx_t::Identity();
@@ -143,8 +151,9 @@ public:
         Su.setZero();
         for (int ss = 0; ss < NumSteps; ++ss)
         {
+            const double t_0 = t_k + ss * h_ss_;
             ws_.x_stage[ss][0] = x_cur;
-            ws_.K[ss][0] = ode_.f(x_cur, u);
+            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss_ * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 state_t xs = x_cur;
@@ -156,7 +165,7 @@ public:
                     }
                 }
                 ws_.x_stage[ss][s] = xs;
-                ws_.K[ss][s] = ode_.f(xs, u);
+                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss_ * Tab::c[s]);
             }
             // Per-sub-step Jacobian (Jx_ss, Ju_ss): thread the stage
             // sensitivities, then accumulate the b-weighted stage Jacobians.
@@ -180,7 +189,8 @@ public:
                 }
                 df_dx_t dfx_s;
                 df_du_t dfdu_s;
-                ode_.jacobian(ws_.x_stage[ss][s], u, dfx_s, dfdu_s);
+                ode_.jacobian(ws_.x_stage[ss][s], u, t_0 + h_ss_ * Tab::c[s],
+                              dfx_s, dfdu_s);
                 ws_.JX[ss][s] = dfx_s * Dxs;
                 ws_.JU[ss][s] = dfx_s * Dus + dfdu_s;
             }
@@ -208,8 +218,8 @@ public:
     /// the JVP + value computation graph.  The ODE's `hess_prod` is called
     /// once per stage to inject the second-derivative terms.
     /// Only valid for a nonlinear ODE (the ODE must provide `hess_prod`).
-    void hess_prod(const state_t& x, const control_t& u, const state_t& w,
-                   const state_t& v_x, const control_t& v_u,
+    void hess_prod(const state_t& x, const control_t& u, double t_k,
+                   const state_t& w, const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
         static_assert(ode_supports_hess_prod<Ode, Dims>,
@@ -223,8 +233,9 @@ public:
         state_t v_ss = v_x;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
+            const double t_0 = t_k + ss * h_ss_;
             ws_.x_stage[ss][0] = x_cur;
-            ws_.K[ss][0] = ode_.f(x_cur, u);
+            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss_ * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 state_t xs = x_cur;
@@ -236,12 +247,12 @@ public:
                     }
                 }
                 ws_.x_stage[ss][s] = xs;
-                ws_.K[ss][s] = ode_.f(xs, u);
+                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss_ * Tab::c[s]);
             }
             for (int s = 0; s < NS; ++s)
             {
-                ode_.jacobian(ws_.x_stage[ss][s], u, ws_.JX[ss][s],
-                              ws_.JU[ss][s]);
+                ode_.jacobian(ws_.x_stage[ss][s], u, t_0 + h_ss_ * Tab::c[s],
+                              ws_.JX[ss][s], ws_.JU[ss][s]);
             }
             ws_.dx[ss][0] = v_ss;
             ws_.dK[ss][0] = ws_.JX[ss][0] * v_ss + ws_.JU[ss][0] * v_u;
@@ -291,6 +302,7 @@ public:
 
         for (int ss = NumSteps - 1; ss >= 0; --ss)
         {
+            const double t_0 = t_k + ss * h_ss_;
             const state_t& dv_next = ws_.dv_ss[ss + 1];
             const state_t& dx_next = ws_.dx_ss[ss + 1];
 
@@ -317,6 +329,7 @@ public:
                 state_t hx;
                 control_t hu;
                 ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[ss][s], u,
+                                         t_0 + h_ss_ * Tab::c[s],
                                          ws_.ddK_dual[ss][s], ws_.dx[ss][s],
                                          v_u, hx, hu);
                 dx_stage_local += hx;

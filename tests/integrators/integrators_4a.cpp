@@ -93,18 +93,18 @@ void check_irk(const char* name)
 /// A nonlinear ODE that has hess_prod.
 struct NonlinearOde
 {
-    state_t f(const state_t& x, const control_t&) const
+    state_t f(const state_t& x, const control_t&, double) const
     {
         return x.array().sin().matrix();
     }
-    void jacobian(const state_t& x, const control_t&,
+    void jacobian(const state_t& x, const control_t&, double,
                   P::dyn_df_dx_t& df_dx, P::dyn_df_du_t& df_du) const
     {
         df_dx = x.array().cos().matrix().asDiagonal();
         df_du.setZero();
     }
-    void hess_prod(const state_t&, const control_t&, const state_t& w,
-                   const state_t& v_x, const control_t&,
+    void hess_prod(const state_t&, const control_t&, double,
+                   const state_t& w, const state_t& v_x, const control_t&,
                    state_t& hv_x, control_t& hv_u) const
     {
         hv_x = -w.cwiseProduct(v_x);
@@ -115,13 +115,13 @@ struct NonlinearOde
 /// A linear ODE that omits hess_prod.
 struct LinearOde
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         state_t r;
         r << x(1), u(0);
         return r;
     }
-    void jacobian(const state_t&, const control_t&,
+    void jacobian(const state_t&, const control_t&, double,
                   P::dyn_df_dx_t& df_dx, P::dyn_df_du_t& df_du) const
     {
         df_dx.setZero();

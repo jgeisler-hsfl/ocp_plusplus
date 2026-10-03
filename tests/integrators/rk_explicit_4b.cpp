@@ -40,17 +40,17 @@ void check(bool cond, const char* msg)
 /// xdot = -x  (linear; used for the value test against exp(-t)).
 struct OdeNegX
 {
-    state_t f(const state_t& x, const control_t&) const
+    state_t f(const state_t& x, const control_t&, double) const
     {
         return -x;
     }
-    void jacobian(const state_t&, const control_t&, df_dx_t& df_dx,
+    void jacobian(const state_t&, const control_t&, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = -df_dx_t::Identity();
         df_du.setZero();
     }
-    void hess_prod(const state_t&, const control_t&, const state_t&,
+    void hess_prod(const state_t&, const control_t&, double, const state_t&,
                    const state_t&, const control_t&, state_t& hv_x,
                    control_t& hv_u) const
     {
@@ -62,17 +62,17 @@ struct OdeNegX
 /// xdot = x.*x  (elementwise nonlinear; value test against x0/(1+x0*t)).
 struct OdeXsq
 {
-    state_t f(const state_t& x, const control_t&) const
+    state_t f(const state_t& x, const control_t&, double) const
     {
         return x.cwiseProduct(x);
     }
-    void jacobian(const state_t& x, const control_t&, df_dx_t& df_dx,
+    void jacobian(const state_t& x, const control_t&, double, df_dx_t& df_dx,
                   df_du_t& df_du) const
     {
         df_dx = (2.0 * x).asDiagonal();
         df_du.setZero();
     }
-    void hess_prod(const state_t&, const control_t&, const state_t& w,
+    void hess_prod(const state_t&, const control_t&, double, const state_t& w,
                    const state_t& v_x, const control_t&, state_t& hv_x,
                    control_t& hv_u) const
     {
@@ -86,21 +86,21 @@ struct OdeXsq
 /// the stage states).
 struct OdeNegXU
 {
-    state_t f(const state_t& x, const control_t& u) const
+    state_t f(const state_t& x, const control_t& u, double) const
     {
         state_t r;
         r(0) = -x(0) * u(0);
         r(1) = -x(1) * u(0);
         return r;
     }
-    void jacobian(const state_t& x, const control_t& u, df_dx_t& df_dx,
-                  df_du_t& df_du) const
+    void jacobian(const state_t& x, const control_t& u, double,
+                  df_dx_t& df_dx, df_du_t& df_du) const
     {
         df_dx = (-u(0)) * df_dx_t::Identity();
         df_du(0, 0) = -x(0);
         df_du(1, 0) = -x(1);
     }
-    void hess_prod(const state_t&, const control_t&, const state_t& w,
+    void hess_prod(const state_t&, const control_t&, double, const state_t& w,
                    const state_t& v_x, const control_t& v_u, state_t& hv_x,
                    control_t& hv_u) const
     {
@@ -128,7 +128,7 @@ void check_value_neg_x()
 
     for (int step = 0; step < 10; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
 
     const double expected = std::exp(-1.0);  // t = 10 * 0.1
@@ -147,7 +147,7 @@ void check_value_xsq()
 
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, cur);
+        integ.value(cur, u, 0.0, cur);
     }
 
     // xdot = x^2  ->  x(t) = x0 / (1 - x0 t);  t = 5 * 0.2 = 1, x0 = 0.5.
@@ -171,7 +171,7 @@ void check_jacobian()
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, Jx, Ju);
+    integ.jacobian(x, u, 0.0, Jx, Ju);
 
     const double d = 1e-6;
     for (int j = 0; j < nx; ++j)
@@ -185,8 +185,8 @@ void check_jacobian()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, fdp);
-        integ.value(xm, u, fdm);
+        integ.value(xp, u, 0.0, fdp);
+        integ.value(xm, u, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -206,8 +206,8 @@ void check_jacobian()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, fdp);
-        integ.value(x, um, fdm);
+        integ.value(x, up, 0.0, fdp);
+        integ.value(x, um, 0.0, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -265,7 +265,7 @@ void check_hess_prod()
             xx(1) = z(1);
             uu(0) = z(2);
             state_t xn;
-            integ.value(xx, uu, xn);
+            integ.value(xx, uu, 0.0, xn);
             return w[p].dot(xn);
         };
 
@@ -304,7 +304,7 @@ void check_hess_prod()
 
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, w[p], vx[p], vu[p], hvx, hvu);
+        integ.hess_prod(x, u, 0.0, w[p], vx[p], vu[p], hvx, hvu);
 
         zvec_t v;
         v(0) = vx[p](0);

@@ -1361,6 +1361,56 @@ longer listed here. The following remain explicitly out of scope:
 - **Regression:** all existing targets (`double_integrator`, `mass_spring`,
   `qp_dim`, `qp_unit`, `sqp_unit`, `sqp_double_integrator`,
   `sqp_mass_spring`, `sqp_acados_ref`, `integrators_unit`,
-  `sqp_continuous`) pass; IRK NumSteps=1 hess_prod bit-for-bit unchanged
-  (5.33e-09, same as 4f).
+   `sqp_continuous`) pass; IRK NumSteps=1 hess_prod bit-for-bit unchanged
+   (5.33e-09, same as 4f).
+- Build: warning-free under `-Wall -Wextra -Werror`.
+
+### 4h — Time-varying ODE (`t` in the ODE contract) (done)
+
+- **ODE contract** (`ode_model.hpp`): every method now takes the physical
+  time `t` as a trailing argument — `f(x, u, t)`,
+  `jacobian(x, u, t, df_dx, df_du)`,
+  `hess_prod(x, u, t, w, v_x, v_u, hv_x, hv_u)`. A time-invariant ODE
+  simply ignores `t`. The `detail::ode_hess_prod_probe` SFINAE trait now
+  probes the 3-argument-after-`u` signature (the `std::declval<double>()`
+  after `control_t`), and the `ode_hess_prod(...)` forwarder threads `t`
+  through to `ode.hess_prod(x, u, t, ...)`.
+- **ERK** (`rk_explicit.hpp`): `value` / `jacobian` / `hess_prod` gain a
+  `double t_k` (start-of-interval time) parameter. Per sub-step `ss` and
+  stage `s`, the physical time is `t_s = t_k + h_ss·(ss + c[s])` (ERK:
+  `h_ss = h`); `t_s` is passed to every `ode_.f`, `ode_.jacobian` and
+  `ode_hess_prod` call (forward and backward sweeps).
+- **IRK** (`rk_implicit.hpp`): same `t_k` parameter on the public methods.
+  The private `eval_jacobians(u, t_k, ss)`, `eval_residual(u, t_k, ss)`,
+  `solve_newton(x, u, K_init, t_k, ss)` and
+  `hess_prod_substep(u, t_k, ss, ...)` each compute
+  `t_s = t_k + h_ss·(ss + c[s])` and pass it to the ODE calls (both the
+  `NumSteps == 1` and `NumSteps > 1` `hess_prod` branches, including the
+  post-loop Jacobian refresh in `solve_newton`).
+- **Adapter** (`continuous_problem.hpp`): the constructor is now
+  `ContinuousProblem(ode, double h, Args&&...)` and stores `h_`; each
+  `dynamics_next_state` / `dynamics_jacobian` / `dynamics_hess_prod`
+  forwards `t_k = k·h_` (uniform grid) to the integrator. The ODE model
+  remains passive — the solver owns the time grid (matches acados).
+- **Test** `tests/integrators/time_varying_4h.cpp`
+  (`run_time_varying_4h_tests`, wired into `integrators_main.cpp`):
+  - *value:* time-varying ẋ = sin(t)·x + u (nx=2, nu=1), K4, h=0.1,
+    10 steps over [0,1] vs a 10000-step RK4 reference → |err| < 1e-4
+    (measured 2.44e-07).
+  - *value, time-invariant regression:* ẋ = −x with an ignored `t`,
+    K4, h=0.05, 20 steps → |err| < 1e-4 vs exp(−1) (unchanged behaviour).
+  - *jacobian, FD:* ẋ = sin(t)·x⊙u + cos(t)·x, K4, NumSteps=1, central
+    FD δ=1e-6 at `t_k = 0.3` → ‖·‖∞ < 1e-6 (measured 7.94e-11).
+  - *hess_prod, FD (ERK):* same ODE, K2, central-FD Hessian of `wᵀΦ`
+    (δ=1e-5, 3 (w,v) pairs) at `t_k = 0.5` → ‖·‖∞ < 1e-5
+    (measured 9.47e-07).
+- All existing ODE models in the other test files (`integrators_4a`,
+  `rk_explicit_4b`, `continuous_problem_4c`, `rk_implicit_4d`,
+  `rk_multistep_4g`, `sqp_continuous_4e`) gained the (ignored) `t`
+  parameter so the whole suite compiles against the new contract.
+- **Regression:** all existing targets
+  (`double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit`,
+  `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
+  `integrators_unit`, `sqp_continuous`) pass; time-invariant results
+  unchanged.
 - Build: warning-free under `-Wall -Wextra -Werror`.
