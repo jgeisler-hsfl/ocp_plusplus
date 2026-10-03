@@ -86,6 +86,12 @@ target_include_directories(sqp_acados_ref
                            PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_acados_ref PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(integrators_unit
+                tests/integrators/integrators_4a.cpp)
+target_include_directories(integrators_unit
+                            PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(integrators_unit PRIVATE ${OCP_WARN_FLAGS})
+
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
 if (Doxygen_FOUND)
