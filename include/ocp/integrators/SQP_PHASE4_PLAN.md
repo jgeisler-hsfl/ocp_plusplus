@@ -489,11 +489,138 @@ the `G⁻¹` self-coupling; the most algebra-heavy part). Store per-stage
   `integrators_unit` or a dedicated `sqp_continuous` target). Mark
   `TODO.md` items 5–6 done and `SQP_PLAN.md` §11 Phase 4 done.
 
+### 4f — `ImplicitRkIntegrator::hess_prod` (nonlinear ODE HVP) — *extension draft, not started*
+
+Complete the IRK integrator by implementing `hess_prod` for a **nonlinear**
+ODE (the path 4d left as a `static_assert` stub). This lets a nonlinear
+continuous dynamics use the IRK integrator end-to-end (SQP builds the
+second-order QP block from `dynamics_hess_prod`).
+
+**Why 4d stopped short (re-stated for context).** The composed IRK map
+`Φ(x,u) = x + h·Σ_s b_s·K_s*` has `K_s* = f(x_s,u)` with `x_s = x +
+h·Σ_j A[s][j]·K_j*` (full `A`, implicit). Its Hessian is a pullback of the
+ODE Hessian through an *implicit* (Newton-solved) map, so it has two
+contributions (per stage `s`):
+
+  1. **ODE-Hessian term** — `H_f(x_s,u)` (the ODE Hessian, w.r.t.
+     `(x,u)`) applied to the first-order stage direction
+     `(dx_s, v_u)`, `dx_s = v_x + h·Σ_j A[s][j]·dK_j(v)`.
+  2. **Jacobian-of-Jacobian term** — `f_x(x_s,u)` applied to the
+     *second-order* stage perturbation `ddx_s = h·Σ_j A[s][j]·ddK_j(v)`,
+     where `ddK` is the second-order correction (the "Jacobian-of-Jacobian"
+     of the implicit solve).
+
+The ERK HVP (4b) has only term (1), threaded by a forward JVP + backward
+adjoint recursion. The IRK HVP needs both terms, which is why acados threads
+the full second-order stage sensitivity.
+
+**acados reference (re-read fresh at implementation time; lines from the
+current checkout).** `acados/acados/sim/sim_irk_integrator.c`:
+- `sim_irk_forward_step` (≈1440–1592): forward sweep with `sens_hess`.
+  Builds `dG_dxu` (the `∂R/∂(x,u)` blocks, `= −f_x, −f_u` per stage) and
+  `dG_dK` (the block Newton Jacobian `G`), factors `dG_dK`, then
+  `dK_dxu = G⁻¹·dG_dxu` (the first-order sensitivity, :1498–1513).
+- `sim_irk_eval_jacG` (1616–1671): assembles `dG_dxu` / `dG_dK` and factors
+  `dG_dK` in place (`blasfeo_dgetrf_rp`, :1669).
+- `sim_irk_backward_step` (1741–1788): per step, forms `lambdaK`
+  (`= −h·b·lambda`), back-solves `Gᵀ·lambdaK` (`sim_irk_backsolve_jacG_T`,
+  :1777), then `lambda += dG_dxuᵀ·lambdaK` (:1781). This is the adjoint
+  (the "dual" passed to each stage's ODE HVP).
+- `sim_irk_propagate_hessian` (1673–1739): builds `dxkzu_dw0` — the
+  *second-order* sensitivity of the augmented stage state `[x_s; K; u]` w.r.t.
+  the initial input (accumulates `−a·dK_dxu` per stage, :1694–1704) — calls
+  `model->impl_ode_hess` at each stage (with the `lambdaK` adjoint as the
+  dual), and accumulates into the full `(nx+nu)×(nx+nu)` composed Hessian via
+  `blasfeo_dsyrk_ut` (:1736). `sim_irk_backward_sweep` (1790–1804) extracts
+  `out->S_hess`.
+
+**Key difference vs acados.** acados' `impl_ode_hess` returns the *full*
+Hessian of the DAE residual (a `(2nx+nz+nu)²` object), so it can accumulate
+the full composed Hessian with `dsyrk`. Our ODE contract (§1.1) exposes only
+the **bilinear HVP** `hess_prod(x,u,w,v_x,v_u → hv_x,hv_u)` of `f` w.r.t.
+`(x,u)`. So we compute the bilinear form `wᵀ∇²Φ·v` directly, without forming
+the full Hessian. Both terms still must be threaded; the identity is:
+
+```
+HVP(w, v)  =  h · Σ_s b_s · [  (ODE-HVP term)  +  (Jacobian-of-Jacobian term) ]
+```
+  - **(1) ODE-HVP term:** `ode_.hess_prod(x_s, u, dual=lambdaK_s,
+    dirx=dx_s, diru=v_u, ·, ·)` where `lambdaK_s` is the back-solved adjoint
+    and `dx_s` the first-order stage direction. (This is exactly the ERK
+    per-stage call; the only IRK-specific input is `lambdaK_s` from the
+    `Gᵀ` back-solve rather than the ERK backward recursion.)
+  - **(2) Jacobian-of-Jacobian term:** `f_x(x_s,u)ᵀ`-contraction with the
+    second-order stage perturbation `ddx_s = h·Σ_j A[s][j]·ddK_j(v)`,
+    accumulated through the same adjoint `lambdaK_s`. This requires solving a
+    second-order system `G·ddK = B` per HVP call, where `B_s` is the ODE
+    Hessian applied to the first-order direction `(dx_s, v_u)` (i.e. one
+    `ode_.hess_prod` per stage supplies `B_s`'s ODE-Hessian part).
+
+> **Open design decision at implementation time:** whether to (a) solve the
+> second-order `G·ddK = B` system explicitly (one extra LU back-solve per
+> HVP call, reusing the factored `G` from the Newton solve), or (b) fold term
+> (2) into a single augmented solve. Option (a) is the direct analogue of the
+> acados `dxkzu_dw0` thread and is the expected choice; validate by FD before
+> committing either. The `G` factorization from `solve_newton` is reusable
+> (acados `jac_reuse`, :1469) — the HVP is always called right after
+> `value`/`jacobian` at the same `(x,u)`.
+
+**Workspace additions** (extend `detail::IrkWorkspace`, all fixed-size):
+- `dK_dxu` (`NK × (nx+nu)`): first-order sensitivity `G⁻¹·F` (kept from the
+  Newton/jacobian pass, reused by `hess_prod`).
+- `dK_v`, `ddK` (`NK`): first- and second-order corrections in direction `v`.
+- `dx_stage` (`std::array<state_t, NS>`), `ddx_stage` (`std::array<state_t,NS>`):
+  first- and second-order stage-state perturbations.
+- `lambdaK` (`NK`): adjoint (dual) on `K` from the `Gᵀ` back-solve.
+- (`G` and `PartialPivLU` already exist from 4d; reuse, re-factor if the
+  Newton count changed.)
+
+**Algorithm (per `hess_prod(x,u,w,v_x,v_u,hv_x,hv_u)` call):**
+```
+solve_newton(x, u)                       # K, G (LU)   [reuse 4d]
+dK_dxu  = G^{-1} * F                     # F_s = [f_x_s | f_u_s]  (first-order)
+dK_v    = dK_dxu * (v_x; v_u)            # first-order in direction v
+for s: dx_stage[s]  = v_x + h*sum_j A[s][j]*dK_v[j]   # first-order x_s
+# second-order: B_s from ODE Hessian on (dx_stage[s], v_u); solve G*ddK = B
+for s: B_s = ode_.hess_prod(x_s, u, w_e?, dx_stage[s], v_u, ...)  # see note
+ddK = G^{-1} * stack(B)
+for s: ddx_stage[s] = h*sum_j A[s][j]*ddK[j]
+# adjoint: beta_s = h*b_s*w ; lambdaK = G^{-T} * beta ; (theta back-accum)
+for s: solve G^T * lambdaK = beta (via LU .transpose())
+for s:
+    (1) ode_.hess_prod(x_s, u, lambdaK_s, dx_stage[s], v_u, mx, mu)
+        hv_x += mx ; hv_u += mu
+    (2) hv_x += f_x_s^T (lambdaK_s) contracted with ddx_stage[s]
+        (f_x_s^T * lambdaK_s) . ddx_stage[s]  -> add to hv_x
+# (u-part of term (2): f_u_s^T lambdaK_s · ddx ... see FD-verified form)
+```
+(The precise index/contract for term (2)'s `u`-part is to be fixed and
+FD-verified at implementation time; the draft above is the structural sketch.)
+
+**Test plan** (`tests/integrators/rk_implicit_4d.cpp`, extend the existing
+`run_irk_4d_tests`):
+- *hess_prod, FD:* reuse a nonlinear ODE with an analytic `hess_prod`
+  (e.g. `OdeXsqU`: `ẋ = x⊙x·u + x`, from 4b/4d). Build the
+  `(nx+nu)×(nx+nu)` Hessian of the scalar `wᵀΦ(x,u)` by central FD (mixed
+  4-point cross derivatives, δ=1e-4), apply to 3 deterministic `(w, v)`
+  pairs, assert the IRK `hess_prod` matches the FD-Hessian contraction to
+  1e-5, for `RadauIia2Tag` and `RadauIia4Tag`.
+- *cross-check vs ERK:* on the same nonlinear ODE, assert the IRK HVP and
+  the ERK HVP (4b) agree to 1e-8 for the same `(x,u,w,v)` (both must equal
+  the FD Hessian, so agreement is a strong independent check).
+- *regression:* all existing targets unchanged; the linear-ODE path
+  (`has_dynamics_hess_prod = false`) still returns zeros and never reaches
+  the new code.
+
+**Status:** draft only — no code written. Gate: FD-verified `hess_prod`
+before the `static_assert(false)` in `rk_implicit.hpp` is lifted. One commit
+(`integrator:` + `test:`), re-using the `integrators_unit` target.
+
 ## 4. Test matrix
 
 | target | covers |
 |---|---|
-| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD) |
+| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD); 4f IRK nonlinear HVP (FD) [draft] |
 | `sqp_continuous` (new) | 4e end-to-end continuous SQP (ERK + one IRK) vs discrete reference |
 | all existing targets | regression (no behavior change) |
 
@@ -517,6 +644,10 @@ reference tests are bit-for-bit unchanged.
 5. **Parameter sensitivities** (`S_p` / `sens_forw_p`) and the adjoint
    sweep's cost-integral accumulation (used by acados' cost computation,
    not by our SQP which evaluates the stage cost directly).
+6. **IRK nonlinear HVP** — `ImplicitRkIntegrator::hess_prod` for nonlinear
+   ODEs; tracked as sub-step **4f** (extension draft, §3). The 4d partial
+   stub (`static_assert` for nonlinear, zero for linear) is replaced by the
+   full ODE-Hessian + Jacobian-of-Jacobian thread above.
 
 ## 6. Checkpoints
 
