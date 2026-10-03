@@ -132,7 +132,7 @@ struct LinearOde
 
 }  // namespace
 
-int main()
+int run_integrators_4a_tests()
 {
     // Explicit RK tableaus
     check_common<1, Dims, ocp::K1Tag>("K1");
@@ -155,11 +155,9 @@ int main()
                   "LinearOde must not expose hess_prod");
     std::printf("ode_supports_hess_prod trait  OK\n");
 
-    if (failures == 0)
+    if (failures != 0)
     {
-        std::printf("All phase-4a integrator checks passed.\n");
-        return 0;
+        std::fprintf(stderr, "[4a] %d check(s) failed.\n", failures);
     }
-    std::fprintf(stderr, "%d check(s) failed.\n", failures);
-    return 1;
+    return failures;
 }

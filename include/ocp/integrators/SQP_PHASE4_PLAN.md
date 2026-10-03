@@ -563,3 +563,58 @@ reference tests are bit-for-bit unchanged.
   `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit`,
   `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
   `integrators_unit`.
+
+### 4b — `ExplicitRkIntegrator` (value + jacobian + hess_prod) (done)
+
+- Re-read `sim_erk_integrator.c` (:799-878 forward sweep; :895-1034
+  adjoint/Hessian sweep). Confirmed our forward sweep matches the `num_steps=1`
+  `sens_* = false` specialisation, and that the HVP uses the same
+  forward-over-forward + backward-adjoint structure (a JVP along `v` threaded
+  forward, then an adjoint walked backward that calls the ODE's HVP at each
+  stage).
+- Implemented `include/ocp/integrators/rk_explicit.hpp`:
+  `ExplicitRkIntegrator<Dims, Ode, NS, Tag>` with a `mutable`
+  `detail::ErkWorkspace<P,NS>` (fixed-size `std::array` of `K`/`x_stage`/
+  `JX`/`JU`/`dx`/`dK`/`lam_dK`/`lam_K`), allocation-free. Methods are `const`.
+  - `value`: one ERK forward sweep (`x_s = x + h Σ_{j<s} A[s][j] K_j`,
+    `K_s = f(x_s, u)`; `x_next = x + h Σ_s b_s K_s`).
+  - `jacobian`: threaded first-order sensitivities — per stage
+    `Dxs = I + h Σ_{j<s} A[s][j] JX_j`, `Dus = h Σ_{j<s} A[s][j] JU_j`,
+    `JX_s = f_x Dxs`, `JU_s = f_x Dus + f_u`; then
+    `df_dx = I + h Σ_s b_s JX_s`, `df_du = h Σ_s b_s JU_s`.
+  - `hess_prod`: reverse-over-forward. Forward pass computes `JX_s`, `JU_s`
+    and the first-order JVP `dx_s` (= `v_x + h Σ_{j<s} A[s][j] dK_j`),
+    `dK_s = JX_s dx_s + JU_s v_u`. Backward pass seeds `lam_dK_s = h b_s w`,
+    `lam_K_s = 0`, then walks `s` downward; at each stage one
+    `ode_hess_prod(x_s, u, lam_dK_s, dx_s, v_u)` supplies the ODE-Hessian
+    pullback (the two would-be calls with directions `(dx_s,0)` and `(0,v_u)`
+    are merged by direction linearity), `kappa = JX_s' lam_dK_s` is the
+    adjoint on `dx_s`, `theta = JX_s' lam_K_s` / `rho = JU_s' lam_K_s` are
+    the value-node adjoints, the total stage-state adjoint
+    `xs_adj = mu_x + theta` accumulates into `hv_x`/`hv_u` and is pushed back
+    into `lam_K_j` (value) and `lam_dK_j` (JVP) for `j < s`.
+    `static_assert(ode_supports_hess_prod<Ode, Dims>)` guards the path
+    (a linear ODE never reaches it).
+- Test `tests/integrators/rk_explicit_4b.cpp` (new `run_erk_4b_tests`, wired
+  into `integrators_unit` via a shared `tests/integrators/integrators_main.cpp`;
+  the 4a file was refactored from a `main()` to `run_integrators_4a_tests()`
+  to match the repo's multi-file-test pattern). ODE fixtures on
+  `DoubleIntegratorDims` (nx=2, nu=1): `OdeNegX` (ẋ=−x), `OdeXsq` (ẋ=x⊙x),
+  `OdeNegXU` (ẋ=−x⊙u, nonlinear in the composed map).
+  - value: ẋ=−x (x₀=1, h=0.1, 10 steps, K4) vs `exp(−1)` to 1e-5; ẋ=x²
+    (x₀=0.5, h=0.2, 5 steps, K4) vs the exact `x₀/(1−x₀ t)` to 1e-4.
+  - jacobian: central FD (δ=1e-6) of the composed map w.r.t. x and u,
+    ‖·‖∞ < 1e-6, for `OdeNegXU` with K2 and K4.
+  - hess_prod: FD the (nx+nu)×(nx+nu) Hessian of the scalar `w'Φ` (δ=1e-4,
+    mixed 4-point cross derivatives), apply to 3 deterministic `(w, v)`
+    pairs, ‖·‖∞ < 1e-5, for `OdeNegXU` with K2 and K4.
+- **Deviation from §3/§4b of this plan:** the plan's analytic solution for
+  ẋ=x² is written as `x₀/(1+x₀·t)`; the correct closed form is
+  `x₀/(1−x₀·t)` (checked: at x₀=0.5, t=1 the exact value is 1.0, and RK4 at
+  h=0.2 gives 0.99998). The tolerance for that value check is 1e-4 (the RK4
+  O(h⁴) global error at h=0.2 is ≈1.8e-5, just over the 1e-5 used for the
+  well-behaved ẋ=−x case).
+- Build: warning-free under `-Wall -Wextra -Werror` (clean full rebuild).
+  All targets green: `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`,
+  `sqp_unit`, `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
+  `integrators_unit` (4a + 4b).
