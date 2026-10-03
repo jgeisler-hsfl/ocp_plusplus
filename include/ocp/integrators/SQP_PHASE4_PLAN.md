@@ -51,10 +51,9 @@ checkpoints (append a checkpoint entry per sub-step, same protocol as
     tableaus, per-stage Newton solve). Matches acados
     `sim_irk_integrator.c`.
 - **Out of scope this phase** (kept as future work, called out in §5):
-  time-varying ODEs (explicit `t_k` argument), lifted IRK
-  (`sim_lifted_irk_integrator.c`), algebraic variables (`nz > 0`),
-  multi-step (`num_steps > 1`) integration, parameter sensitivities
-  (`S_p` / `sens_forw_p`), and the adjoint sweep's cost-integral use.
+  lifted IRK (`sim_lifted_irk_integrator.c`), algebraic variables
+  (`nz > 0`), parameter sensitivities (`S_p` / `sens_forw_p`), and the
+  adjoint sweep's cost-integral use.
 
 ### File layout (all new, in `include/ocp/integrators/`)
 
@@ -616,11 +615,388 @@ FD-verified at implementation time; the draft above is the structural sketch.)
 before the `static_assert(false)` in `rk_implicit.hpp` is lifted. One commit
 (`integrator:` + `test:`), re-using the `integrators_unit` target.
 
+### 4g — Multi-step integration (`NumSteps > 1`) — *extension draft, not started*
+
+Subdivide one OCP interval into `NumSteps` sub-intervals of size
+`h_sub = h / NumSteps`, so the integrator advances the state over the full
+OCP interval `[t_k, t_{k+1}]` in `NumSteps` smaller internal steps.
+The OCP interface is unchanged: `dynamics_next_state(k, x, u)` returns the
+state after the *full* OCP interval regardless of `NumSteps`.
+
+**Design: extend the existing classes, not a wrapper.**
+`NumSteps` is a compile-time template parameter (matching the `NS`
+convention; default 1 so existing instantiations are untouched):
+
+```cpp
+template <class Dims, class Ode, int NS, class Tag, int NumSteps = 1>
+class ExplicitRkIntegrator  { ... };
+
+template <class Dims, class Ode, int NS, class Tag, int NumSteps = 1>
+class ImplicitRkIntegrator  { ... };
+```
+
+The three public methods (`value`, `jacobian`, `hess_prod`) keep the same
+signatures. The internal algorithm gains an outer `for (ss)` loop over
+sub-steps.
+
+**Why a wrapper (chaining single-step calls) does not work for HVP.**
+The Hessian of a composition `Φ = Φ_{NS} ∘ … ∘ Φ_1` is
+
+```
+∇²Φ(v, w) = Σᵢ (J_N … J_{i+1}) ∇²Φᵢ (J_{i-1} … J₁ v,  J_{i-1} … J₁ w)
+```
+
+A naive "sum of per-step HVPs" is missing the cross-step Jacobian
+transport terms. The correct algorithm is a **single continuous backward
+adjoint sweep** across all sub-steps, carrying the co-state `λ` across
+sub-step boundaries — exactly what acados does (see below). A thin wrapper
+that only exposes the 3 public methods cannot do this; it would need access
+to per-sub-step stage values and the adjoint state. Hence: extend the class
+internally, don't wrap.
+
+**acados reference (re-read fresh at implementation time; lines from the
+current checkout).**
+- `sim_erk_integrator.c`:
+  - Forward sweep (`:799`): `for (istep = 0; istep < num_steps; istep++)`
+    — one ERK stage sweep per sub-step; `forw_traj` (state + sensitivity)
+    carries over across sub-steps naturally.
+  - Adjoint sweep (`:920`): `for (istep = num_steps-1; istep >= 0;
+    istep--)` — a single backward pass; `adj_tmp` (the co-state `λ`)
+    **persists across sub-step boundaries** (not re-initialized per
+    sub-step). Within each sub-step the stage loop reads `adj_traj[j]`
+    (intra-sub-step stages, `j > s`) and `adj_tmp` (inter-sub-step
+    carry-over).
+  - `step = in->T / num_steps` (`:720`); the b-weight per sub-step is
+    `b_vec[s] / num_steps` (cost quadrature, `:1442`).
+- `sim_irk_integrator.c`:
+  - Forward sweep (`sim_irk_forward_sweep:1594-1606`):
+    `for (ss = 0; ss < num_steps; ss++) sim_irk_forward_step(ss)`.
+  - **Newton warm-start across sub-steps** (`:1588-1590`): at the end of
+    sub-step `ss`, the last stage's `K` is stored into `mem->xdot`; the
+    next sub-step's Newton initialization (`:1177`) reads it. Saves 1–2
+    Newton iterations per sub-step.
+  - Backward sweep (`sim_irk_backward_sweep:1790-1804`):
+    `for (ss = num_steps-1; ss > -1; ss--)`; `ws->lambda` persists across
+    sub-steps; `ws->Hess` is zeroed once and `dsyrk`-accumulated across all
+    sub-steps and stages.
+- `sim_common.h:125`: `int num_steps;` in `sim_opts`.
+
+**Per-method algorithm (NumSteps > 1).**
+
+*`value`* — straightforward forward chain:
+```
+x_cur = x
+for ss = 0..NumSteps-1:
+    one single-step RK sweep (NS stages, step = h/NumSteps)
+    x_cur = x_cur + (h/NumSteps) * Σ_s b_s * K_s
+x_next = x_cur
+```
+For ERK: identical to `NumSteps=1` with `h → h/NumSteps`.
+For IRK: the last sub-step's converged `K` warm-starts the next sub-step's
+Newton (acados `mem->xdot` pattern).
+
+*`jacobian`* — thread the first-order sensitivity forward across
+sub-steps (no per-sub-step storage needed):
+```
+Sx = I;  Su = 0
+for ss = 0..NumSteps-1:
+    one single-step jacobian sweep → (Jx_ss, Ju_ss)   # per-sub-step Jacobian
+    Sx = Jx_ss * Sx;   Su = Jx_ss * Su + Ju_ss
+df_dx = Sx;  df_du = Su
+```
+(Equivalent to composing per-step Jacobians; acados threads `S_forw`
+through the same forward sweep, `sim_erk_integrator.c:787-790,876`.)
+
+*`hess_prod`* — single continuous backward adjoint sweep across all
+sub-steps (the key difference from a wrapper):
+```
+# forward pass (per sub-step): store x_stage[ss][s], K[ss][s],
+#                               JX[ss][s], JU[ss][s]  (or recompute in backward)
+# backward sweep:
+lam = w    # (nx) co-state, persists across sub-steps
+lam_u = 0  # (nu)
+for ss = NumSteps-1 downto 0:
+    for s = NS-1 downto 0:
+        # stage-local adjoint (same as single-step, but lam carries over)
+        ...
+        call ode_hess_prod at (x_stage[ss][s], u) with
+        dual = stage-local lambda, direction = (dx_stage, v_u)
+        accumulate hv_x, hv_u
+        update lam, lam_u
+```
+For IRK: additionally, the per-sub-step factored `G` (from Newton) is needed
+for the `Gᵀ` back-solve in the adjoint; these must be stored across the
+backward sweep (workspace grows `NumSteps ×` for the LU factors, or the
+Newton is re-run in the backward pass — **open design decision**; the
+acados approach stores `dG_dK[ii]` per step, `:758`).
+
+**Workspace additions** (beyond the `NumSteps=1` workspace, all fixed-size):
+- ERK: `K_traj[NumSteps][NS]`, `x_traj[NumSteps+1]` (state per sub-step
+  boundary) if storing for the backward pass; or recompute forward.
+  `adj_traj[NumSteps][NS]` for the adjoint sweep.
+- IRK: `K_traj[NumSteps][NS]`, `G[NumSteps]` + `LU[NumSteps]` (or re-factor
+  in backward), `lambda` (nx, persists), `Hess` (nx+nu × nx+nu, accumulates
+  across all sub-steps if computing the full Hessian; not needed for HVP).
+- The `NumSteps=1` special case must produce the exact same workspace
+  layout and code path as today (no `if (NumSteps > 1)` in hot paths; use
+  the loop that degenerates to one iteration).
+
+**Test plan** (`tests/integrators/`, new file or extend existing):
+- *value, exact:* linear ODE (double integrator), `NumSteps=4`, `h=0.1` →
+  matches the exact discrete map `q += h*v + h²/2*a` to 1e-14 (sub-steps
+  are exact for a linear ODE, so the composed map is exact).
+- *value, convergence:* ẋ = −10x, K2Tag, `h=0.1`, `NumSteps=1` vs
+  `NumSteps=4` → the 4-sub-step result is closer to `exp(-1)` (verify the
+  order-of-accuracy improvement; for K2 the local error goes from
+  O(h²) per step to O((h/4)²) per sub-step, 4× tighter).
+- *jacobian, FD:* ẋ = x⊙x·u + x (nonlinear), K4Tag, `NumSteps=3`,
+  central FD δ=1e-6, ‖·‖∞ < 1e-6.
+- *hess_prod, FD (ERK):* same ODE, K2Tag, `NumSteps=2`, FD the
+  (nx+nu)×(nx+nu) Hessian of `wᵀΦ`, compare to `hess_prod`, ‖·‖∞ < 1e-5.
+- *hess_prod, cross-check:* for the same `(x,u,w,v)`, assert
+  `NumSteps=1` and `NumSteps=3` give the same HVP to 1e-10 (the composed
+  Hessian is independent of the sub-step count for exact arithmetic;
+  floating-point differences should be at round-off level).
+- *IRK warm-start:* ẋ = x⊙x, RadauIia2, `NumSteps=3`, `newton_max=5` →
+  all sub-steps converge (residual < 1e-10); log per-sub-step Newton
+  iteration count (expect ≤ 3 after the first sub-step thanks to
+  warm-starting).
+- *regression:* `NumSteps=1` (default) produces bit-for-bit identical
+  results to the current single-step code for all existing tests.
+
+**Relationship to 4f.** 4f (IRK nonlinear HVP, single-step) is a
+prerequisite for the IRK multi-step HVP: the single-step `hess_prod`
+algorithm must be complete and FD-verified before the cross-step adjoint
+threading is layered on top. ERK multi-step HVP does not depend on 4f.
+
+**Status:** draft only — no code written. Gate: FD-verified `value` +
+`jacobian` + `hess_prod` for `NumSteps > 1`. One commit per integrator
+(`integrator:` scope for the header change, `test:` scope for the test),
+re-using the `integrators_unit` target.
+
+### 4h — Time-varying ODE (`t` in the ODE contract) — *extension draft, not started*
+
+Extend the ODE contract and the integrators to support time-varying
+dynamics `ẋ = f(x, u, t)`. The Butcher tableau is unchanged (normalized on
+`[0,1]`); the only algorithmic change is computing the physical time at
+each stage: `t_s = t_k + h·c[s]`, where `t_k` is the start of the OCP
+interval and `c[s]` is the Butcher abscissa.
+
+**Design: the solver decides the time grid, not the model.** The ODE model
+is the continuous system; the discretization (time grid, step size) is the
+solver's domain. The ODE model receives whatever `t` the integrator hands
+it — it does not choose its own step size. This matches acados: `sim_in->T`
+and `opts->num_steps` are solver options; the ODE function passively
+receives `t` as an input (`sim_erk_integrator.c:824` — `t` is in the
+`expl_vde_in` input array).
+
+**ODE contract change** (add `double t` to all three methods):
+
+```cpp
+// Time-varying ODE. Time-invariant ODEs just ignore `t`.
+struct MyTimeVaryingOde {
+    state_t f(const state_t& x, const control_t& u, double t) const;
+    void jacobian(const state_t& x, const control_t& u, double t,
+                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const;
+    void hess_prod(const state_t& x, const control_t& u, double t,
+                   const state_t& w, const state_t& v_x, const control_t& v_u,
+                   state_t& hv_x, control_t& hv_u) const;
+};
+```
+
+- The SFINAE trait (`ode_supports_hess_prod`) is updated to probe the
+  3-argument `hess_prod` signature.
+- A time-invariant ODE can still work by declaring `f(x, u, double t)` and
+  ignoring `t` — no separate "time-invariant" trait needed.
+
+**Integrator method signature change** (add `double t_k` to each method):
+
+```cpp
+void value(const state_t& x, const control_t& u, double t_k,
+           state_t& x_next) const;
+void jacobian(const state_t& x, const control_t& u, double t_k,
+              df_dx_t& df_dx, df_du_t& df_du) const;
+void hess_prod(const state_t& x, const control_t& u, double t_k,
+               const state_t& w, const state_t& v_x, const control_t& v_u,
+               state_t& hv_x, control_t& hv_u) const;
+```
+
+- `h_` (the step size) stays a constructor member; `t_k` is the
+  start-of-interval time, passed per call.
+- Per stage, the integrator computes `t_s = t_k + h_ * c[s]` and passes it
+  to `ode_.f(x_s, u, t_s)`, `ode_.jacobian(x_s, u, t_s, …)`,
+  `ode_.hess_prod(x_s, u, t_s, …)`.
+- For multi-step (4g): `t_s = t_k + (ss + c[s]) * (h / NumSteps)`.
+
+**`ContinuousProblem` change.** The adapter computes `t_k = k * h_` (uniform
+grid) and forwards it to the integrator:
+
+```cpp
+typename P::state_t
+dynamics_next_state(int k, const state_t& x, const control_t& u) const {
+    return integ_.value(x, u, k * h_, /*x_next*/);
+}
+```
+
+- For a non-uniform time grid (future), the adapter would store a time grid
+  (e.g. `std::array<double, NH+1>` when `NH` is compile-time, heap vector
+  otherwise, allocated once at `resize`, not in the hot path) and pass both
+  `t_k` and `h_k` to the integrator. But that's a further extension;
+  uniform `h` covers the 90% case and is what acados does by default.
+
+**Workspace:** no new buffers. `t` is a scalar computed on the fly; no
+trajectory storage needed.
+
+**Complexity estimate:** moderate (~half a day). The change is mechanical,
+not algorithmic — thread `t_s` through ~10 ODE call sites per integrator.
+No changes to the QP, SQP, or `Solution`.
+
+**Test plan** (`tests/integrators/`, extend existing):
+- *value:* time-varying ODE `ẋ = sin(t)·x + u` (nx=1, nu=1), K4Tag,
+  `h=0.1`, integrate from `t=0` to `t=1` (10 steps). Compare to a
+  high-resolution reference (e.g. 10000-step RK4) to 1e-4.
+- *value, time-invariant regression:* the existing ẋ = −x and ẋ = x² tests
+  (now with an ignored `t` parameter) must produce identical results to
+  the pre-4h code.
+- *jacobian, FD:* time-varying ODE `ẋ = sin(t)·x⊙u + cos(t)·x`, K4Tag,
+  `NumSteps=1`, central FD δ=1e-6, ‖·‖∞ < 1e-6, at a non-zero `t_k`
+  (e.g. `k=3`, `t_k=0.3`).
+- *hess_prod, FD (ERK):* same ODE, K2Tag, FD the Hessian of `wᵀΦ` at
+  `t_k=0.5`, ‖·‖∞ < 1e-5.
+- *regression:* all existing targets unchanged.
+
+**Relationship to 4g (multi-step).** 4h and 4g are independent: 4h adds
+the `t` argument (orthogonal to the sub-step count); 4g adds the outer
+`ss` loop (orthogonal to time-dependence). They can be composed:
+`t_s = t_k + (ss + c[s]) * (h / NumSteps)`. Neither blocks the other, but
+4h is simpler and should land first (it's a prerequisite for a meaningful
+time-varying multi-step test).
+
+**Status:** draft only — no code written. Gate: FD-verified `value` +
+`jacobian` + `hess_prod` for a time-varying ODE. One commit per integrator
+(`integrator:` scope for the header change, `test:` scope for the test),
+re-using the `integrators_unit` target.
+
+### 4i — CSTR example (nonlinear end-to-end test) — *extension draft, not started*
+
+A genuinely **nonlinear** example + test based on the acados CSTR (Continuous
+Stirred-Tank Reactor, `acados/examples/acados_python/cstr/cstr_model.py`),
+with **hand-derived analytic derivatives** (no CasADi, no AD library).
+This is the first nonlinear model in the test suite and the vehicle for
+exercising 4f (IRK nonlinear HVP), 4g (multi-step), and 4h (time-varying).
+
+**Why CSTR.** Genuinely nonlinear (Arrhenius term `rate = k0·exp(-EbR/T)·c`
+→ non-zero, non-trivial Hessian w.r.t. `(c, T)`); small (nx=3, nu=2, cheap
+FD Hessian); a direct acados example for cross-verification.
+
+**Model** (states `x = (c, T, h)`, control `u = (Tc, F)`; all parameters
+are plain members of the example class — user-managed, not in the
+interface, per convention):
+```
+Ac    = π·r²
+denom = Ac·(h + eps)
+k     = k0·exp(-EbR/T)
+rate  = k·c
+ċ  = F0·(c0 − c)/denom − rate
+Ṫ  = F0·(T0 − T)/denom − dH/(ρ·Cp)·rate + 2U/(r·ρ·Cp)·(Tc − T)
+ḣ  = (F0 − F)/Ac
+```
+Nominal acados values: `F0=0.1, T0=350, c0=1.0, r=0.219, k0=7.2e10,
+EbR=8750, U=54.94, ρ=1000, Cp=0.239, dH=−5e4, eps=1e-5`;
+`xs=(0.878, 324.5, 0.659)`, `us=(300, 0.1)`.
+
+**Derivatives (analytic, hand-derived; validated by FD in the test).**
+Let `Ac = πr²`, `denom = Ac·(h+eps)`, `k(T) = k0·exp(-EbR/T)`,
+`rate = k(T)·c`, `g = 2U/(r·ρ·Cp)` (coolant gain), `q = dH/(ρ·Cp)`
+(heat release; `dH < 0`). Then
+
+```
+ċ   = F0·(c0 − c)/denom − rate
+Ṫ   = F0·(T0 − T)/denom − q·rate + g·(Tc − T)
+ḣ   = (F0 − F)/Ac
+```
+
+First-order `∂rate`:
+- `∂rate/∂c = k(T)` (use the `k0·exp(-EbR/T)` form; never `rate/c`),
+- `∂rate/∂T = rate·EbR/T²`.
+
+**`df_dx` (3×3, rows = ċ,Ṫ,ḣ; cols = c,T,h):**
+```
+ċ:  −F0/denom − k(T)      −rate·EbR/T²          −F0·Ac·(c0−c)/denom²
+Ṫ:  −q·k(T)               −F0/denom − q·rate·EbR/T² − g    −F0·Ac·(T0−T)/denom²
+ḣ:  0                    0                    0
+```
+**`df_du` (3×2, cols = Tc,F):**
+```
+ċ:  0      0
+Ṫ:  g      0
+ḣ:  0     −1/Ac
+```
+
+**Hessian (w.r.t. `x` only — `u` enters linearly).** Because `Tc` and `F`
+appear *affinely* (`g·(Tc−T)` in `Ṫ`, `−F/Ac` in `ḣ`), every second
+derivative involving a control is zero: `∂²f/∂u∂x = 0`, `∂²f/∂u² = 0`, so
+the HVP's control part is identically `hv_u = 0` and the `v_u` direction
+contributes nothing. The non-zero Hessian is confined to the state block
+and comes from two sources:
+
+- `rate` (depends on `c`, `T`): `∂²rate/∂c∂T = k(T)·EbR/T²`,
+  `∂²rate/∂T² = rate·(EbR²/T⁴ − 2·EbR/T³)`, `∂²rate/∂c² = 0`.
+- `1/denom` (depends on `h`): the `F0·(c0−c)/denom` term gives
+  `∂²ċ/∂c∂h = +F0·Ac/denom²` and `∂²ċ/∂h² = 2·F0·Ac²·(c0−c)/denom³`
+  (and the analogous `T0−T` forms in the `Ṫ` row).
+
+The full Hessian of `f` w.r.t. `x = (c, T, h)` (upper-triangular; symmetric)
+is:
+```
+ċ:  [c,c]=0   [c,T]=−k(T)·EbR/T²        [c,h]=+F0·Ac/denom²
+    [T,T]=−rate·(EbR²/T⁴ − 2·EbR/T³)   [T,h]=0
+    [h,h]=2·F0·Ac²·(c0−c)/denom³
+Ṫ:  [c,c]=0   [c,T]=−q·k(T)·EbR/T²     [c,h]=0
+    [T,T]=−q·rate·(EbR²/T⁴ − 2·EbR/T³) [T,h]=+F0·Ac/denom²
+    [h,h]=2·F0·Ac²·(T0−T)/denom³
+ḣ:  all zero
+```
+(Reasoning: `∂²rate/∂c∂T = k(T)·EbR/T²`, `∂²rate/∂T² =
+rate·(EbR²/T⁴ − 2·EbR/T³)`, `∂²rate/∂c² = 0`; the `1/denom` term gives
+`∂²/∂c∂h = +F0·Ac/denom²`, `∂²/∂h² = 2·F0·Ac²·(·)/denom³`, and is linear in
+`c`/`T` so `∂²/∂c² = ∂²/∂T² = 0`. The `g·(Tc−T)` and `(F0−F)/Ac` terms are
+affine, contributing no Hessian entries.) The exact per-entry list is the
+primary thing the FD Hessian test pins down; the structure above is the
+design-time reference.
+
+**OCP setup** (in the test/example): box constraints on `(c, T, h)` and
+`(Tc, F)`; quadratic stage cost `‖x − xs‖²_Q + ‖u − us‖²_R`; terminal
+equality to the steady state. `Dims::has_dynamics_hess_prod = true`.
+
+**Test plan** (`tests/integrators/cstr_4i.cpp`, wired into
+`integrators_unit`; plus an `examples/` entry if the example dir grows):
+- *value:* K4Tag single step at the nominal point, `h=0.1` → compare to a
+  high-res reference (10⁴-step RK4 of the same analytic `f`).
+- *jacobian:* FD (central, δ=1e-6) of the composed `Φ` w.r.t. `x` and `u`
+  at the nominal point, `‖·‖∞ < 1e-6`, for K2/K4 and RadauIia2.
+- *hess_prod (ERK):* FD the (nx+nu)² Hessian of `wᵀΦ` (δ=1e-4), 3
+  deterministic `(w, v)` pairs, `‖·‖∞ < 1e-5`, K4Tag.
+- *hess_prod (IRK, requires 4f):* same FD check with RadauIia2Tag; cross-
+  check ERK vs IRK HVP to 1e-8 (both must equal the FD Hessian).
+- *time-varying variant (requires 4h):* add a sinusoidal feed disturbance
+  `F0(t) = 0.1 + 0.01·sin(2πt)`, FD-check `jacobian`/`hess_prod` at
+  `t_k = 0.3`.
+- *end-to-end:* `ContinuousProblem` + `SqpSolver` on the CSTR OCP
+  (N=10, h=0.1), assert `kSolved` + NLP residuals < 1e-6. (Gates 4f
+  end-to-end; optional RadauIia2 variant gates IRK end-to-end.)
+- *regression:* all existing targets unchanged.
+
+**Status:** draft only — no code written. Depends on 4f for the IRK
+HVP path (ERK path can land first). Gate: FD-verified value/jacobian/
+HVP + end-to-end `kSolved`. Commits: `example:` (CSTR model + Dims),
+`test:` (tests), re-using `integrators_unit` + `sqp_continuous` targets.
+
 ## 4. Test matrix
 
 | target | covers |
 |---|---|
-| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD); 4f IRK nonlinear HVP (FD) [draft] |
+| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD); 4f IRK nonlinear HVP (FD) [draft]; 4g multi-step value/jacobian/HVP [draft]; 4h time-varying ODE value/jacobian/HVP (FD) [draft]; 4i CSTR nonlinear example (value/jacobian/HVP, FD) [draft] |
 | `sqp_continuous` (new) | 4e end-to-end continuous SQP (ERK + one IRK) vs discrete reference |
 | all existing targets | regression (no behavior change) |
 
@@ -630,24 +1006,18 @@ match finite differences to ≤1e-5; the continuous double-integrator reaches
 `kSolved` with all four NLP residual norms below tolerance; the discrete
 reference tests are bit-for-bit unchanged.
 
-## 5. Future extensions (not in Phase 4)
+## 5. Future extensions (beyond Phase 4)
 
-1. **Time-varying ODE** — add a `t_k = k·h` argument to `OdeModel::f` and
-   its derivatives; thread it through the integrator (currently
-   time-invariant, `k` ignored).
-2. **Multi-step** (`num_steps > 1`) — the ERK/IRK loops already have the
-   `istep` outer loop shape; expose `num_steps` and accumulate.
-3. **Lifted IRK** (`sim_lifted_irk_integrator.c`) — a different Newton
-   structure; separate integrator.
-4. **Algebraic variables** (`nz > 0`) — DAEs; the ERK path explicitly
+Items that have been promoted to in-phase sub-steps (4f, 4g, 4h, 4i) are no
+longer listed here. The following remain explicitly out of scope:
+
+1. **Lifted IRK** (`sim_lifted_irk_integrator.c`) — a different Newton
+   structure (lifted state variables); separate integrator class.
+2. **Algebraic variables** (`nz > 0`) — DAEs; the ERK path explicitly
    rejects `nz != 0` (matches acados), IRK would extend the state.
-5. **Parameter sensitivities** (`S_p` / `sens_forw_p`) and the adjoint
+3. **Parameter sensitivities** (`S_p` / `sens_forw_p`) and the adjoint
    sweep's cost-integral accumulation (used by acados' cost computation,
    not by our SQP which evaluates the stage cost directly).
-6. **IRK nonlinear HVP** — `ImplicitRkIntegrator::hess_prod` for nonlinear
-   ODEs; tracked as sub-step **4f** (extension draft, §3). The 4d partial
-   stub (`static_assert` for nonlinear, zero for linear) is replaced by the
-   full ODE-Hessian + Jacobian-of-Jacobian thread above.
 
 ## 6. Checkpoints
 
