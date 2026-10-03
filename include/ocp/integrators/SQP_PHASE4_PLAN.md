@@ -650,3 +650,61 @@ reference tests are bit-for-bit unchanged.
     stage `BA` shaped (nx, nx+nu).
 - Build: warning-free under `-Wall -Wextra -Werror`. All targets green
   (4a + 4b + 4c in `integrators_unit`).
+
+### 4d — `ImplicitRkIntegrator` (Newton) (done, partial)
+
+- Re-read `sim_irk_integrator.c`: Newton loop (`:1381-1412`), block
+  Jacobian assembly (`:1270-1310`), LU factorization (`:1334-1343`),
+  back-solve (`:1345-1359`), and sensitivity path (`:1488-1567`). Confirmed
+  the block structure `G[s][j] = δ_{sj} I − h·A[s][j]·f_x(x_s,u)` and the
+  sensitivity relation `G · dK/d(x,u) = −∂R/∂(x,u)` (i.e.
+  `dK/dx = G⁻¹ f_x_stack`, `dK/du = G⁻¹ f_u_stack`).
+- Implemented `include/ocp/integrators/rk_implicit.hpp`:
+  `ImplicitRkIntegrator<Dims, Ode, NS, Tag>` with a `mutable`
+  `detail::IrkWorkspace<P,NS>` (fixed-size `K[NS]`, `x_stage[NS]`,
+  `dfdx[NS]`, `dfdu[NS]`, a `NK×NK` block matrix `G`, a
+  `PartialPivLU<NK×NK>`, residual, and sensitivity RHS buffers). All
+  methods are `const`.
+  - **`value`**: warm-start all stages with `K_s = f(x,u)`, iterate
+    Newton (build stage states, Jacobians, residual, block G, LU-factor,
+    solve, update) for `newton_max` iterations; then
+    `x_next = x + h·Σ b_s K_s`.
+  - **`jacobian`**: reuses the converged LU from `solve_newton` to solve
+    `G·dK_dx = f_x_stack` and `G·dK_du = f_u_stack`; then
+    `df_dx = I + h·Σ b_s·(dK_dx)_s`, `df_du = h·Σ b_s·(dK_du)_s`.
+  - **`hess_prod`**: **not implemented** for nonlinear ODEs (the full-A
+    self-coupling `G[s][s]` makes the second-order sensitivity depend on
+    the full ODE Hessian, which the ODE `hess_prod` contract does not
+    expose). Guarded by `if constexpr (ode_supports_hess_prod<...>)
+    static_assert(false, …)` — a nonlinear ODE + IRK combination fails to
+    compile with a clear message. A linear ODE (no `hess_prod`) returns
+    zeros (correct: composed Hessian is zero).
+  - **`newton_residual_inf()`**: diagnostic returning ‖R‖∞ at the
+    converged iterate (used in the test to assert convergence).
+- **Deviation from §3/§4d of this plan:** the plan anticipated shipping
+  `hess_prod` if feasible within budget. The IRK second-order sensitivity
+  requires the full 4th-order ODE tensor (or at least `∂f_x/∂x` and
+  `∂f_x/∂u` as standalone calls), which the ODE `hess_prod` contract does
+  not provide. Marked **partial**: `value` + `jacobian` are complete and
+  FD-verified; `hess_prod` is a documented stub. This is acceptable for
+  the 4e end-to-end test because the double-integrator ODE is linear
+  (`has_dynamics_hess_prod = false`, HVP never called).
+- Test `tests/integrators/rk_implicit_4d.cpp`
+  (`run_irk_4d_tests`, wired into `integrators_main.cpp`):
+  - *value, stiff:* ẋ = −30x, RadauIia2, h=0.1, 10 steps → |x| < 1e-6
+    (A-stable; z = −3 where K4 would be unstable).
+  - *value, accuracy:* ẋ = −x, RadauIia2, h=0.05, 20 steps →
+    |err| < 1e-4 vs exp(−1).
+  - *value, exact linear:* double-integrator (M² = 0), RadauIia2,
+    h=0.2, 5 steps → matches exact map to 1e-10.
+  - *value, nonlinear:* ẋ = x⊙x, RadauIia2, h=0.2, 5 steps,
+    newton_max=5 → |err| < 1e-2 vs x₀/(1−x₀·t).
+  - *Newton convergence:* ẋ = x⊙x, RadauIia2, h=0.2: 1-iter residual
+    > 5-iter residual and 5-iter residual < 1e-10.
+  - *jacobian, FD:* ẋ = x⊙x·u + x (nonlinear in x and u), RadauIia2
+    and RadauIia4, central FD δ=1e-6, |err| < 1e-6.
+  - *jacobian, exact linear:* double-integrator, RadauIia2, h=0.2 →
+    df/dx = I + hM, df/du = [h²/2; h], |err| < 1e-10.
+  - *hess_prod (linear):* ẋ = −10x (no hess_prod) → returns zeros.
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green
+  (4a + 4b + 4c + 4d in `integrators_unit`).
