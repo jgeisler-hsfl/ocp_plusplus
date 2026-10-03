@@ -54,14 +54,19 @@ struct ErkWorkspace
     using Dfdx2  = std::array<std::array<df_dx_t, NS>, NumSteps>;
     using Dfdu2  = std::array<std::array<df_du_t, NS>, NumSteps>;
 
-    State2 K{};        // stage derivatives K_s
-    State2 x_stage{};  // stage states x_s
-    Dfdx2  JX{};       // df/dx at stage s
-    Dfdu2  JU{};       // df/du at stage s
-    State2 dx{};       // first-order JVP of the stage state
-    State2 dK{};       // first-order JVP of K_s
-    State2 lam_dK{};   // backward adjoint on dK_s
-    State2 lam_K{};    // backward adjoint on the K_s value
+    State2 K{};          // stage derivatives K_s (forward)
+    State2 x_stage{};    // stage states x_s (forward + backward)
+    Dfdx2  JX{};         // df/dx at stage s (forward + backward)
+    Dfdu2  JU{};         // df/du at stage s (forward + backward)
+    State2 dx{};         // first-order JVP of the stage state
+    State2 dK{};         // first-order JVP of K_s (forward)
+
+    // Backward HVP duals (explicit-dual reverse mode, phase 4g)
+    State2 ddK_dual{};        // dual on the JVP node dK[ss][s]
+    State2 dKval_dual{};      // dual on the value node K[ss][s]
+    std::array<state_t, NumSteps + 1> dv_ss{};  // dual on v_ss (JVP boundary)
+    std::array<state_t, NumSteps + 1> dx_ss{};  // dual on x_ss (value boundary)
+    control_t du{};           // dual on the control u
 };
 
 }  // namespace detail
@@ -197,10 +202,11 @@ public:
 
     /// Bilinear Hessian-vector product of the composed map, output-contracted
     /// with `w` (state; e.g. the dynamics multiplier) and input direction
-    /// `v = (v_x, v_u)`; returns (hv_x, hv_u). A single forward pass stores the
-    /// per-sub-step stage values, Jacobians and first-order JVP; then one
-    /// continuous backward adjoint sweep threads the co-state across the
-    /// sub-step boundaries and calls the ODE's `hess_prod` once per stage.
+    /// `v = (v_x, v_u)`; returns (hv_x, hv_u).  A single forward pass stores
+    /// the per-sub-step stage values, Jacobians and first-order JVP; then an
+    /// explicit-dual reverse-mode sweep propagates duals over every node of
+    /// the JVP + value computation graph.  The ODE's `hess_prod` is called
+    /// once per stage to inject the second-derivative terms.
     /// Only valid for a nonlinear ODE (the ODE must provide `hess_prod`).
     void hess_prod(const state_t& x, const control_t& u, const state_t& w,
                    const state_t& v_x, const control_t& v_u,
@@ -210,15 +216,6 @@ public:
             "ExplicitRkIntegrator::hess_prod: the ODE must provide a "
             "'hess_prod' method (nonlinear ODE). A linear ODE has a zero "
             "Hessian and should not reach this path.");
-        // The cross-sub-step adjoint threading for NumSteps > 1 (the
-        // J_ss^T * mu and Ju_ss^T * mu terms) is not yet implemented; until
-        // phase 4g lands it, restrict the nonlinear HVP to the single-step
-        // path (bit-for-bit the 4b computation) so a NumSteps > 1 misuse is a
-        // compile error rather than a silently wrong second derivative.
-        static_assert(NumSteps == 1,
-            "ExplicitRkIntegrator::hess_prod: multi-step (NumSteps > 1) HVP "
-            "is not implemented yet (phase 4g pending); use NumSteps = 1.");
-
         // Forward: per sub-step, stage states, K, Jacobians, and the
         // first-order JVP along v (dx_s, dK_s). x_cur carries the state;
         // v_ss carries the JVP of the sub-step input state.
@@ -271,56 +268,93 @@ public:
             }
         }
 
-        // Backward: one continuous adjoint sweep. `lam` (the co-state on the
-        // sub-step output) persists across the sub-step boundaries; the
-        // stage-state adjoint xs_adj flows to hv_x for ss == 0 (x_0 = x is the
-        // true input) or back into lam for ss > 0 (x_ss is an intermediate).
-        hv_x.setZero();
-        hv_u.setZero();
-        state_t lam = w;
-        for (int ss = NumSteps - 1; ss >= 0; --ss)
+        // Backward: explicit-dual reverse mode.  The scalar
+        //   s = w^T * v_next   (v_next = DPhi * v)
+        // is differentiated w.r.t. (x, u); the gradient is the HVP
+        // (hv_x, hv_u).  Duals are carried on every node (value and JVP).
+        //
+        // Seed:  dual[v_NumSteps] = w;  all other duals = 0.
+        // Answer: hv_x = dual[x_0] = dx_ss[0],  hv_u = du.
+        for (int ss = 0; ss < NumSteps; ++ss)
         {
             for (int s = 0; s < NS; ++s)
             {
-                ws_.lam_dK[ss][s] = (h_ss_ * Tab::b[s]) * lam;
-                ws_.lam_K[ss][s].setZero();
+                ws_.ddK_dual[ss][s].setZero();
+                ws_.dKval_dual[ss][s].setZero();
             }
-            state_t x_ss_adj;
-            x_ss_adj.setZero();
+            ws_.dv_ss[ss].setZero();
+            ws_.dx_ss[ss].setZero();
+        }
+        ws_.dv_ss[NumSteps] = w;
+        ws_.dx_ss[NumSteps].setZero();
+        ws_.du.setZero();
+
+        for (int ss = NumSteps - 1; ss >= 0; --ss)
+        {
+            const state_t& dv_next = ws_.dv_ss[ss + 1];
+            const state_t& dx_next = ws_.dx_ss[ss + 1];
+
+            // b-update: v_{ss+1} = v_ss + h_ss * sum b_s dK_s
+            //           x_{ss+1} = x_ss + h_ss * sum b_s K_s
+            ws_.dv_ss[ss] += dv_next;
+            ws_.dx_ss[ss] += dx_next;
+            for (int s = 0; s < NS; ++s)
+            {
+                if (Tab::b[s] != 0.0)
+                {
+                    ws_.ddK_dual[ss][s] += (h_ss_ * Tab::b[s]) * dv_next;
+                    ws_.dKval_dual[ss][s] += (h_ss_ * Tab::b[s]) * dx_next;
+                }
+            }
+
             for (int s = NS - 1; s >= 0; --s)
             {
-                const state_t& beta = ws_.lam_dK[ss][s];
-                state_t mu_x;
-                control_t nu_u;
-                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[ss][s], u, beta,
-                                         ws_.dx[ss][s], v_u, mu_x, nu_u);
-                const state_t kappa =
-                    ws_.JX[ss][s].transpose() * beta;             // on dx_s
-                const state_t theta =
-                    ws_.JX[ss][s].transpose() * ws_.lam_K[ss][s];
-                const control_t rho =
-                    ws_.JU[ss][s].transpose() * ws_.lam_K[ss][s];
-                const state_t xs_adj = mu_x + theta;  // stage-state adjoint
-                x_ss_adj += xs_adj;
-                hv_u += nu_u + rho;
+                // (1) K_s = f(x_s, u):  dual[K] -> dual[x_s], dual[u]
+                state_t dx_stage_local =
+                    ws_.JX[ss][s].transpose() * ws_.dKval_dual[ss][s];
+
+                // (2) Hessian: JX/JU depend on (x_s, u); inject ODE HVP.
+                state_t hx;
+                control_t hu;
+                ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[ss][s], u,
+                                         ws_.ddK_dual[ss][s], ws_.dx[ss][s],
+                                         v_u, hx, hu);
+                dx_stage_local += hx;
+                const control_t du_stage =
+                    ws_.JU[ss][s].transpose() * ws_.dKval_dual[ss][s] + hu;
+                ws_.du += du_stage;
+
+                // (3) x_s = x_ss + h_ss sum_{j<s} A[s][j] K_j:
+                //     dual[x_s] -> dual[x_ss], dual[K_j]
+                ws_.dx_ss[ss] += dx_stage_local;
                 for (int j = 0; j < s; ++j)
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        ws_.lam_K[ss][j] += h_ss_ * Tab::A[s][j] * xs_adj;
-                        ws_.lam_dK[ss][j] += h_ss_ * Tab::A[s][j] * kappa;
+                        ws_.dKval_dual[ss][j] +=
+                            h_ss_ * Tab::A[s][j] * dx_stage_local;
+                    }
+                }
+
+                // (4) dK_s = JX_s dx_s + JU_s v_u:  dual[dK] -> dual[dx_s]
+                const state_t ddx_local =
+                    ws_.JX[ss][s].transpose() * ws_.ddK_dual[ss][s];
+
+                // (5) dx_s = v_ss + h_ss sum_{j<s} A[s][j] dK_j:
+                //     dual[dx_s] -> dual[v_ss], dual[dK_j]
+                ws_.dv_ss[ss] += ddx_local;
+                for (int j = 0; j < s; ++j)
+                {
+                    if (Tab::A[s][j] != 0.0)
+                    {
+                        ws_.ddK_dual[ss][j] +=
+                            h_ss_ * Tab::A[s][j] * ddx_local;
                     }
                 }
             }
-            if (ss == 0)
-            {
-                hv_x += x_ss_adj;
-            }
-            else
-            {
-                lam += x_ss_adj;
-            }
         }
+        hv_x = ws_.dx_ss[0];
+        hv_u = ws_.du;
     }
 
 private:
