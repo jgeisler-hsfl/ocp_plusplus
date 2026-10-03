@@ -1,10 +1,10 @@
-// Phase 4d: verify ImplicitRkIntegrator (Radau IIA) value / jacobian /
-// hess_prod (linear) against the analytic ODE solution and finite
-// differences of the composed map, plus the Newton convergence diagnostic.
+// Phase 4d/4f: verify ImplicitRkIntegrator (Radau IIA) value / jacobian /
+// hess_prod against the analytic ODE solution and finite differences of the
+// composed map, plus the Newton convergence diagnostic.
 //
-// hess_prod is shipped partial in 4d (see rk_implicit.hpp): it is verified
-// here only for a linear ODE (zero Hessian); the nonlinear path is a
-// documented compile-time stub.
+// hess_prod: the linear-ODE path returns zero (verified); the nonlinear path
+// (4f, second-order implicit sensitivity) is verified against a central-FD
+// Hessian of the composed map g(z) = w^T Phi(z) for a nonlinear ODE.
 
 #include <cmath>
 #include <cstdio>
@@ -26,6 +26,7 @@ using df_du_t = P::dyn_df_du_t;
 
 constexpr int nx = 2;
 constexpr int nu = 1;
+constexpr int nIn = nx + nu;
 
 int failures = 0;
 
@@ -359,6 +360,105 @@ void check_hess_prod_linear()
     std::printf("  hess_prod linear   OK  (zero, as expected)\n");
 }
 
+// ---------------------------------------------------------------------------
+//  hess_prod (nonlinear ODE, 4f: second-order implicit sensitivity)
+// ---------------------------------------------------------------------------
+
+/// Gold standard for the nonlinear path: finite-difference the composed-map
+/// Hessian of g(z) = w^T Phi(z), z = [x; u], with central 4-point cross
+/// derivatives, and compare the integrator's bilinear HVP w^T d2Phi . v.
+template <int NS, class Tag>
+void check_hess_prod_fd()
+{
+    using Integ = ocp::ImplicitRkIntegrator<Dims, OdeXsqU, NS, Tag>;
+    using z_t = Eigen::Matrix<double, nIn, 1>;
+    using hess_t = Eigen::Matrix<double, nIn, nIn>;
+    const Integ integ(OdeXsqU{}, 0.1, 8);
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+    const double d = 1e-4;
+
+    const z_t z0 = [&]() {
+        z_t z;
+        z.head(nx) = x;
+        z.tail(nu) = u;
+        return z;
+    }();
+
+    const auto phi = [&integ](const z_t& z) {
+        state_t out;
+        integ.value(z.head(nx), z.tail(nu), out);
+        return out;
+    };
+    const auto g = [&](const state_t& w, const z_t& z) {
+        return w.dot(phi(z));
+    };
+    const auto hessian_fd = [&g, &z0, d](const state_t& w) {
+        hess_t H;
+        for (int i = 0; i < nIn; ++i)
+        {
+            for (int j = 0; j < nIn; ++j)
+            {
+                if (i == j)
+                {
+                    z_t zp = z0;
+                    zp(i) += d;
+                    z_t zm = z0;
+                    zm(i) -= d;
+                    H(i, j) = (g(w, zp) - 2.0 * g(w, z0) + g(w, zm)) / (d * d);
+                }
+                else
+                {
+                    z_t p11 = z0;
+                    p11(i) += d;
+                    p11(j) += d;
+                    z_t p1m = z0;
+                    p1m(i) += d;
+                    p1m(j) -= d;
+                    z_t pm1 = z0;
+                    pm1(i) -= d;
+                    pm1(j) += d;
+                    z_t pmM = z0;
+                    pmM(i) -= d;
+                    pmM(j) -= d;
+                    H(i, j) = (g(w, p11) - g(w, p1m) - g(w, pm1) +
+                               g(w, pmM)) / (4.0 * d * d);
+                }
+            }
+        }
+        return H;
+    };
+
+    struct Case
+    {
+        state_t w;
+        state_t v_x;
+        control_t v_u;
+    };
+    const Case cases[] = {
+        {state_t(0.7, -0.3), state_t(0.4, 0.9), control_t(-0.5)},
+        {state_t(1.0, 0.4), state_t(0.1, -0.6), control_t(0.8)},
+        {state_t(0.2, 0.9), state_t(-0.3, 0.5), control_t(0.2)},
+    };
+    for (const auto& c : cases)
+    {
+        const hess_t H = hessian_fd(c.w);
+        z_t v;
+        v.head(nx) = c.v_x;
+        v.tail(nu) = c.v_u;
+        state_t hv_x;
+        control_t hv_u;
+        integ.hess_prod(x, u, c.w, c.v_x, c.v_u, hv_x, hv_u);
+        z_t actual;
+        actual.head(nx) = hv_x;
+        actual.tail(nu) = hv_u;
+        const double err = (actual - H * v).cwiseAbs().maxCoeff();
+        check(err < 1e-5, "hess_prod fd vs analytic (nonlinear)");
+        std::printf("  hess_prod fd %s  OK  (max |err| = %.3e)\n",
+                    (NS == 2 ? "radau2" : "radau4"), err);
+    }
+}
+
 }  // namespace
 
 int run_irk_4d_tests()
@@ -377,8 +477,10 @@ int run_irk_4d_tests()
     check_jacobian_fd<4, ocp::RadauIia4Tag>();
     check_jacobian_exact_linear();
 
-    // hess_prod (linear path only in 4d)
+    // hess_prod (linear + nonlinear FD, 4f)
     check_hess_prod_linear();
+    check_hess_prod_fd<2, ocp::RadauIia2Tag>();
+    check_hess_prod_fd<4, ocp::RadauIia4Tag>();
 
     if (failures != 0)
     {
