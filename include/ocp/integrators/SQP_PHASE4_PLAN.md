@@ -618,3 +618,35 @@ reference tests are bit-for-bit unchanged.
   All targets green: `double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`,
   `sqp_unit`, `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
   `integrators_unit` (4a + 4b).
+
+### 4c — `ContinuousProblem` adapter (done)
+
+- Implemented `include/ocp/integrators/continuous_problem.hpp`:
+  `ContinuousProblem<Dims, Ode, Integ, NH>` inherits from
+  `ocp::Problem<Dims>`. Stores the ODE by value and the integrator by value
+  (the integrator holds a `const Ode&` pointing into the problem object,
+  member-initialised in declaration order so the ODE outlives the
+  integrator). The three dynamics methods (`dynamics_next_state`,
+  `dynamics_jacobian`, `dynamics_hess_prod`) delegate to the integrator; the
+  stage index `k` is ignored (time-invariant ODE). All other interface methods
+  are inherited stubs for the user to override.
+  - `dynamics_hess_prod` delegates unconditionally to
+    `integ_.hess_prod(...)`; because the solver gates the call behind
+    `if constexpr (P::has_dynamics_hess_prod)` (sqp.hpp:1838, :1947), a
+    linear ODE (`has_dynamics_hess_prod = false`) never instantiates the
+    integrator's `hess_prod`, so the ODE may omit `hess_prod` entirely.
+- Test `tests/integrators/continuous_problem_4c.cpp`
+  (`run_erk_4c_tests`, wired into the shared `integrators_main.cpp`):
+  a linear continuous double integrator (`f(x,u) = [x(1); u(0)]`,
+  `ContDims` with `has_dynamics_hess_prod = false`, box constraints on
+  states/control, quadratic stage/terminal cost) wrapped in
+  `ContinuousProblem<..., ExplicitRkIntegrator<..., 4, K4Tag>>`:
+  - `dynamics_next_state` matches the exact discrete map
+    `q_{k+1} = q + h·v + h²/2·a`, `v_{k+1} = v + h·a` to 1e-14 (RK4 is exact
+    for this linear ODE);
+  - `dynamics_jacobian` matches the exact constant Jacobian to 1e-14;
+  - `SqpSolver::resize(N)` + `assemble_qp` returns `kSolved` and the QP
+    (first/path/term) has all-finite `hess`/`grad`/`BA`/`b`, with the first
+    stage `BA` shaped (nx, nx+nu).
+- Build: warning-free under `-Wall -Wextra -Werror`. All targets green
+  (4a + 4b + 4c in `integrators_unit`).

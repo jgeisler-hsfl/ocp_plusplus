@@ -6,12 +6,14 @@
 
 int run_integrators_4a_tests();
 int run_erk_4b_tests();
+int run_erk_4c_tests();
 
 int main()
 {
     int failures = 0;
     failures += run_integrators_4a_tests();
     failures += run_erk_4b_tests();
+    failures += run_erk_4c_tests();
 
     if (failures == 0)
     {
