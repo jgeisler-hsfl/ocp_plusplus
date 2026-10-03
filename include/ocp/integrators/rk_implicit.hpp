@@ -15,14 +15,15 @@
 // matrix dG_dK_ss is factored in place and reused for the correction and, on
 // the sensitivity path, for the first-order solves).
 //
-// value    -- Newton solve, then x_next = x + h * sum_s b_s * K_s.
-// jacobian -- implicit first-order sensitivity: dK/d(x,u) = G^{-1} * dR/d(x,u),
-//             then the same b-weighted accumulation as the explicit path.
-// hess_prod -- NOT implemented for the implicit path in this phase (the
-//             full-A self-coupling G[s][j] = -h A[s][j] f_x needs the full ODE
-//             Hessian, not just the ODE hess_prod). A linear ODE (no
-//             hess_prod) has a zero composed Hessian and returns zeros; a
-//             nonlinear ODE reaches a static_assert (see the plan, 4d).
+// value     -- Newton solve, then x_next = x + h * sum_s b_s * K_s.
+// jacobian  -- implicit first-order sensitivity: dK/d(x,u) = G^{-1} * dR/d(x,u),
+//              then the same b-weighted accumulation as the explicit path.
+// hess_prod -- second-order implicit sensitivity (4f): differentiates the
+//              first-order system G . J = Q in the direction v.  The second-
+//              order RHS R = B + h (H . (Am,0)) + h (H.v)_x Ja + h^2 (H.(Am,0))_x Ja
+//              (four terms, all derived from the ODE Hessian H_s via hess_prod
+//              with basis output weights e_i); M = G^{-1} R; HVP = sum_s h b_s (w^T M_s).
+//              A linear ODE (no hess_prod) has a zero composed Hessian and returns zeros.
 //
 // Allocation-free: every scratch buffer is a fixed-size Eigen object or
 // std::array, sized once on NS and Dims::nx/nu. Methods are const; the ODE
@@ -56,7 +57,9 @@ struct IrkWorkspace
     using control_t = typename P::control_t;
     using df_dx_t   = typename P::dyn_df_dx_t;
     using df_du_t   = typename P::dyn_df_du_t;
-    static constexpr int NK = NS * P::nx;
+    static constexpr int nx  = P::nx;
+    static constexpr int NK  = NS * P::nx;
+    static constexpr int nIn = P::nx + P::nu;
 
     std::array<state_t, NS> K{};        // stage derivatives (Newton unknowns)
     std::array<state_t, NS> x_stage{};  // stage states x_s
@@ -69,6 +72,15 @@ struct IrkWorkspace
     Eigen::Matrix<scalar_t, NK, P::nx> rhs_x{};  // sensitivity RHS (dK/dx)
     Eigen::Matrix<scalar_t, NK, P::nu> rhs_u{};  // sensitivity RHS (dK/du)
 
+    // Nonlinear hess_prod (4f): J = dK/dz (first-order sensitivity), R the
+    // second-order RHS, M = G^{-1} R; per-stage ODE-HVP and A-weighted blocks.
+    Eigen::Matrix<scalar_t, NK, nIn>  sens{};    // J = G^{-1} Q  (NK x nIn)
+    Eigen::Matrix<scalar_t, NK, nIn>  hess_rhs{}; // R (accumulates B+T2+T3+T4)
+    Eigen::Matrix<scalar_t, NK, nIn>  hess_sol{}; // M = G^{-1} R
+    Eigen::Matrix<scalar_t, nx, nIn> hvp_v{};    // (H_s . v) at stage s (nx x nIn)
+    Eigen::Matrix<scalar_t, nx, nIn> hvp_am{};   // (H_s . (Am_s,0)) at stage s
+    Eigen::Matrix<scalar_t, nx, nIn> jac_am{};   // Ja_s = sum_j A[s][j] J[j-block]
+
     double last_residual_ = 0.0;  // ‖R‖∞ at the converged iterate (diagnostic)
 };
 
@@ -78,19 +90,21 @@ struct IrkWorkspace
 ///
 /// `NS` is the number of RK stages (2..4 for the Radau IIA tags). `Tag`
 /// selects the Butcher scheme (RadauIia2Tag..RadauIia4Tag). `h` is the fixed
-/// step size. The ODE model must provide `f` and `jacobian`; `hess_prod` is
-/// only relevant to the (not-yet-implemented) nonlinear HVP path.
+/// step size. The ODE model must provide `f` and `jacobian`; a nonlinear ODE
+/// must also provide `hess_prod` (used by the 4f nonlinear HVP path).
 template <class Dims, class Ode, int NS, class Tag>
 class ImplicitRkIntegrator
 {
     using P   = ocp::Problem<Dims>;
     using Tab = ocp::ButcherTableau<Dims, NS, Tag>;
 
-    static constexpr int nx = P::nx;
-    static constexpr int nu = P::nu;
-    static constexpr int NK = NS * nx;
+    static constexpr int nx  = P::nx;
+    static constexpr int nu  = P::nu;
+    static constexpr int NK  = NS * nx;
+    static constexpr int nIn = nx + nu;
 
 public:
+    using scalar_t  = typename P::scalar_t;
     using state_t   = typename P::state_t;
     using control_t = typename P::control_t;
     using df_dx_t   = typename P::dyn_df_dx_t;
@@ -146,25 +160,110 @@ public:
         }
     }
 
-    /// Bilinear Hessian-vector product of the composed map.
+    /// Bilinear Hessian-vector product of the composed map,
+    /// `hv = w^T d2Phi . v` (see SQP_PHASE4_PLAN.md, 4f).
     ///
-    /// Not implemented for the implicit path in phase 4d: the full-A
-    /// self-coupling makes the second-order sensitivity depend on the full ODE
-    /// Hessian, which the ODE `hess_prod` contract does not expose. A linear
-    /// ODE (no `hess_prod`) has a zero composed Hessian and returns zeros; a
-    /// nonlinear ODE fails to compile here (use ExplicitRkIntegrator instead).
+    /// Nonlinear ODE: second-order implicit sensitivity via the block Newton
+    /// Jacobian `G = dF/dK`.  With `J = G^{-1} Q` (first-order sensitivity)
+    /// the per-stage block of the second-order RHS `R` is
+    ///
+    ///   R_s = H_s.v + h (H_s.(Am_s,0)) + h (H_s.v)_x Ja_s
+    ///         + h^2 (H_s.(Am_s,0))_x Ja_s
+    ///
+    /// where `H_s` is the ODE Hessian at stage `s`, `Am_s = Ja_s . v` and
+    /// `Ja_s = sum_j A[s][j] J[j-block]` (the A-weighted first-order
+    /// sensitivities); all four terms arise from differentiating
+    /// `G . J = Q` in the direction `v`.  The bilinear form `w^T d2Phi . v`
+    /// is then `sum_s h b_s (w^T M_s)` with `M = G^{-1} R`.  The ODE's own
+    /// `hess_prod` is used only with basis output weights `e_i` (the user's
+    /// `w` enters solely in the final row contract).
+    ///
+    /// A linear ODE (no `hess_prod`) has a zero composed Hessian and returns
+    /// zeros.
     void hess_prod(const state_t& x, const control_t& u, const state_t& w,
                    const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
         if constexpr (ode_supports_hess_prod<Ode, Dims>)
         {
-            static_assert(
-                false,
-                "ImplicitRkIntegrator::hess_prod is not implemented in phase "
-                "4d: the full-A stage coupling needs the full ODE Hessian, "
-                "not just the ODE hess_prod. Use ExplicitRkIntegrator for a "
-                "nonlinear dynamics HVP, or a linear ODE (zero Hessian).");
+            using nIn_vec = Eigen::Matrix<scalar_t, nIn, 1>;
+
+            solve_newton(x, u);
+
+            // Full input direction v = (v_x, v_u) in R^{nIn}.
+            const nIn_vec v = [this](const state_t& vx, const control_t& vu) {
+                nIn_vec r;
+                r.head(nx) = vx;
+                r.tail(nu) = vu;
+                return r;
+            }(v_x, v_u);
+
+            // First-order sensitivity J = G^{-1} Q, Q_s = [dfdx | dfdu].
+            for (int s = 0; s < NS; ++s)
+            {
+                ws_.hess_rhs.block(s * nx, 0, nx, nx) = ws_.dfdx[s];
+                ws_.hess_rhs.block(s * nx, nx, nx, nu) = ws_.dfdu[s];
+            }
+            ws_.sens = ws_.lu_.solve(ws_.hess_rhs);
+
+            // Second-order RHS R, accumulated stage by stage.
+            ws_.hess_rhs.setZero();
+            const control_t zero_u = control_t::Zero();
+            for (int s = 0; s < NS; ++s)
+            {
+                // Ja_s = sum_j A[s][j] J[j-block]   (nx x nIn).
+                ws_.jac_am.setZero();
+                for (int j = 0; j < NS; ++j)
+                {
+                    if (Tab::A[s][j] != 0.0)
+                    {
+                        ws_.jac_am += Tab::A[s][j] *
+                            ws_.sens.block(j * nx, 0, nx, nIn);
+                    }
+                }
+                // Am_s = Ja_s . v  (the A-weighted K-JVP x-block, nx).
+                const Eigen::Matrix<scalar_t, nx, 1> am_s = ws_.jac_am * v;
+
+                // ODE HVPs at stage s: (H_s . v) and (H_s . (Am_s, 0)),
+                // one basis output weight e_i each.
+                for (int i = 0; i < nx; ++i)
+                {
+                    const state_t e_i = state_t::Unit(i);
+                    state_t hx;
+                    control_t hu;
+                    ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, e_i,
+                                             v_x, v_u, hx, hu);
+                    ws_.hvp_v.row(i).head(nx) = hx;
+                    ws_.hvp_v.row(i).tail(nu) = hu;
+                    ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[s], u, e_i,
+                                             am_s, zero_u, hx, hu);
+                    ws_.hvp_am.row(i).head(nx) = hx;
+                    ws_.hvp_am.row(i).tail(nu) = hu;
+                }
+
+                // R_s = Hv + h HAm + h (Hv_x Ja_s) + h^2 (HAm_x Ja_s).
+                ws_.hess_rhs.block(s * nx, 0, nx, nIn) =
+                    ws_.hvp_v + h_ * ws_.hvp_am +
+                    h_ * (ws_.hvp_v.leftCols(nx) * ws_.jac_am) +
+                    h_ * h_ * (ws_.hvp_am.leftCols(nx) * ws_.jac_am);
+            }
+
+            // M = G^{-1} R  (nIn forward solves on the factored G), then the
+            // b-weighted row contract (the user's w is used only here).
+            ws_.hess_sol = ws_.lu_.solve(ws_.hess_rhs);
+            hv_x.setZero();
+            hv_u.setZero();
+            for (int s = 0; s < NS; ++s)
+            {
+                if (Tab::b[s] == 0.0)
+                {
+                    continue;
+                }
+                const auto wms = w.transpose() *
+                    ws_.hess_sol.block(s * nx, 0, nx, nIn);
+                hv_x += h_ * Tab::b[s] * wms.head(nx);
+                hv_u += h_ * Tab::b[s] * wms.tail(nu);
+            }
         }
         else
         {
