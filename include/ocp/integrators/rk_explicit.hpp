@@ -210,6 +210,14 @@ public:
             "ExplicitRkIntegrator::hess_prod: the ODE must provide a "
             "'hess_prod' method (nonlinear ODE). A linear ODE has a zero "
             "Hessian and should not reach this path.");
+        // The cross-sub-step adjoint threading for NumSteps > 1 (the
+        // J_ss^T * mu and Ju_ss^T * mu terms) is not yet implemented; until
+        // phase 4g lands it, restrict the nonlinear HVP to the single-step
+        // path (bit-for-bit the 4b computation) so a NumSteps > 1 misuse is a
+        // compile error rather than a silently wrong second derivative.
+        static_assert(NumSteps == 1,
+            "ExplicitRkIntegrator::hess_prod: multi-step (NumSteps > 1) HVP "
+            "is not implemented yet (phase 4g pending); use NumSteps = 1.");
 
         // Forward: per sub-step, stage states, K, Jacobians, and the
         // first-order JVP along v (dx_s, dK_s). x_cur carries the state;
