@@ -1322,3 +1322,45 @@ longer listed here. The following remain explicitly out of scope:
   are not expected to match exactly; the 5% bound (per §3/§4e of this plan)
   is the meaningful gate here, and both integrator paths agree to machine
   precision with each other.
+
+### 4g — Multi-step integration (`NumSteps > 1`) (done)
+
+- **ERK** (`rk_explicit.hpp`): added `NumSteps` template parameter to
+  `ExplicitRkIntegrator`. The `value`, `jacobian`, and `hess_prod` methods
+  loop over `NumSteps` sub-steps of size `h/NumSteps`. The `hess_prod` uses
+  an explicit-dual reverse-mode sweep (no Newton solve; stages are
+  independent due to the lower-triangular A-matrix).
+- **IRK** (`rk_implicit.hpp`): added `NumSteps` template parameter to
+  `ImplicitRkIntegrator`. Each sub-step is a Newton solve warm-started from
+  the previous sub-step's converged K (acados `mem->xdot` pattern).
+  The `hess_prod` for `NumSteps > 1` uses a "4f-as-building-block +
+  threading" approach:
+  - **Forward pass:** Newton-solve each sub-step, store the per-sub-step
+    Newton state (stage states, Jacobians, factored G), compute per-sub-step
+    Jacobians `(A_ss, B_ss)`, thread the first-order JVP `dx` forward
+    (`dx_{ss+1} = dx_ss + h_ss Σ b_s dK_jvp_s`), thread the x-Hessian
+    adjoint `R` forward (`R_{ss+1} = A_ss^T R_ss`), and thread the total
+    u-Jacobian `S` forward (`S_{ss+1} = A_ss S_ss + B_ss`).
+  - **Backward pass:** thread the co-state `lam` backward
+    (`lam = A_ss^T lam`), restore each sub-step's Newton state, call the
+    single-sub-step 4f HVP (`hess_prod_substep`), and accumulate:
+    `hv_x += R_ss · local_hv_x`,
+    `hv_u += S_ss^T · local_hv_x + local_hv_u`.
+  - For `NumSteps == 1` the code degenerates exactly to the 4f algorithm
+    (bit-for-bit identical; regression-anchored by the existing 4f tests).
+- **Key correctness fix:** the u-part of the composed HVP requires threading
+  the total u-Jacobian of the inner composition (`S_ss = D_u x_ss`), not
+  just summing the local u-HVPs. Without this the cross-term
+  `w^T (D_x D²Phi_ss · v_x)` is missing from the u-part.
+- Test `tests/integrators/rk_multistep_4g.cpp` (extended with IRK tests):
+  - *value:* RadauIia2, NumSteps 1/2/3, 5 OCP steps (h=0.1), vs 10000-step
+    RK4 reference → |err| < 1e-4.
+  - *jacobian:* RadauIia2, NumSteps=2, central FD δ=1e-6 → |err| < 1e-6.
+  - *hess_prod:* RadauIia2, NumSteps 1/2, central-FD Hessian (δ=1e-4)
+    for 3 (w,v) pairs → |err| < 1e-5.
+- **Regression:** all existing targets (`double_integrator`, `mass_spring`,
+  `qp_dim`, `qp_unit`, `sqp_unit`, `sqp_double_integrator`,
+  `sqp_mass_spring`, `sqp_acados_ref`, `integrators_unit`,
+  `sqp_continuous`) pass; IRK NumSteps=1 hess_prod bit-for-bit unchanged
+  (5.33e-09, same as 4f).
+- Build: warning-free under `-Wall -Wextra -Werror`.
