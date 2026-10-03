@@ -425,8 +425,20 @@ both write CSV. This phase nails down the sign/factor conventions from §2.
 constraints) with adaptive QP tolerances; funnel; adaptive LM; SOC pre-pass;
 timeout; soft box rows (`idxs_rev`).
 
-**Phase 4 — validation (TODO step 5).** CSV reference-diff utility; more
-acados examples.
+**Phase 4 — prerequisites for interoperability.**
+
+- Reimplement acados-style explicit/implicit RK solver/integrator as an
+  allocation-free template class.
+- Define a continuous-time problem interface using an integrator class to
+  implement the discrete-time interface.
+
+**Phase 5 — validation & acados interoperability.**
+
+- CSV reference-diff utility (done: `tests/sqp_acados_ref`).
+- MATLAB generator: emit the ocp++ `Problem` interface from an `AcadosOcp`
+  MATLAB object, reusing CasADi-generated dynamics / cost / constraint code
+  (design to be detailed separately).
+- Test more acados examples end-to-end.
 
 ## 12. Open items (verify at implementation time, not design decisions)
 
