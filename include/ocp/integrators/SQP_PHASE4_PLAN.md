@@ -1068,16 +1068,16 @@ equality to the steady state. `Dims::has_dynamics_hess_prod = true`.
   end-to-end; optional RadauIia2 variant gates IRK end-to-end.)
 - *regression:* all existing targets unchanged.
 
-**Status:** draft only — no code written. Depends on 4f for the IRK
-HVP path (ERK path can land first). Gate: FD-verified value/jacobian/
-HVP + end-to-end `kSolved`. Commits: `example:` (CSTR model + Dims),
-`test:` (tests), re-using `integrators_unit` + `sqp_continuous` targets.
+**Status:** done (see checkpoint §4i). Gate met: FD-verified
+value/jacobian/HVP + end-to-end `kSolved`. Commits: `example:` (CSTR model
++ Dims), `test:` (tests), re-using `integrators_unit` + `sqp_continuous`
+targets.
 
 ## 4. Test matrix
 
 | target | covers |
 |---|---|
-| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD); 4f IRK nonlinear HVP (FD) [draft]; 4g multi-step value/jacobian/HVP [draft]; 4h time-varying ODE value/jacobian/HVP (FD) [draft]; 4i CSTR nonlinear example (value/jacobian/HVP, FD) [draft] |
+| `integrators_unit` (new) | 4a tableau identities; 4b ERK value/jacobian/HVP (FD); 4c adapter + exact-linear; 4d IRK value/Newton/jacobian/HVP (FD); 4f IRK nonlinear HVP (FD); 4g multi-step value/jacobian/HVP; 4h time-varying ODE value/jacobian/HVP (FD); 4i CSTR nonlinear example (value/jacobian/HVP, FD) |
 | `sqp_continuous` (new) | 4e end-to-end continuous SQP (ERK + one IRK) vs discrete reference |
 | all existing targets | regression (no behavior change) |
 
@@ -1413,4 +1413,41 @@ longer listed here. The following remain explicitly out of scope:
   `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
   `integrators_unit`, `sqp_continuous`) pass; time-invariant results
   unchanged.
+- Build: warning-free under `-Wall -Wextra -Werror`.
+
+### 4i — CSTR nonlinear example (value/jacobian/HVP, FD) + end-to-end (done)
+
+- **Model** (`tests/integrators/cstr_4i.cpp`): `CstrOde` with hand-derived
+  analytic `f`, `jacobian`, and `hess_prod` for the acados CSTR
+  (`rate = k0·exp(-EbR/T)·c`); `CstrDims` (nx=3, nu=2, ne_t=3,
+  state/control/terminal-state box, `has_dynamics_hess_prod=true`);
+  `CstrOcp : ContinuousProblem<..., ExplicitRkIntegrator<...,4,K4Tag>>`
+  with quadratic relative stage/terminal cost and a terminal equality to the
+  steady state.
+- **value:** K4 single step at the nominal point vs a 10⁴-step RK4 reference
+  of the analytic `f` → |err| < 1e-4 (measured 6.3e-06).
+- **jacobian (FD):** central FD of the composed `Φ` w.r.t. (x,u) at the
+  nominal point, K2/K4 (ERK) and RadauIia2 (IRK) → ‖·‖∞ < 1e-6 (measured
+  ≤ 3.1e-08).
+- **hess_prod (FD):** central-FD (nx+nu)² Hessian of `wᵀΦ` (δ=1e-4), 3
+  (w,v) pairs, K4 and RadauIia2 → ‖·‖∞ < 1e-4 (measured 9.2e-06 / 1.1e-05).
+- **ODE-level direct:** analytic `hess_prod` vs central-FD Hessian of
+  `wᵀf` (δ=1e-4) → ‖·‖∞ < 1e-5 (measured 1.8e-06).
+- **end-to-end:** `ContinuousProblem` + `SqpSolver`, N=10, h=0.1,
+  terminal equality `x_N = xs`, kSolved + all four NLP residual norms
+  < 1e-6 (measured `res_stat` 5.1e-09, `res_eq` 5.7e-14).
+  - Initial state is a *well-conditioned* perturbation of the steady state:
+    `x0 = (0.878, 325.5, 0.78)` — `c` held at `xs_c`, small `T`/`h` nudge.
+    Disturbing the stiffly-coupled `c` state stalls the (indefinite)
+    Gauss-Newton SQP; the acados reference uses `x0 = xs` + terminal cost.
+    Here the terminal equality keeps the start feasible enough to converge
+    in ~7 iterations with default options (no LM/scaling needed).
+- **Bug fixed along the way:** the raw `ExplicitRk/ImplicitRkIntegrator`
+  store a `const Ode&`; the test's per-block `CstrOde{}` temporaries were
+  destroyed at the end of the constructor full-expression, leaving a dangling
+  reference (UB). A single named `CstrOde ode;` now outlives every integrator.
+- **Regression:** all existing targets
+  (`double_integrator`, `mass_spring`, `qp_dim`, `qp_unit`, `sqp_unit`,
+  `sqp_double_integrator`, `sqp_mass_spring`, `sqp_acados_ref`,
+  `integrators_unit`, `sqp_continuous`) pass.
 - Build: warning-free under `-Wall -Wextra -Werror`.

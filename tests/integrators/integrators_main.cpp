@@ -10,6 +10,7 @@ int run_erk_4c_tests();
 int run_irk_4d_tests();
 int run_multistep_4g_tests();
 int run_time_varying_4h_tests();
+int run_cstr_4i_tests();
 
 int main()
 {
@@ -20,6 +21,7 @@ int main()
     failures += run_irk_4d_tests();
     failures += run_multistep_4g_tests();
     failures += run_time_varying_4h_tests();
+    failures += run_cstr_4i_tests();
 
     if (failures == 0)
     {
