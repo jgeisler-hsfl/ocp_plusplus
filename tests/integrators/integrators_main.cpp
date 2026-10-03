@@ -8,6 +8,7 @@ int run_integrators_4a_tests();
 int run_erk_4b_tests();
 int run_erk_4c_tests();
 int run_irk_4d_tests();
+int run_multistep_4g_tests();
 
 int main()
 {
@@ -16,6 +17,7 @@ int main()
     failures += run_erk_4b_tests();
     failures += run_erk_4c_tests();
     failures += run_irk_4d_tests();
+    failures += run_multistep_4g_tests();
 
     if (failures == 0)
     {
