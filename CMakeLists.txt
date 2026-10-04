@@ -108,6 +108,28 @@ target_include_directories(pendulum_on_cart
                                    ${EIGEN3_INCLUDE_DIR})
 target_compile_options(pendulum_on_cart PRIVATE ${OCP_WARN_FLAGS})
 
+# unicycle: ocp++ port of the acados unicycle OCP (Phase 3). The dynamics are
+# the CasADi-generated implicit-DAE residual (compiled as C); the wrapper +
+# driver are emitted by tools/acados2ocp_pp.py from acados_codegen/
+# acados_ocp_nlp.json (Python codegen; see example_ocp.py). Batch OCP: drive
+# the unicycle from x0 = 0 to (x, y) = (1, 1) by T = 2.0 (yref of the acados
+# closed-loop example).
+# Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json examples/unicycle/acados_codegen/acados_ocp_nlp.json \
+#     --name UnicycleGen --out examples/unicycle/generated \
+#     --csrc examples/unicycle/acados_codegen/unicycle_model/unicycle_impl_dae_fun.c
+set(UN_MODEL_C examples/unicycle/acados_codegen/unicycle_model/unicycle_impl_dae_fun.c)
+set_source_files_properties(${UN_MODEL_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+add_executable(unicycle
+               examples/unicycle/generated/unicyclegen_main.cpp
+               ${UN_MODEL_C})
+target_include_directories(unicycle
+                           PRIVATE include examples/unicycle/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(unicycle PRIVATE ${OCP_WARN_FLAGS})
+
 # ---- tests ----
 
 add_executable(sqp_pendulum
@@ -116,6 +138,13 @@ target_include_directories(sqp_pendulum
                            PRIVATE include examples/pendulum_on_cart/generated
                                    ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_pendulum PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(sqp_unicycle
+               tests/sqp_unicycle/sqp_unicycle.cpp ${UN_MODEL_C})
+target_include_directories(sqp_unicycle
+                           PRIVATE include examples/unicycle/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_unicycle PRIVATE ${OCP_WARN_FLAGS})
 add_executable(qp_dim tests/hpipm/qp_dim.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE ${OCP_WARN_FLAGS})
