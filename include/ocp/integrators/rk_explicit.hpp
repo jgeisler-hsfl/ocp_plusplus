@@ -368,7 +368,11 @@ private:
                 ode_.jacobian(ws_.x_stage[ss][s], u, t_0 + h_ss_ * Tab::c[s],
                               ws_.JX[ss][s], ws_.JU[ss][s]);
             }
-            // ... composed locally into the per-sub-step Jacobian.
+            // ... composed locally into the per-sub-step Jacobian. The stage
+            // sensitivities chain through the A-coupling: dK_s/dx_ss =
+            // JX_raw_s * (I + h sum_{j<s} A[s][j] dK_j/dx_ss).
+            std::array<df_dx_t, NS> Jc{};
+            std::array<df_du_t, NS> Uc{};
             df_dx_t Jx_ss = df_dx_t::Identity();
             df_du_t Ju_ss;
             Ju_ss.setZero();
@@ -381,14 +385,16 @@ private:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        Dxs += h_ss_ * Tab::A[s][j] * ws_.JX[ss][j];
-                        Dus += h_ss_ * Tab::A[s][j] * ws_.JU[ss][j];
+                        Dxs += h_ss_ * Tab::A[s][j] * Jc[j];
+                        Dus += h_ss_ * Tab::A[s][j] * Uc[j];
                     }
                 }
+                Jc[s] = ws_.JX[ss][s] * Dxs;
+                Uc[s] = ws_.JX[ss][s] * Dus + ws_.JU[ss][s];
                 if (Tab::b[s] != 0.0)
                 {
-                    Jx_ss += h_ss_ * Tab::b[s] * (ws_.JX[ss][s] * Dxs);
-                    Ju_ss += h_ss_ * Tab::b[s] * (ws_.JX[ss][s] * Dus + ws_.JU[ss][s]);
+                    Jx_ss += h_ss_ * Tab::b[s] * Jc[s];
+                    Ju_ss += h_ss_ * Tab::b[s] * Uc[s];
                     x_cur += h_ss_ * Tab::b[s] * ws_.K[ss][s];
                 }
             }
