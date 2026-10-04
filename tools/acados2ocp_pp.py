@@ -811,7 +811,7 @@ struct {name}Dims
     static constexpr int nl_t = {nl_t};
 
     static constexpr bool fixed_initial_state = {str(fixed).lower()};
-    static constexpr bool has_dynamics_hess_prod = false;  // cost-only QP Hessian
+    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
     static constexpr bool has_constr_hess_prod = false;
 
     static constexpr std::array<int, {len(spec['state_box_union'])}> state_box_idx =
@@ -1801,8 +1801,9 @@ private:
 // ocp++ ConcreteProblem for the acados OCP "{spec['problem_name']}".
 //   state  nx = {nx}, control nu = {nu}, horizon N = {spec['N']}, dt = {spec['dt']}
 //   integrator: {spec['integ_kind']} {spec['gl_tag']} ({nst} stages x {nstep} sub-steps)
-//   Hessian model: objective-only (see has_dynamics_hess_prod); acados uses
-//                  hessian_approx = {spec['hessian_approx']}.
+//   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
+//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  acados uses hessian_approx = {spec['hessian_approx']}.
 
 #pragma once
 
