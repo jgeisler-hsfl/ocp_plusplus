@@ -142,9 +142,58 @@ target_compile_options(sqp_pendulum PRIVATE ${OCP_WARN_FLAGS})
 add_executable(sqp_unicycle
                tests/sqp_unicycle/sqp_unicycle.cpp ${UN_MODEL_C})
 target_include_directories(sqp_unicycle
-                           PRIVATE include examples/unicycle/generated
-                                   ${EIGEN3_INCLUDE_DIR})
+                            PRIVATE include examples/unicycle/generated
+                                    ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unicycle PRIVATE ${OCP_WARN_FLAGS})
+
+# p5probe (Phase 5): ocp++ port of the acados p5probe OCP (ERK K4, N = 3,
+# soft stage inequality, hard terminal inequality, non-convex h_t).
+# The CasADi value functions are compiled from acados_codegen; the problem
+# class is emitted by tools/acados2ocp_pp.py.
+# Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json examples/p5probe/acados_codegen/acados_ocp_nlp.json \
+#     --name P5probe --out examples/p5probe/generated \
+#     --csrc examples/p5probe/acados_codegen/p5probe_model/p5probe_expl_ode_fun.c
+set(P5_MODEL_C
+    examples/p5probe/acados_codegen/p5probe_model/p5probe_expl_ode_fun.c
+    examples/p5probe/acados_codegen/p5probe_cost/p5probe_cost_y_fun.c
+    examples/p5probe/acados_codegen/p5probe_cost/p5probe_cost_y_e_fun.c
+    examples/p5probe/acados_codegen/p5probe_constraints/p5probe_constr_h_fun.c
+    examples/p5probe/acados_codegen/p5probe_constraints/p5probe_constr_h_e_fun.c)
+foreach(p5f IN LISTS P5_MODEL_C)
+  set_source_files_properties(${p5f} PROPERTIES
+    COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+endforeach()
+add_executable(sqp_p5probe
+               tests/sqp_p5probe/sqp_p5probe.cpp ${P5_MODEL_C})
+target_include_directories(sqp_p5probe
+                           PRIVATE include examples/p5probe/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_p5probe PRIVATE ${OCP_WARN_FLAGS})
+
+# p5probe_b (Phase 5b): ocp++ port of the acados p5probe_b OCP (IRK
+# Gauss-Legendre 2 stages, N = 3, EXTERNAL cost, no constraints,
+# all-zeros optimum). Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json examples/p5probe_b/acados_codegen/acados_ocp_nlp.json \
+#     --name P5probeB --out examples/p5probe_b/generated \
+#     --csrc examples/p5probe_b/acados_codegen/p5probe_b_model/p5probe_b_impl_dae_fun.c
+set(P5B_MODEL_C
+    examples/p5probe_b/acados_codegen/p5probe_b_model/p5probe_b_impl_dae_fun.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_fun.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_0_fun.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_e_fun.c)
+foreach(p5bf IN LISTS P5B_MODEL_C)
+  set_source_files_properties(${p5bf} PROPERTIES
+    COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+endforeach()
+add_executable(sqp_p5probe_b
+               tests/sqp_p5probe_b/sqp_p5probe_b.cpp ${P5B_MODEL_C})
+target_include_directories(sqp_p5probe_b
+                           PRIVATE include examples/p5probe_b/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_p5probe_b PRIVATE ${OCP_WARN_FLAGS})
 add_executable(qp_dim tests/hpipm/qp_dim.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE ${OCP_WARN_FLAGS})
