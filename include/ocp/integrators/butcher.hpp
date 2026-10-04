@@ -75,6 +75,16 @@ struct RadauIia4Tag
 {
 };
 
+/// Gauss-Legendre collocation, 2 stages (implicit; no L-stability).
+struct GaussLegendre2Tag
+{
+};
+
+/// Gauss-Legendre collocation, 3 stages (implicit; no L-stability).
+struct GaussLegendre3Tag
+{
+};
+
 /// Gauss-Legendre collocation, 4 stages (implicit; acados default for the
 /// IRK integrator). Nodes are the mapped GL4 roots in (0,1); the collocation
 /// order conditions hold for 2*ns-1 = 7 (no L-stability, unlike Radau IIA).
@@ -98,7 +108,8 @@ struct ButcherTableau
     static_assert(false,
         "ocp::ButcherTableau: unsupported (NS, Tag); use K1Tag..K4Tag "
         "(explicit), RadauIia2Tag..RadauIia4Tag (Radau IIA), or "
-        "GaussLegendre4Tag (GL collocation) with the matching stage count.");
+        "GaussLegendre2Tag..GaussLegendre4Tag (GL collocation) with the "
+        "matching stage count.");
 };
 
 // ---- explicit RK tableaus (acados get_explicit_butcher_tableau) ---------
@@ -194,6 +205,38 @@ struct ButcherTableau<Dims, 4, RadauIia4Tag>
 };
 
 // ---- Gauss-Legendre collocation tableaus (implicit, symmetric) ----------
+//
+// Nodes are the GL roots mapped to (0,1): c_i = (1 + x_i) / 2 with x_i the
+// standard GL roots in (-1,1); b_i = w_i / 2. Matches acados
+// gauss_legendre_nodes (collocation interval [0, 1]).
+
+template <class Dims>
+struct ButcherTableau<Dims, 2, GaussLegendre2Tag>
+{
+    static constexpr std::array<std::array<double, 2>, 2> A = {
+        { { 0.25, -0.03867513459481289 },
+          { 0.5386751345948128, 0.25 } } };
+    static constexpr std::array<double, 2> b = { 0.5, 0.5 };
+    static constexpr std::array<double, 2> c = { 0.21132486540518713,
+                                                 0.7886751345948129 };
+};
+
+template <class Dims>
+struct ButcherTableau<Dims, 3, GaussLegendre3Tag>
+{
+    static constexpr std::array<std::array<double, 3>, 3> A = {
+        { { 0.1388888888888889, -0.03597666752493888,
+            0.009789444015308324 },
+          { 0.3002631949808645, 0.22222222222222254,
+            -0.022485417203086847 },
+          { 0.267988333762469, 0.4804211119693843,
+            0.13888888888888873 } } };
+    static constexpr std::array<double, 3> b = { 0.27777777777777785,
+                                                0.4444444444444444,
+                                                0.27777777777777785 };
+    static constexpr std::array<double, 3> c = { 0.1127016653792583, 0.5,
+                                                 0.8872983346207417 };
+};
 
 template <class Dims>
 struct ButcherTableau<Dims, 4, GaussLegendre4Tag>
