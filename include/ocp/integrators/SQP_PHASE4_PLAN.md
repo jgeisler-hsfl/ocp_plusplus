@@ -11,7 +11,8 @@ advances:
 This file is the working reference for the phase: the design, the
 source-verified conventions, the sub-step breakdown, and the running
 checkpoints (append a checkpoint entry per sub-step, same protocol as
-`solvers/SQP_PHASE3_PLAN.md` / `solvers/acados/SQP_PHASE2_PLAN.md`).
+`solvers/acados/SQP_PHASE3_PLAN.md` /
+`solvers/acados/SQP_PHASE2_PLAN.md`).
 
 **Protocol for every sub-step:**
 1. Re-read the acados sources listed for the sub-step (fresh; note line
