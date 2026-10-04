@@ -4,10 +4,10 @@
 //
 // ocp++ ConcreteProblem for the acados OCP "ocp_masses_chain_21ef639b".
 //   state  nx = 24, control nu = 3, horizon N = 40, dt = 0.2
-//   integrator: IRK GaussLegendre4Tag (4 stages x 2 sub-steps, 3 Newton iters)
-//   cost: LINEAR_LS (stage 27-dim, terminal 24-dim)
-//   Hessian model: objective-only (see has_dynamics_hess_prod); acados uses
-//                  hessian_approx = GAUSS_NEWTON.
+//   integrator: IRK GaussLegendre4Tag (4 stages x 2 sub-steps)
+//   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
+//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  acados uses hessian_approx = GAUSS_NEWTON.
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #include "MassesChainGen_capi.hpp"
 
 #include <Eigen/Dense>
+#include <limits>
 
 namespace ocp
 {
@@ -33,27 +34,26 @@ struct MassesChainGenDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // cost-only QP Hessian
-    static constexpr bool has_constr_hess_prod = false;    // only (linear) box rows
+    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
+    static constexpr bool has_constr_hess_prod = false;
 
-    static constexpr std::array<int, 4> state_box_idx =
-        { 1, 7, 13, 19 };
+    static constexpr std::array<int, 24> state_box_idx =
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 };
     static constexpr std::array<int, 3> control_box_idx =
         { 0, 1, 2 };
     static constexpr std::array<int, 0> terminal_state_box_idx =
         {  };
 
-    static constexpr std::array<int, 0> ineq_soft_idx = {};
-    static constexpr std::array<int, 0> eq_soft_idx = {};
-    static constexpr std::array<int, 0> lin_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_eq_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_lin_soft_idx = {};
-    static constexpr std::array<int, 0> state_box_soft_idx = {};
-    static constexpr std::array<int, 0> control_box_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
+    static constexpr std::array<int, 0> ineq_soft_idx = {  };
+    static constexpr std::array<int, 0> eq_soft_idx = {  };
+    static constexpr std::array<int, 0> lin_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_eq_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_lin_soft_idx = {  };
+    static constexpr std::array<int, 0> state_box_soft_idx = {  };
+    static constexpr std::array<int, 0> control_box_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_state_box_soft_idx = {  };
 };
-
 
 struct MassesChainGenOde
 {
@@ -63,16 +63,16 @@ struct MassesChainGenOde
     using dyn_df_dx_t = typename P::dyn_df_dx_t;
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
-    double p_ = 0.0;  // forwarded to the C residual (unused here)
+    detail::MassesChainGenDyn dyn_;
+    double p_ = 0.0;
 
     // Per-component coefficient c_i of xdot in the implicit-DAE residual
     // F(x, xdot, u). For an ODE the residual is linear in xdot with a
     // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
     // -1 (acados "f - xdot"). Calibrated once at construction so f() is
-    // correct regardless of which sign the codegen residual uses.
-    // The raw difference F1 - F0 carries ulp-level noise, so each c_i is
-    // snapped to exactly +/-1 (exact for ODE residuals, keeps f()
-    // bit-identical to a hand-written port of the same convention).
+    // correct regardless of which sign the codegen residual uses. The raw
+    // difference F1 - F0 carries ulp-level noise, so each c_i is snapped to
+    // exactly +/-1 (exact for ODE residuals).
     state_t c_ = state_t::Zero();
 
     MassesChainGenOde()
@@ -83,24 +83,27 @@ struct MassesChainGenOde
         uref.setConstant(0.05);
         zero.setZero();
         one.setConstant(1.0);
-        detail::MassesChainGen_residual(xref.data(), zero.data(), uref.data(), p_, F0.data());
-        detail::MassesChainGen_residual(xref.data(), one.data(), uref.data(), p_, F1.data());
+        dyn_.eval(xref.data(), uref.data(), zero.data(), p_, 0.0,
+                  F0.data());
+        dyn_.eval(xref.data(), uref.data(), one.data(), p_, 0.0,
+                  F1.data());
         for (int i = 0; i < P::nx; ++i)
             c_(i) = (F1(i) - F0(i) >= 0.0) ? 1.0 : -1.0;
     }
 
-    // xdot = f(x, u, t) = -c^-1 * F(x, 0, u)  (solve the residual for xdot).
-    state_t f(const state_t& x, const control_t& u, double /*t*/) const
+        // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
+    // xdot; the c_ calibration makes this exact for either residual sign).
+    state_t f(const state_t& x, const control_t& u, double t) const
     {
         state_t F;
         const state_t zero = state_t::Zero();
-        detail::MassesChainGen_residual(x.data(), zero.data(), u.data(), p_, F.data());
+        dyn_.eval(x.data(), u.data(), zero.data(), p_, t, F.data());
         state_t r;
         for (int i = 0; i < P::nx; ++i) r(i) = -F(i) / c_(i);
         return r;
     }
 
-    // Central finite differences of f(x, u) w.r.t. x and u (phase 1).
+    // Central finite differences of f(x, u, t) w.r.t. x and u.
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
@@ -122,11 +125,9 @@ struct MassesChainGenOde
     }
 };
 
-
 using MassesChainGenInteg =
     ocp::ImplicitRkIntegrator<MassesChainGenDims, MassesChainGenOde, 4,
                               ocp::GaussLegendre4Tag, 2>;
-
 
 class MassesChainGen
     : public ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenOde, MassesChainGenInteg>
@@ -137,101 +138,175 @@ class MassesChainGen
 public:
     MassesChainGen() : Base(MassesChainGenOde{}, 0.2)
     {
-                x0_ << -1.36855384628859e-22, 0.3740500601637552, -0.344560900973575, 5.321708456004501e-20, 4.100526712310663e-20, 1.242120869798635e-21, -5.556669042482574e-23, 0.7567239589410515, -0.3750878206748779, -5.814483335766596e-21, -1.118556560067962e-20, 1.172129048303988e-32, 5.198662563491591e-23, 1.132755245684027, -0.08869592957430722, 1.277784264617406e-32, -2.619900470717379e-32, -7.912381613475523e-33, 0.0, 1.5, 0.5, 0.0, 0.0, 0.0;
-        yref_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
-        yref_e_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0;
-
-        Vx_  = Eigen::Map<const Eigen::Matrix<double, 27, 24>>(Vx__data);
-        Vu_  = Eigen::Map<const Eigen::Matrix<double, 27, 3>>(Vu__data);
-        W_   = Eigen::Map<const Eigen::Matrix<double, 27, 27>>(W__data);
-        Vxe_ = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(Vxe__data);
-        We_  = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(W_e__data);
+        x0_ << -1.36855384628859e-22, 0.3740500601637552, -0.344560900973575, 5.321708456004501e-20, 4.100526712310663e-20, 1.242120869798635e-21, -5.556669042482574e-23, 0.7567239589410515, -0.3750878206748779, -5.814483335766596e-21, -1.118556560067962e-20, 1.172129048303988e-32, 5.198662563491591e-23, 1.132755245684027, -0.08869592957430722, 1.277784264617406e-32, -2.619900470717379e-32, -7.912381613475523e-33, 0.0, 1.5, 0.5, 0.0, 0.0, 0.0;
+        cpVx_ = Eigen::Map<const Eigen::Matrix<double, 27, 24>>(cpVx_data);
+        cpW_ = Eigen::Map<const Eigen::Matrix<double, 27, 27>>(cpW_data);
+        cpyref_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+        cpVu_ = Eigen::Map<const Eigen::Matrix<double, 27, 3>>(cpVu_data);
+        c0Vx_ = Eigen::Map<const Eigen::Matrix<double, 27, 24>>(c0Vx_data);
+        c0W_ = Eigen::Map<const Eigen::Matrix<double, 27, 27>>(c0W_data);
+        c0yref_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+        c0Vu_ = Eigen::Map<const Eigen::Matrix<double, 27, 3>>(c0Vu_data);
+        ctVx_ = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(ctVx_data);
+        ctW_ = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(ctW_data);
+        ctyref_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0;
     }
 
-    state_t initial_state() const { return x0_; }
+    state_t initial_state() const
+    {
+        return x0_;
+    }
+    static constexpr double inf_ =
+        std::numeric_limits<double>::infinity();
 
-    // cost reference (first nx rows of the stage yref); exposed so a driver
-    // can warm-start the interior states with it (as the acados example does).
     state_t cost_reference() const
     {
-        return yref_.head<24>();
+        return cpyref_.head<24>();
     }
 
-    // ---------------------------------------------------------------
-    //  stage cost  L = 0.5 * (Vx x + Vu u - yref)^T W (Vx x + Vu u - yref)
-    // ---------------------------------------------------------------
-    double stage_cost_value(int /*k*/, const state_t& x,
+    double stage_cost_value(int k, const state_t& x,
                             const control_t& u) const
     {
-        const Eigen::Matrix<double, 27, 1> y = Vx_ * x + Vu_ * u - yref_;
-        return 0.5 * y.dot(W_ * y);
+        if (k == 0)
+            return c0_value(x, u, 0.0);
+        return cp_value(x, u, 0.2 * k);
     }
 
-    stage_grad_t stage_cost_gradient(int /*k*/, const state_t& x,
+    stage_grad_t stage_cost_gradient(int k, const state_t& x,
                                      const control_t& u) const
     {
-        const Eigen::Matrix<double, 27, 1> y = Vx_ * x + Vu_ * u - yref_;
-        const Eigen::Matrix<double, 27, 1> g = W_ * y;
-        stage_grad_t r;
-        r.head<24>() = Vx_.transpose() * g;
-        r.tail<3>() = Vu_.transpose() * g;
-        return r;
+        if (k == 0)
+            return c0_grad(x, u, 0.0);
+        return cp_grad(x, u, 0.2 * k);
     }
 
-    stage_hess_t stage_cost_hessian(int /*k*/, const state_t& /*x*/,
-                                    const control_t& /*u*/) const
+    stage_hess_t stage_cost_hessian(int k, const state_t& x,
+                                    const control_t& u) const
     {
-        stage_hess_t H;
-        H.topLeftCorner(24, 24) = Vx_.transpose() * W_ * Vx_;
-        H.topRightCorner(24, 3) = Vx_.transpose() * W_ * Vu_;
-        H.bottomLeftCorner(3, 24) = Vu_.transpose() * W_ * Vx_;
-        H.bottomRightCorner(3, 3) = Vu_.transpose() * W_ * Vu_;
-        return H;
+        if (k == 0)
+            return c0_hess(x, u, 0.0);
+        return cp_hess(x, u, 0.2 * k);
     }
 
-    // ---------------------------------------------------------------
-    //  terminal cost  L_N = 0.5 * (Vxe x - yref_e)^T We (Vxe x - yref_e)
-    // ---------------------------------------------------------------
     double terminal_cost_value(const state_t& x) const
     {
-        const Eigen::Matrix<double, 24, 1> y = Vxe_ * x - yref_e_;
-        return 0.5 * y.dot(We_ * y);
+        return ct_value(x, 8.0);
     }
 
     term_grad_t terminal_cost_gradient(const state_t& x) const
     {
-        const Eigen::Matrix<double, 24, 1> y = Vxe_ * x - yref_e_;
-        return Vxe_.transpose() * (We_ * y);
+        return ct_grad(x, 8.0);
     }
 
-    term_hess_t terminal_cost_hessian(const state_t& /*x*/) const
+    term_hess_t terminal_cost_hessian(const state_t& x) const
     {
-        return Vxe_.transpose() * We_ * Vxe_;
+        return ct_hess(x, 8.0);
     }
 
-    // ---------------------------------------------------------------
-    //  box constraints (the only active groups; ng = ne = nl = 0)
-    // ---------------------------------------------------------------
     state_box_t stage_state_box_constr(int /*k*/) const
     {
         state_box_t spec;
-        spec.lo << -0.01, -0.01, -0.01, -0.01;
-        spec.hi << 10000.0, 10000.0, 10000.0, 10000.0;
-        spec.soft_penalty.setZero();
+        spec.lo.setConstant(-inf_);
+        spec.hi.setConstant(inf_);
+            spec.lo(1) = -0.01;
+            spec.hi(1) = 10000.0;
+            spec.lo(7) = -0.01;
+            spec.hi(7) = 10000.0;
+            spec.lo(13) = -0.01;
+            spec.hi(13) = 10000.0;
+            spec.lo(19) = -0.01;
+            spec.hi(19) = 10000.0;
+        spec.soft_penalty << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
         return spec;
     }
-
     control_box_t stage_control_box_constr(int /*k*/) const
     {
         control_box_t spec;
-        spec.lo << -1.0, -1.0, -1.0;
-        spec.hi << 1.0, 1.0, 1.0;
-        spec.soft_penalty.setZero();
+        spec.lo(0) = -1.0;
+        spec.lo(1) = -1.0;
+        spec.lo(2) = -1.0;
+        spec.hi(0) = 1.0;
+        spec.hi(1) = 1.0;
+        spec.hi(2) = 1.0;
+        spec.soft_penalty << 0.0, 0.0, 0.0;
         return spec;
+    }
+    double cp_value(const state_t& x, const control_t& u,
+                          double /*t*/) const
+    {
+        const Eigen::Matrix<double, 27, 1> y = cpVx_ * x + cpVu_ * u - cpyref_;
+        return 0.5 * y.dot(cpW_ * y);
+    }
+
+    stage_grad_t cp_grad(const state_t& x, const control_t& u,
+                               double /*t*/) const
+    {
+        const Eigen::Matrix<double, 27, 1> y = cpVx_ * x + cpVu_ * u - cpyref_;
+        const Eigen::Matrix<double, 27, 1> g = cpW_ * y;
+            stage_grad_t r;
+            r.head<24>() = cpVx_.transpose() * g;
+            r.tail<3>() = cpVu_.transpose() * g;
+            return r;
+    }
+
+    stage_hess_t cp_hess(const state_t& /*x*/, const control_t& /*u*/,
+                               double /*t*/) const
+    {
+            stage_hess_t H;
+            H.topLeftCorner(24, 24) = cpVx_.transpose() * cpW_ * cpVx_;
+            H.topRightCorner(24, 3) = cpVx_.transpose() * cpW_ * cpVu_;
+            H.bottomLeftCorner(3, 24) = cpVu_.transpose() * cpW_ * cpVx_;
+            H.bottomRightCorner(3, 3) = cpVu_.transpose() * cpW_ * cpVu_;
+            return H;
+    }
+    double c0_value(const state_t& x, const control_t& u,
+                          double /*t*/) const
+    {
+        const Eigen::Matrix<double, 27, 1> y = c0Vx_ * x + c0Vu_ * u - c0yref_;
+        return 0.5 * y.dot(c0W_ * y);
+    }
+
+    stage_grad_t c0_grad(const state_t& x, const control_t& u,
+                               double /*t*/) const
+    {
+        const Eigen::Matrix<double, 27, 1> y = c0Vx_ * x + c0Vu_ * u - c0yref_;
+        const Eigen::Matrix<double, 27, 1> g = c0W_ * y;
+            stage_grad_t r;
+            r.head<24>() = c0Vx_.transpose() * g;
+            r.tail<3>() = c0Vu_.transpose() * g;
+            return r;
+    }
+
+    stage_hess_t c0_hess(const state_t& /*x*/, const control_t& /*u*/,
+                               double /*t*/) const
+    {
+            stage_hess_t H;
+            H.topLeftCorner(24, 24) = c0Vx_.transpose() * c0W_ * c0Vx_;
+            H.topRightCorner(24, 3) = c0Vx_.transpose() * c0W_ * c0Vu_;
+            H.bottomLeftCorner(3, 24) = c0Vu_.transpose() * c0W_ * c0Vx_;
+            H.bottomRightCorner(3, 3) = c0Vu_.transpose() * c0W_ * c0Vu_;
+            return H;
+    }
+    double ct_value(const state_t& x, double /*t*/) const
+    {
+        const Eigen::Matrix<double, 24, 1> y = ctVx_ * x - ctyref_;
+        return 0.5 * y.dot(ctW_ * y);
+    }
+
+    term_grad_t ct_grad(const state_t& x, double /*t*/) const
+    {
+        const Eigen::Matrix<double, 24, 1> y = ctVx_ * x - ctyref_;
+        const Eigen::Matrix<double, 24, 1> g = ctW_ * y;
+            return ctVx_.transpose() * g;
+    }
+
+    term_hess_t ct_hess(const state_t& /*x*/, double /*t*/) const
+    {
+            return ctVx_.transpose() * ctW_ * ctVx_;
     }
 
 private:
-        static constexpr double Vx__data[648] = {
+    static constexpr double cpVx_data[648] = {
     1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -314,20 +389,7 @@ private:
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0
     };
-    static constexpr double Vu__data[81] = {
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    1.0
-    };
-    static constexpr double W__data[729] = {
+    static constexpr double cpW_data[729] = {
     10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -421,7 +483,210 @@ private:
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.01
     };
-    static constexpr double Vxe__data[576] = {
+    static constexpr double cpVu_data[81] = {
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0
+    };
+    static constexpr double c0Vx_data[648] = {
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0
+    };
+    static constexpr double c0W_data[729] = {
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.01
+    };
+    static constexpr double c0Vu_data[81] = {
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    1.0
+    };
+    static constexpr double ctVx_data[576] = {
     1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -495,7 +760,7 @@ private:
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0
     };
-    static constexpr double W_e__data[576] = {
+    static constexpr double ctW_data[576] = {
     10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -570,15 +835,21 @@ private:
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0
     };
 
-    state_t x0_{};
-    Eigen::Matrix<double, 27, 24> Vx_{};
-    Eigen::Matrix<double, 27, 3> Vu_{};
-    Eigen::Matrix<double, 27, 27> W_{};
-    Eigen::Matrix<double, 24, 24> Vxe_{};
-    Eigen::Matrix<double, 24, 24> We_{};
-    Eigen::Matrix<double, 27, 1> yref_{};
-    Eigen::Matrix<double, 24, 1> yref_e_{};
-};
 
+
+    double p_ = 0.0;
+    state_t x0_{};
+    Eigen::Matrix<double, 27, 24> cpVx_{};
+    Eigen::Matrix<double, 27, 27> cpW_{};
+    Eigen::Matrix<double, 27, 1> cpyref_{};
+    Eigen::Matrix<double, 27, 3> cpVu_{};
+    Eigen::Matrix<double, 27, 24> c0Vx_{};
+    Eigen::Matrix<double, 27, 27> c0W_{};
+    Eigen::Matrix<double, 27, 1> c0yref_{};
+    Eigen::Matrix<double, 27, 3> c0Vu_{};
+    Eigen::Matrix<double, 24, 24> ctVx_{};
+    Eigen::Matrix<double, 24, 24> ctW_{};
+    Eigen::Matrix<double, 24, 1> ctyref_{};
+};
 
 }  // namespace ocp

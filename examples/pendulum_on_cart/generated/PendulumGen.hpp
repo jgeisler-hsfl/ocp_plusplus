@@ -4,10 +4,10 @@
 //
 // ocp++ ConcreteProblem for the acados OCP "ocp_pendulum_c662f455".
 //   state  nx = 4, control nu = 1, horizon N = 20, dt = 0.05
-//   integrator: IRK GaussLegendre4Tag (4 stages x 1 sub-steps, 3 Newton iters)
-//   cost: LINEAR_LS (stage 5-dim, terminal 4-dim)
-//   Hessian model: objective-only (see has_dynamics_hess_prod); acados uses
-//                  hessian_approx = GAUSS_NEWTON.
+//   integrator: IRK GaussLegendre4Tag (4 stages x 1 sub-steps)
+//   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
+//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  acados uses hessian_approx = GAUSS_NEWTON.
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #include "PendulumGen_capi.hpp"
 
 #include <Eigen/Dense>
+#include <limits>
 
 namespace ocp
 {
@@ -33,27 +34,26 @@ struct PendulumGenDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // cost-only QP Hessian
-    static constexpr bool has_constr_hess_prod = false;    // only (linear) box rows
+    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
+    static constexpr bool has_constr_hess_prod = false;
 
-    static constexpr std::array<int, 0> state_box_idx =
-        {  };
+    static constexpr std::array<int, 4> state_box_idx =
+        { 0, 1, 2, 3 };
     static constexpr std::array<int, 1> control_box_idx =
         { 0 };
     static constexpr std::array<int, 0> terminal_state_box_idx =
         {  };
 
-    static constexpr std::array<int, 0> ineq_soft_idx = {};
-    static constexpr std::array<int, 0> eq_soft_idx = {};
-    static constexpr std::array<int, 0> lin_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_eq_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_lin_soft_idx = {};
-    static constexpr std::array<int, 0> state_box_soft_idx = {};
-    static constexpr std::array<int, 0> control_box_soft_idx = {};
-    static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
+    static constexpr std::array<int, 0> ineq_soft_idx = {  };
+    static constexpr std::array<int, 0> eq_soft_idx = {  };
+    static constexpr std::array<int, 0> lin_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_eq_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_lin_soft_idx = {  };
+    static constexpr std::array<int, 0> state_box_soft_idx = {  };
+    static constexpr std::array<int, 0> control_box_soft_idx = {  };
+    static constexpr std::array<int, 0> terminal_state_box_soft_idx = {  };
 };
-
 
 struct PendulumGenOde
 {
@@ -63,16 +63,16 @@ struct PendulumGenOde
     using dyn_df_dx_t = typename P::dyn_df_dx_t;
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
-    double p_ = 0.0;  // forwarded to the C residual (unused here)
+    detail::PendulumGenDyn dyn_;
+    double p_ = 0.0;
 
     // Per-component coefficient c_i of xdot in the implicit-DAE residual
     // F(x, xdot, u). For an ODE the residual is linear in xdot with a
     // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
     // -1 (acados "f - xdot"). Calibrated once at construction so f() is
-    // correct regardless of which sign the codegen residual uses.
-    // The raw difference F1 - F0 carries ulp-level noise, so each c_i is
-    // snapped to exactly +/-1 (exact for ODE residuals, keeps f()
-    // bit-identical to a hand-written port of the same convention).
+    // correct regardless of which sign the codegen residual uses. The raw
+    // difference F1 - F0 carries ulp-level noise, so each c_i is snapped to
+    // exactly +/-1 (exact for ODE residuals).
     state_t c_ = state_t::Zero();
 
     PendulumGenOde()
@@ -83,24 +83,27 @@ struct PendulumGenOde
         uref.setConstant(0.05);
         zero.setZero();
         one.setConstant(1.0);
-        detail::PendulumGen_residual(xref.data(), zero.data(), uref.data(), p_, F0.data());
-        detail::PendulumGen_residual(xref.data(), one.data(), uref.data(), p_, F1.data());
+        dyn_.eval(xref.data(), uref.data(), zero.data(), p_, 0.0,
+                  F0.data());
+        dyn_.eval(xref.data(), uref.data(), one.data(), p_, 0.0,
+                  F1.data());
         for (int i = 0; i < P::nx; ++i)
             c_(i) = (F1(i) - F0(i) >= 0.0) ? 1.0 : -1.0;
     }
 
-    // xdot = f(x, u, t) = -c^-1 * F(x, 0, u)  (solve the residual for xdot).
-    state_t f(const state_t& x, const control_t& u, double /*t*/) const
+        // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
+    // xdot; the c_ calibration makes this exact for either residual sign).
+    state_t f(const state_t& x, const control_t& u, double t) const
     {
         state_t F;
         const state_t zero = state_t::Zero();
-        detail::PendulumGen_residual(x.data(), zero.data(), u.data(), p_, F.data());
+        dyn_.eval(x.data(), u.data(), zero.data(), p_, t, F.data());
         state_t r;
         for (int i = 0; i < P::nx; ++i) r(i) = -F(i) / c_(i);
         return r;
     }
 
-    // Central finite differences of f(x, u) w.r.t. x and u (phase 1).
+    // Central finite differences of f(x, u, t) w.r.t. x and u.
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
@@ -122,11 +125,9 @@ struct PendulumGenOde
     }
 };
 
-
 using PendulumGenInteg =
     ocp::ImplicitRkIntegrator<PendulumGenDims, PendulumGenOde, 4,
                               ocp::GaussLegendre4Tag, 1>;
-
 
 class PendulumGen
     : public ocp::ContinuousProblem<PendulumGenDims, PendulumGenOde, PendulumGenInteg>
@@ -137,130 +138,214 @@ class PendulumGen
 public:
     PendulumGen() : Base(PendulumGenOde{}, 0.05)
     {
-                x0_ << 0.0, 3.141592653589793, 0.0, 0.0;
-        yref_ << 0.0, 0.0, 0.0, 0.0, 0.0;
-        yref_e_ << 0.0, 0.0, 0.0, 0.0;
-
-        Vx_  = Eigen::Map<const Eigen::Matrix<double, 5, 4>>(Vx__data);
-        Vu_  = Eigen::Map<const Eigen::Matrix<double, 5, 1>>(Vu__data);
-        W_   = Eigen::Map<const Eigen::Matrix<double, 5, 5>>(W__data);
-        Vxe_ = Eigen::Map<const Eigen::Matrix<double, 4, 4>>(Vxe__data);
-        We_  = Eigen::Map<const Eigen::Matrix<double, 4, 4>>(W_e__data);
+        x0_ << 0.0, 3.141592653589793, 0.0, 0.0;
+        cpVx_ = Eigen::Map<const Eigen::Matrix<double, 5, 4>>(cpVx_data);
+        cpW_ = Eigen::Map<const Eigen::Matrix<double, 5, 5>>(cpW_data);
+        cpyref_ << 0.0, 0.0, 0.0, 0.0, 0.0;
+        cpVu_ = Eigen::Map<const Eigen::Matrix<double, 5, 1>>(cpVu_data);
+        c0Vx_ = Eigen::Map<const Eigen::Matrix<double, 5, 4>>(c0Vx_data);
+        c0W_ = Eigen::Map<const Eigen::Matrix<double, 5, 5>>(c0W_data);
+        c0yref_ << 0.0, 0.0, 0.0, 0.0, 0.0;
+        c0Vu_ = Eigen::Map<const Eigen::Matrix<double, 5, 1>>(c0Vu_data);
+        ctVx_ = Eigen::Map<const Eigen::Matrix<double, 4, 4>>(ctVx_data);
+        ctW_ = Eigen::Map<const Eigen::Matrix<double, 4, 4>>(ctW_data);
+        ctyref_ << 0.0, 0.0, 0.0, 0.0;
     }
 
-    state_t initial_state() const { return x0_; }
+    state_t initial_state() const
+    {
+        return x0_;
+    }
+    static constexpr double inf_ =
+        std::numeric_limits<double>::infinity();
 
-    // cost reference (first nx rows of the stage yref); exposed so a driver
-    // can warm-start the interior states with it (as the acados example does).
     state_t cost_reference() const
     {
-        return yref_.head<4>();
+        return cpyref_.head<4>();
     }
 
-    // ---------------------------------------------------------------
-    //  stage cost  L = 0.5 * (Vx x + Vu u - yref)^T W (Vx x + Vu u - yref)
-    // ---------------------------------------------------------------
-    double stage_cost_value(int /*k*/, const state_t& x,
+    double stage_cost_value(int k, const state_t& x,
                             const control_t& u) const
     {
-        const Eigen::Matrix<double, 5, 1> y = Vx_ * x + Vu_ * u - yref_;
-        return 0.5 * y.dot(W_ * y);
+        if (k == 0)
+            return c0_value(x, u, 0.0);
+        return cp_value(x, u, 0.05 * k);
     }
 
-    stage_grad_t stage_cost_gradient(int /*k*/, const state_t& x,
+    stage_grad_t stage_cost_gradient(int k, const state_t& x,
                                      const control_t& u) const
     {
-        const Eigen::Matrix<double, 5, 1> y = Vx_ * x + Vu_ * u - yref_;
-        const Eigen::Matrix<double, 5, 1> g = W_ * y;
-        stage_grad_t r;
-        r.head<4>() = Vx_.transpose() * g;
-        r.tail<1>() = Vu_.transpose() * g;
-        return r;
+        if (k == 0)
+            return c0_grad(x, u, 0.0);
+        return cp_grad(x, u, 0.05 * k);
     }
 
-    stage_hess_t stage_cost_hessian(int /*k*/, const state_t& /*x*/,
-                                    const control_t& /*u*/) const
+    stage_hess_t stage_cost_hessian(int k, const state_t& x,
+                                    const control_t& u) const
     {
-        stage_hess_t H;
-        H.topLeftCorner(4, 4) = Vx_.transpose() * W_ * Vx_;
-        H.topRightCorner(4, 1) = Vx_.transpose() * W_ * Vu_;
-        H.bottomLeftCorner(1, 4) = Vu_.transpose() * W_ * Vx_;
-        H.bottomRightCorner(1, 1) = Vu_.transpose() * W_ * Vu_;
-        return H;
+        if (k == 0)
+            return c0_hess(x, u, 0.0);
+        return cp_hess(x, u, 0.05 * k);
     }
 
-    // ---------------------------------------------------------------
-    //  terminal cost  L_N = 0.5 * (Vxe x - yref_e)^T We (Vxe x - yref_e)
-    // ---------------------------------------------------------------
     double terminal_cost_value(const state_t& x) const
     {
-        const Eigen::Matrix<double, 4, 1> y = Vxe_ * x - yref_e_;
-        return 0.5 * y.dot(We_ * y);
+        return ct_value(x, 1.0);
     }
 
     term_grad_t terminal_cost_gradient(const state_t& x) const
     {
-        const Eigen::Matrix<double, 4, 1> y = Vxe_ * x - yref_e_;
-        return Vxe_.transpose() * (We_ * y);
+        return ct_grad(x, 1.0);
     }
 
-    term_hess_t terminal_cost_hessian(const state_t& /*x*/) const
+    term_hess_t terminal_cost_hessian(const state_t& x) const
     {
-        return Vxe_.transpose() * We_ * Vxe_;
+        return ct_hess(x, 1.0);
     }
 
-    // ---------------------------------------------------------------
-    //  box constraints (the only active groups; ng = ne = nl = 0)
-    // ---------------------------------------------------------------
     state_box_t stage_state_box_constr(int /*k*/) const
     {
         state_box_t spec;
-        spec.soft_penalty.setZero();
+        spec.lo.setConstant(-inf_);
+        spec.hi.setConstant(inf_);
+
+        spec.soft_penalty << 0.0, 0.0, 0.0, 0.0;
         return spec;
     }
-
     control_box_t stage_control_box_constr(int /*k*/) const
     {
         control_box_t spec;
-        spec.lo << -80.0;
-        spec.hi << 80.0;
-        spec.soft_penalty.setZero();
+        spec.lo(0) = -80.0;
+        spec.hi(0) = 80.0;
+        spec.soft_penalty << 0.0;
         return spec;
+    }
+    double cp_value(const state_t& x, const control_t& u,
+                          double /*t*/) const
+    {
+        const Eigen::Matrix<double, 5, 1> y = cpVx_ * x + cpVu_ * u - cpyref_;
+        return 0.5 * y.dot(cpW_ * y);
+    }
+
+    stage_grad_t cp_grad(const state_t& x, const control_t& u,
+                               double /*t*/) const
+    {
+        const Eigen::Matrix<double, 5, 1> y = cpVx_ * x + cpVu_ * u - cpyref_;
+        const Eigen::Matrix<double, 5, 1> g = cpW_ * y;
+            stage_grad_t r;
+            r.head<4>() = cpVx_.transpose() * g;
+            r.tail<1>() = cpVu_.transpose() * g;
+            return r;
+    }
+
+    stage_hess_t cp_hess(const state_t& /*x*/, const control_t& /*u*/,
+                               double /*t*/) const
+    {
+            stage_hess_t H;
+            H.topLeftCorner(4, 4) = cpVx_.transpose() * cpW_ * cpVx_;
+            H.topRightCorner(4, 1) = cpVx_.transpose() * cpW_ * cpVu_;
+            H.bottomLeftCorner(1, 4) = cpVu_.transpose() * cpW_ * cpVx_;
+            H.bottomRightCorner(1, 1) = cpVu_.transpose() * cpW_ * cpVu_;
+            return H;
+    }
+    double c0_value(const state_t& x, const control_t& u,
+                          double /*t*/) const
+    {
+        const Eigen::Matrix<double, 5, 1> y = c0Vx_ * x + c0Vu_ * u - c0yref_;
+        return 0.5 * y.dot(c0W_ * y);
+    }
+
+    stage_grad_t c0_grad(const state_t& x, const control_t& u,
+                               double /*t*/) const
+    {
+        const Eigen::Matrix<double, 5, 1> y = c0Vx_ * x + c0Vu_ * u - c0yref_;
+        const Eigen::Matrix<double, 5, 1> g = c0W_ * y;
+            stage_grad_t r;
+            r.head<4>() = c0Vx_.transpose() * g;
+            r.tail<1>() = c0Vu_.transpose() * g;
+            return r;
+    }
+
+    stage_hess_t c0_hess(const state_t& /*x*/, const control_t& /*u*/,
+                               double /*t*/) const
+    {
+            stage_hess_t H;
+            H.topLeftCorner(4, 4) = c0Vx_.transpose() * c0W_ * c0Vx_;
+            H.topRightCorner(4, 1) = c0Vx_.transpose() * c0W_ * c0Vu_;
+            H.bottomLeftCorner(1, 4) = c0Vu_.transpose() * c0W_ * c0Vx_;
+            H.bottomRightCorner(1, 1) = c0Vu_.transpose() * c0W_ * c0Vu_;
+            return H;
+    }
+    double ct_value(const state_t& x, double /*t*/) const
+    {
+        const Eigen::Matrix<double, 4, 1> y = ctVx_ * x - ctyref_;
+        return 0.5 * y.dot(ctW_ * y);
+    }
+
+    term_grad_t ct_grad(const state_t& x, double /*t*/) const
+    {
+        const Eigen::Matrix<double, 4, 1> y = ctVx_ * x - ctyref_;
+        const Eigen::Matrix<double, 4, 1> g = ctW_ * y;
+            return ctVx_.transpose() * g;
+    }
+
+    term_hess_t ct_hess(const state_t& /*x*/, double /*t*/) const
+    {
+            return ctVx_.transpose() * ctW_ * ctVx_;
     }
 
 private:
-        static constexpr double Vx__data[20] = {
+    static constexpr double cpVx_data[20] = {
     1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
     0.0, 0.0, 1.0, 0.0
     };
-    static constexpr double Vu__data[5] = {
-    0.0, 0.0, 0.0, 0.0, 1.0
-    };
-    static constexpr double W__data[25] = {
+    static constexpr double cpW_data[25] = {
     2000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2000.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0,
     0.02
     };
-    static constexpr double Vxe__data[16] = {
+    static constexpr double cpVu_data[5] = {
+    0.0, 0.0, 0.0, 0.0, 1.0
+    };
+    static constexpr double c0Vx_data[20] = {
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0
+    };
+    static constexpr double c0W_data[25] = {
+    2000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2000.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.02
+    };
+    static constexpr double c0Vu_data[5] = {
+    0.0, 0.0, 0.0, 0.0, 1.0
+    };
+    static constexpr double ctVx_data[16] = {
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0
     };
-    static constexpr double W_e__data[16] = {
+    static constexpr double ctW_data[16] = {
     2000.0, 0.0, 0.0, 0.0, 0.0, 2000.0, 0.0, 0.0,
     0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.02
     };
 
-    state_t x0_{};
-    Eigen::Matrix<double, 5, 4> Vx_{};
-    Eigen::Matrix<double, 5, 1> Vu_{};
-    Eigen::Matrix<double, 5, 5> W_{};
-    Eigen::Matrix<double, 4, 4> Vxe_{};
-    Eigen::Matrix<double, 4, 4> We_{};
-    Eigen::Matrix<double, 5, 1> yref_{};
-    Eigen::Matrix<double, 4, 1> yref_e_{};
-};
 
+
+    state_t x0_{};
+    Eigen::Matrix<double, 5, 4> cpVx_{};
+    Eigen::Matrix<double, 5, 5> cpW_{};
+    Eigen::Matrix<double, 5, 1> cpyref_{};
+    Eigen::Matrix<double, 5, 1> cpVu_{};
+    Eigen::Matrix<double, 5, 4> c0Vx_{};
+    Eigen::Matrix<double, 5, 5> c0W_{};
+    Eigen::Matrix<double, 5, 1> c0yref_{};
+    Eigen::Matrix<double, 5, 1> c0Vu_{};
+    Eigen::Matrix<double, 4, 4> ctVx_{};
+    Eigen::Matrix<double, 4, 4> ctW_{};
+    Eigen::Matrix<double, 4, 1> ctyref_{};
+};
 
 }  // namespace ocp

@@ -5,8 +5,9 @@
 // ocp++ ConcreteProblem for the acados OCP "ocp_p5probe_b_73b0cb13".
 //   state  nx = 2, control nu = 1, horizon N = 3, dt = 0.09999999999999999
 //   integrator: IRK GaussLegendre2Tag (2 stages x 1 sub-steps)
-//   Hessian model: objective-only (see has_dynamics_hess_prod); acados uses
-//                  hessian_approx = GAUSS_NEWTON.
+//   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
+//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  acados uses hessian_approx = GAUSS_NEWTON.
 
 #pragma once
 
@@ -33,7 +34,7 @@ struct P5probeBDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // cost-only QP Hessian
+    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
     static constexpr bool has_constr_hess_prod = false;
 
     static constexpr std::array<int, 2> state_box_idx =
