@@ -155,7 +155,8 @@ int main()
 
         MassSpring::dyn_df_dx_t A;
         MassSpring::dyn_df_du_t B;
-        problem.dynamics_jacobian(0, x, u, A, B);
+        MassSpring::state_t x_next;
+        problem.dynamics_value_jac(0, x, u, x_next, A, B);
         check_close("dyn A == A_", (A - problem.A_).cwiseAbs().maxCoeff(), 0.0, 1e-12);
         check_close("dyn B == B_", (B - problem.B_).cwiseAbs().maxCoeff(), 0.0, 1e-12);
 
@@ -198,7 +199,9 @@ int main()
         x << 0.3, -0.2, 1.1, 0.4, 0.7, -0.5, 0.2, 0.9;
         u << 0.1, -0.2, 0.3;
 
-        const auto g = problem.stage_cost_gradient(k, x, u);
+        MassSpring::stage_grad_t g;
+        double lcost = 0.0;
+        problem.stage_cost_value_grad(k, x, u, lcost, g);
         const double h = 1e-6;
         double maxdiff = 0.0;
         for (int j = 0; j < MassSpring::nx + MassSpring::nu; ++j)
@@ -222,7 +225,8 @@ int main()
         }
         check_close("stage cost grad max |fd - g|", maxdiff, 0.0, 1e-4);
 
-        const auto H = problem.stage_cost_hessian(k, x, u);
+        MassSpring::stage_hess_t H;
+        problem.stage_cost_value_grad_hess(k, x, u, lcost, g, H);
         double hmax = 0.0;
         for (int i = 0; i < MassSpring::nx + MassSpring::nu; ++i)
         {
@@ -235,7 +239,9 @@ int main()
         check_close("stage cost hess max err (I, 2I blocks)", hmax, 0.0, 1e-12);
 
         // terminal cost: gradient = x, Hessian = I
-        const auto gt = problem.terminal_cost_gradient(x);
+        MassSpring::term_grad_t gt;
+        double tval = 0.0;
+        problem.terminal_cost_value_grad(x, tval, gt);
         double gmax = 0.0;
         for (int j = 0; j < MassSpring::nx; ++j)
         {
@@ -247,9 +253,10 @@ int main()
             gmax = std::max(gmax, std::fabs(fd - gt(j)));
         }
         check_close("term cost grad max |fd - g|", gmax, 0.0, 1e-4);
+        MassSpring::term_hess_t Ht;
+        problem.terminal_cost_value_grad_hess(x, tval, gt, Ht);
         check_close("term cost hess == I",
-                    (problem.terminal_cost_hessian(x) -
-                     MassSpring::term_hess_t::Identity()).cwiseAbs().maxCoeff(),
+                    (Ht - MassSpring::term_hess_t::Identity()).cwiseAbs().maxCoeff(),
                     0.0, 1e-12);
     }
 

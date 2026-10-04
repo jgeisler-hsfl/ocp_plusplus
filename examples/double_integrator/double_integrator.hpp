@@ -39,8 +39,8 @@ struct DoubleIntegratorDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [1; 0.5] given
-    static constexpr bool has_dynamics_hess_prod = true;  // HVP implemented (zero; linear map)
-    static constexpr bool has_constr_hess_prod   = true;  // HVPs implemented (zero; linear maps)
+    static constexpr bool has_dynamics_hess = true;  // HVP implemented (zero; linear map)
+    static constexpr bool has_constr_hess   = true;  // HVPs implemented (zero; linear maps)
     static constexpr std::array<int, 2> state_box_idx   = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -90,9 +90,11 @@ public:
         return xn;
     }
 
-    void dynamics_jacobian(int, const state_t&, const control_t&,
-                           dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    void dynamics_value_jac(int, const state_t& x, const control_t& u,
+                            state_t& x_next,
+                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
+        x_next = dynamics_next_state(0, x, u);
         df_dx.setZero();
         df_dx(0, 0) = 1.0;
         df_dx(0, 1) = Ts_;
@@ -101,13 +103,14 @@ public:
         df_du(1, 0) = Ts_;
     }
 
-    void dynamics_hess_prod(int, const state_t&, const control_t&,
-                            const state_t&, const state_t&, const control_t&,
-                            state_t& hv_x, control_t& hv_u) const
+    void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
+                                 const state_t&, state_t& x_next,
+                                 dyn_df_dx_t& df_dx, dyn_df_du_t& df_du,
+                                 dyn_hess_t& hess) const
     {
         // linear dynamics map: Hessian is zero
-        hv_x.setZero();
-        hv_u.setZero();
+        dynamics_value_jac(k, x, u, x_next, df_dx, df_du);
+        hess.setZero();
     }
 
     // ---------------------------------------------------------------
@@ -118,24 +121,24 @@ public:
         return 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1) + wa_ * u(0) * u(0));
     }
 
-    stage_grad_t stage_cost_gradient(int, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, stage_grad_t& g) const
     {
-        stage_grad_t g;
+        value = 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1) + wa_ * u(0) * u(0));
         g(0) = wq_ * x(0);
         g(1) = wv_ * x(1);
         g(2) = wa_ * u(0);
-        return g;
     }
 
-    stage_hess_t stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, stage_grad_t& g,
+                                    stage_hess_t& H) const
     {
-        stage_hess_t H;
+        stage_cost_value_grad(0, x, u, value, g);
         H.setZero();
         H(0, 0) = wq_;
         H(1, 1) = wv_;
         H(2, 2) = wa_;
-        return H;
     }
 
     // ---------------------------------------------------------------
@@ -146,49 +149,52 @@ public:
         return wf_ * (x(0) * x(0) + x(1) * x(1));
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& g) const
     {
-        term_grad_t g;
+        value = wf_ * (x(0) * x(0) + x(1) * x(1));
         g(0) = 2.0 * wf_ * x(0);
         g(1) = 2.0 * wf_ * x(1);
-        return g;
     }
 
-    term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& g, term_hess_t& H) const
     {
-        term_hess_t H;
+        terminal_cost_value_grad(x, value, g);
         H.setZero();
         H(0, 0) = 2.0 * wf_;
         H(1, 1) = 2.0 * wf_;
-        return H;
     }
 
     // ---------------------------------------------------------------
     // stage constraints
     // ---------------------------------------------------------------
-    ineq_t stage_inequality_constr(int, const state_t& x, const control_t&) const
+    ineq_t stage_inequality_value(int, const state_t& x, const control_t&) const
     {
         ineq_t g;
         g(0) = x(1) - v_max_;
         return g;
     }
 
-    void stage_inequality_constr_jacobian(int, const state_t&, const control_t&,
-                                          ineq_dg_dx_t& g_dx, ineq_dg_du_t& g_du) const
+    void stage_inequality_value_jac(int, const state_t& x, const control_t&,
+                                    ineq_t& g, ineq_dg_dx_t& g_dx,
+                                    ineq_dg_du_t& g_du) const
     {
+        g = stage_inequality_value(0, x, control_t{});
         g_dx.setZero();
         g_dx(0, 1) = 1.0;
         g_du.setZero();
     }
 
-    void stage_inequality_constr_hess_prod(int, const state_t&, const control_t&,
-                                           const ineq_t&, const state_t&,
-                                           const control_t&, state_t& hv_x,
-                                           control_t& hv_u) const
+    void stage_inequality_value_jac_hess(int k, const state_t& x,
+                                         const control_t& u,
+                                         const ineq_t&, ineq_t& g,
+                                         ineq_dg_dx_t& g_dx, ineq_dg_du_t& g_du,
+                                         constr_hess_t& hess) const
     {
         // linear constraint: Hessian is zero
-        hv_x.setZero();
-        hv_u.setZero();
+        stage_inequality_value_jac(k, x, u, g, g_dx, g_du);
+        hess.setZero();
     }
 
     ineq_pen_t stage_inequality_constr_soft_penalty(int) const
@@ -198,7 +204,7 @@ public:
         return pen;
     }
 
-    // ne == 0: stage_equality_constr / stage_equality_constr_jacobian stay unimplemented.
+    // ne == 0: stage_equality_value / stage_equality_value_jac stay unimplemented.
 
     stage_linear_t stage_linear_constr(int) const
     {
@@ -243,27 +249,32 @@ public:
         return spec;
     }
 
-    // ng_t == 0: terminal_inequality_constr / _jacobian stay unimplemented.
+    // ng_t == 0: terminal_inequality_value / _value_jac stay unimplemented.
 
-    eq_term_t terminal_equality_constr(const state_t& x) const
+    eq_term_t terminal_equality_value(const state_t& x) const
     {
         eq_term_t e;
         e(0) = x(0) + x(1) - 1.0;
         return e;
     }
 
-    void terminal_equality_constr_jacobian(const state_t&, eq_term_de_dx_t& e_dx) const
+    void terminal_equality_value_jac(const state_t& x, eq_term_t& e,
+                                     eq_term_de_dx_t& e_dx) const
     {
+        e(0) = x(0) + x(1) - 1.0;
         e_dx.setZero();
         e_dx(0, 0) = 1.0;
         e_dx(0, 1) = 1.0;
     }
 
-    void terminal_equality_constr_hess_prod(const state_t&, const eq_term_t&,
-                                            const state_t&, state_t& hv) const
+    void terminal_equality_value_jac_hess(const state_t& x, const eq_term_t&,
+                                          eq_term_t& e,
+                                          eq_term_de_dx_t& e_dx,
+                                          term_constr_hess_t& hess) const
     {
         // linear constraint: Hessian is zero
-        hv.setZero();
+        terminal_equality_value_jac(x, e, e_dx);
+        hess.setZero();
     }
 
     // nl_t == 0: terminal_linear_constr stays unimplemented.

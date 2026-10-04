@@ -45,8 +45,8 @@ struct MassSpringDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [2.5, 2.5, 0, ...]'
-    static constexpr bool has_dynamics_hess_prod = true;  // HVP implemented (zero; linear map)
-    static constexpr bool has_constr_hess_prod   = true;  // no nonlinear constraints (vacuously true)
+    static constexpr bool has_dynamics_hess = true;  // HVP implemented (zero; linear map)
+    static constexpr bool has_constr_hess   = true;  // no nonlinear constraints (vacuously true)
     static constexpr std::array<int, 8> state_box_idx   = {0, 1, 2, 3, 4, 5, 6, 7};
     static constexpr std::array<int, 3> control_box_idx = {0, 1, 2};
     static constexpr std::array<int, 8> terminal_state_box_idx = {0, 1, 2, 3, 4, 5, 6, 7};
@@ -125,20 +125,23 @@ public:
         return A_ * x + B_ * u;
     }
 
-    void dynamics_jacobian(int, const state_t&, const control_t&,
-                           dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    void dynamics_value_jac(int, const state_t& x, const control_t& u,
+                            state_t& x_next,
+                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
+        x_next = A_ * x + B_ * u;
         df_dx = A_;
         df_du = B_;
     }
 
-    void dynamics_hess_prod(int, const state_t&, const control_t&,
-                            const state_t&, const state_t&, const control_t&,
-                            state_t& hv_x, control_t& hv_u) const
+    void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
+                                 const state_t&, state_t& x_next,
+                                 dyn_df_dx_t& df_dx, dyn_df_du_t& df_du,
+                                 dyn_hess_t& hess) const
     {
         // linear dynamics map: Hessian is zero
-        hv_x.setZero();
-        hv_u.setZero();
+        dynamics_value_jac(k, x, u, x_next, df_dx, df_du);
+        hess.setZero();
     }
 
     // ---------------------------------------------------------------
@@ -149,21 +152,22 @@ public:
         return 0.5 * (x.dot(x) + 2.0 * u.dot(u));
     }
 
-    stage_grad_t stage_cost_gradient(int, const state_t& x, const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, stage_grad_t& g) const
     {
-        stage_grad_t g;
+        value = 0.5 * (x.dot(x) + 2.0 * u.dot(u));
         g.head<nx>() = x;
         g.tail<nu>() = 2.0 * u;
-        return g;
     }
 
-    stage_hess_t stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, stage_grad_t& g,
+                                    stage_hess_t& H) const
     {
-        stage_hess_t H;
+        stage_cost_value_grad(0, x, u, value, g);
         H.setZero();
         H.block(0, 0, nx, nx) = dyn_df_dx_t::Identity();
         H.block(nx, nx, nu, nu) = 2.0 * Eigen::Matrix<double, nu, nu>::Identity();
-        return H;
     }
 
     // ---------------------------------------------------------------
@@ -174,14 +178,18 @@ public:
         return 0.5 * x.dot(x);
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& g) const
     {
-        return x;
+        value = 0.5 * x.dot(x);
+        g = x;
     }
 
-    term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& g, term_hess_t& H) const
     {
-        return term_hess_t::Identity();
+        terminal_cost_value_grad(x, value, g);
+        H = term_hess_t::Identity();
     }
 
     // ---------------------------------------------------------------

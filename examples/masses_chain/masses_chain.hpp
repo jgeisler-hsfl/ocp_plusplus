@@ -29,10 +29,10 @@
 //   * Dynamics Jacobian.  The acados reference uses the CasADi analytic
 //     Jacobian; ocp++ uses central finite differences (h = 1e-6) of the
 //     CasADi residual.  The QP Hessian model is identical on both sides:
-//     Gauss-Newton, cost Hessian only (has_dynamics_hess_prod = false;
+//     Gauss-Newton, cost Hessian only (has_dynamics_hess = false;
 //     acados hessian_approx = GAUSS_NEWTON adds no dynamics Hessian term —
 //     see tests/sqp_masses_chain check (E) and
-//     include/ocp/solvers/acados/GN_HESSIAN_PLAN.md).  On this weakly-convex
+//     docs/plans/finished/GN_HESSIAN_PLAN.md).  On this weakly-convex
 //     OCP (control weight 1e-2, nonlinear spring-chain dynamics) the tiny
 //     Jacobian differences are amplified by the ill-conditioned KKT system
 //     into a bounded trajectory difference (|du| up to ~8e-3, |dx| up to
@@ -68,8 +68,8 @@ struct MassesChainDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // GN: cost Hessian only
-    static constexpr bool has_constr_hess_prod = false;    // only (linear) box rows
+    static constexpr bool has_dynamics_hess = false;  // GN: cost Hessian only
+    static constexpr bool has_constr_hess = false;    // only (linear) box rows
 
     // py of mass i lives at state index 6*(i-1) + 1  ->  {1, 7, 13, 19}
     static constexpr std::array<int, 4> state_box_idx = {1, 7, 13, 19};
@@ -135,7 +135,7 @@ struct MassesChainOde
 
     // No hess_prod: a nonlinear ODE whose composed-Hessian HVP the phase-1
     // wrapper does not supply (the solver therefore uses the Gauss-Newton /
-    // cost-only QP Hessian via has_dynamics_hess_prod = false).
+    // cost-only QP Hessian via has_dynamics_hess = false).
 };
 
 // =========================================================================
@@ -194,27 +194,30 @@ public:
         return 0.5 * (10.0 * dx.dot(dx) + 1.0e-2 * u.dot(u));
     }
 
-    stage_grad_t stage_cost_gradient(int /*k*/, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int /*k*/, const state_t& x,
+                               const control_t& u, double& value,
+                               stage_grad_t& grad) const
     {
-        stage_grad_t g;
-        g.head<MassesChainDims::nx>() = 10.0 * (x - x_ref_);
-        g.tail<MassesChainDims::nu>() = 1.0e-2 * u;
-        return g;
+        value = 0.5 * (10.0 * (x - x_ref_).squaredNorm()
+                       + 1.0e-2 * u.squaredNorm());
+        grad.head<MassesChainDims::nx>() = 10.0 * (x - x_ref_);
+        grad.tail<MassesChainDims::nu>() = 1.0e-2 * u;
     }
 
-    stage_hess_t stage_cost_hessian(int /*k*/, const state_t& /*x*/,
-                                    const control_t& /*u*/) const
+    void stage_cost_value_grad_hess(int /*k*/, const state_t& x,
+                                    const control_t& u, double& value,
+                                    stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {
-        stage_hess_t H = stage_hess_t::Zero();
-        H.block(0, 0, MassesChainDims::nx, MassesChainDims::nx) =
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess.block(0, 0, MassesChainDims::nx, MassesChainDims::nx) =
             10.0 * Eigen::Matrix<double, MassesChainDims::nx,
                                  MassesChainDims::nx>::Identity();
-        H.block(MassesChainDims::nx, MassesChainDims::nx,
-                MassesChainDims::nu, MassesChainDims::nu) =
+        hess.block(MassesChainDims::nx, MassesChainDims::nx,
+                   MassesChainDims::nu, MassesChainDims::nu) =
             1.0e-2 * Eigen::Matrix<double, MassesChainDims::nu,
                                    MassesChainDims::nu>::Identity();
-        return H;
     }
 
     // ---------------------------------------------------------------
@@ -226,14 +229,19 @@ public:
         return 0.5 * 10.0 * dx.dot(dx);
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& grad) const
     {
-        return 10.0 * (x - x_ref_);
+        value = 0.5 * 10.0 * (x - x_ref_).squaredNorm();
+        grad = 10.0 * (x - x_ref_);
     }
 
-    term_hess_t terminal_cost_hessian(const state_t& /*x*/) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& grad,
+                                       term_hess_t& hess) const
     {
-        return 10.0 * term_hess_t::Identity();
+        terminal_cost_value_grad(x, value, grad);
+        hess = 10.0 * term_hess_t::Identity();
     }
 
     // ---------------------------------------------------------------

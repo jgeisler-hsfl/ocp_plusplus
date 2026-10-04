@@ -89,8 +89,10 @@ int main()
     x << 0.7, -0.2;
     u << 0.3;
 
-    const auto g = problem.stage_cost_gradient(k, x, u);
-    const auto H = problem.stage_cost_hessian(k, x, u);
+    DoubleIntegrator::stage_grad_t g;
+    DoubleIntegrator::stage_hess_t H;
+    double lcost = 0.0;
+    problem.stage_cost_value_grad_hess(k, x, u, lcost, g, H);
 
     // finite-difference gradient: variables = (q, v, a)
     double fd[3];
@@ -114,14 +116,17 @@ int main()
     check_close("Hess va", H(1, 2), 0.0, 1e-8);
 
     // terminal cost gradient
-    const auto gt = problem.terminal_cost_gradient(x);
+    DoubleIntegrator::term_grad_t gt;
+    double tval = 0.0;
+    problem.terminal_cost_value_grad(x, tval, gt);
     check_close("term grad q", gt(0), 2.0 * problem.wf_ * x(0), 1e-10);
 
     // ---- dynamics Jacobian vs finite differences ----------------------
     {
         DoubleIntegrator::dyn_df_dx_t A;
         DoubleIntegrator::dyn_df_du_t B;
-        problem.dynamics_jacobian(k, x, u, A, B);
+        DoubleIntegrator::state_t x_next;
+        problem.dynamics_value_jac(k, x, u, x_next, A, B);
 
         // verify A(0,1) = Ts against a central finite difference in x(1)
         DoubleIntegrator::state_t xf = x;
@@ -140,12 +145,13 @@ int main()
 
     // ---- constraint evaluations ---------------------------------------
     {
-        auto g_ineq = problem.stage_inequality_constr(k, x, u);
+        auto g_ineq = problem.stage_inequality_value(k, x, u);
         check_close("ineq value", g_ineq(0), x(1) - problem.v_max_);
 
         DoubleIntegrator::ineq_dg_dx_t Gx;
         DoubleIntegrator::ineq_dg_du_t Gu;
-        problem.stage_inequality_constr_jacobian(k, x, u, Gx, Gu);
+        DoubleIntegrator::ineq_t g_val;
+        problem.stage_inequality_value_jac(k, x, u, g_val, Gx, Gu);
         check_close("ineq jac Gx(0,1)", Gx(0, 1), 1.0, 1e-12);
 
         check_close("ineq soft penalty",
@@ -172,7 +178,7 @@ int main()
         check_close("control box hi(0)", cb.hi(0), 1.0, 1e-12);
         check_close("term state box hi(1)", tsb.hi(1), 10.0, 1e-12);
 
-        const auto et = problem.terminal_equality_constr(sol.x[N]);
+        const auto et = problem.terminal_equality_value(sol.x[N]);
         check_close("term eq value", et(0), sol.x[N](0) + sol.x[N](1) - 1.0, 1e-12);
     }
 
