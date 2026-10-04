@@ -944,9 +944,9 @@ private:
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
         if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(k, x, u);
+            gv = problem.stage_inequality_value(k, x, u);
         if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(k, x, u);
+            ev = problem.stage_equality_value(k, x, u);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(k);
@@ -1072,9 +1072,9 @@ private:
         typename P::lin_term_t lv{};
         typename P::term_linear_t lin_spec{};
         if constexpr (D::ng_t > 0)
-            gv = problem.terminal_inequality_constr(x);
+            gv = problem.terminal_inequality_value(x);
         if constexpr (D::ne_t > 0)
-            ev = problem.terminal_equality_constr(x);
+            ev = problem.terminal_equality_value(x);
         if constexpr (D::nl_t > 0)
         {
             lin_spec = problem.terminal_linear_constr();
@@ -1168,9 +1168,9 @@ private:
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
         if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(k, x, u);
+            gv = problem.stage_inequality_value(k, x, u);
         if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(k, x, u);
+            ev = problem.stage_equality_value(k, x, u);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(k);
@@ -1281,9 +1281,9 @@ private:
         typename P::lin_term_t lv{};
         typename P::term_linear_t lin_spec{};
         if constexpr (D::ng_t > 0)
-            gv = problem.terminal_inequality_constr(x);
+            gv = problem.terminal_inequality_value(x);
         if constexpr (D::ne_t > 0)
-            ev = problem.terminal_equality_constr(x);
+            ev = problem.terminal_equality_value(x);
         if constexpr (D::nl_t > 0)
         {
             lin_spec = problem.terminal_linear_constr();
@@ -1634,9 +1634,9 @@ private:
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
         if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(k, x, u);
+            gv = problem.stage_inequality_value(k, x, u);
         if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(k, x, u);
+            ev = problem.stage_equality_value(k, x, u);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(k);
@@ -1741,9 +1741,9 @@ private:
         typename P::lin_term_t lv{};
         typename P::term_linear_t lin_spec{};
         if constexpr (D::ng_t > 0)
-            gv = problem.terminal_inequality_constr(x);
+            gv = problem.terminal_inequality_value(x);
         if constexpr (D::ne_t > 0)
-            ev = problem.terminal_equality_constr(x);
+            ev = problem.terminal_equality_value(x);
         if constexpr (D::nl_t > 0)
         {
             lin_spec = problem.terminal_linear_constr();

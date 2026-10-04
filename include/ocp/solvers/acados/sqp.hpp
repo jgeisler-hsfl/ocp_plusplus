@@ -105,22 +105,27 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
 
-        auto grad = problem.stage_cost_gradient(k, x, u);
+        double lcost;
+        typename P::stage_grad_t grad;
+        problem.stage_cost_value_grad(k, x, u, lcost, grad);
 
+        typename P::state_t x_next;
         typename P::dyn_df_dx_t df_dx;
         typename P::dyn_df_du_t df_du;
-        problem.dynamics_jacobian(k, x, u, df_dx, df_du);
+        problem.dynamics_value_jac(k, x, u, x_next, df_dx, df_du);
 
         // constraint Jacobians (computed once, reused for u and x parts)
         typename P::ineq_dg_dx_t g_dx;
         typename P::ineq_dg_du_t g_du;
+        typename P::ineq_t g_val;
         if constexpr (D::ng > 0)
-            problem.stage_inequality_constr_jacobian(k, x, u, g_dx, g_du);
+            problem.stage_inequality_value_jac(k, x, u, g_val, g_dx, g_du);
 
         typename P::eq_de_dx_t e_dx;
         typename P::eq_de_du_t e_du;
+        typename P::eq_t e_val;
         if constexpr (D::ne > 0)
-            problem.stage_equality_constr_jacobian(k, x, u, e_dx, e_du);
+            problem.stage_equality_value_jac(k, x, u, e_val, e_dx, e_du);
 
         // ---- u-part: dL/du_k ----
         if constexpr (D::nu > 0)
@@ -191,20 +196,24 @@ NlpResiduals compute_nlp_residuals(const P& problem,
     if constexpr (D::nx > 0)
     {
         const auto& xN = sol.x[N];
-        Eigen::Matrix<S, D::nx, 1> adj_x =
-            problem.terminal_cost_gradient(xN);
+        double lcost_t;
+        typename P::term_grad_t tgrad;
+        problem.terminal_cost_value_grad(xN, lcost_t, tgrad);
+        Eigen::Matrix<S, D::nx, 1> adj_x = tgrad;
         adj_x += sol.lambda_dyn[N - 1];
 
         if constexpr (D::ng_t > 0)
         {
+            typename P::ineq_term_t g_val;
             typename P::ineq_term_dg_dx_t g_dx;
-            problem.terminal_inequality_constr_jacobian(xN, g_dx);
+            problem.terminal_inequality_value_jac(xN, g_val, g_dx);
             adj_x += g_dx.transpose() * sol.lambda_ineq_term;
         }
         if constexpr (D::ne_t > 0)
         {
+            typename P::eq_term_t e_val;
             typename P::eq_term_de_dx_t e_dx;
-            problem.terminal_equality_constr_jacobian(xN, e_dx);
+            problem.terminal_equality_value_jac(xN, e_val, e_dx);
             adj_x += e_dx.transpose() * sol.lambda_eq_term;
         }
         if constexpr (D::nl_t > 0)
@@ -266,7 +275,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 
         if constexpr (D::ng > 0)
         {
-            const auto g = problem.stage_inequality_constr(k, x, u);
+            const auto g = problem.stage_inequality_value(k, x, u);
             for (int j = 0; j < D::ng; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -280,7 +289,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         }
         if constexpr (D::ne > 0)
         {
-            const auto e = problem.stage_equality_constr(k, x, u);
+            const auto e = problem.stage_equality_value(k, x, u);
             for (int j = 0; j < D::ne; ++j)
             {
                 const int r = lay.row_off(detail::g_eq) + j;
@@ -379,7 +388,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         };
         if constexpr (D::ng_t > 0)
         {
-            const auto g = problem.terminal_inequality_constr(xN);
+            const auto g = problem.terminal_inequality_value(xN);
             for (int j = 0; j < D::ng_t; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -392,7 +401,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         }
         if constexpr (D::ne_t > 0)
         {
-            const auto e = problem.terminal_equality_constr(xN);
+            const auto e = problem.terminal_equality_value(xN);
             for (int j = 0; j < D::ne_t; ++j)
             {
                 const int r = lay.row_off(detail::g_eq) + j;
@@ -548,7 +557,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         // ineq (one-sided: hi side only, hi = 0)
         if constexpr (D::ng > 0)
         {
-            const auto g = problem.stage_inequality_constr(k, x, u);
+            const auto g = problem.stage_inequality_value(k, x, u);
             for (int j = 0; j < D::ng; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -646,7 +655,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 
         if constexpr (D::ng_t > 0)
         {
-            const auto g = problem.terminal_inequality_constr(xN);
+            const auto g = problem.terminal_inequality_value(xN);
             for (int j = 0; j < D::ng_t; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -716,11 +725,11 @@ struct SqpOptions
     double tol_stat = 1e-8, tol_eq = 1e-8, tol_ineq = 1e-8, tol_comp = 1e-8;
     double tol_min_step_norm = 1e-12;
     double tol_unbounded = -1e10;
-    // Runtime gate for the multiplier-weighted HVP terms in the QP Hessian
-    // (dynamics HVP when has_dynamics_hess_prod, constraint HVPs when
-    // has_constr_hess_prod); mirrors acados' per-iteration `exact_hess` /
-    // `compute_hess` gate. When false the QP Hessian is the pure cost
-    // Hessian (Gauss-Newton), regardless of the Dims flags.
+    // Runtime gate for the multiplier-weighted Hessian terms in the QP
+    // Hessian (dynamics Hessian when has_dynamics_hess, constraint
+    // Hessians when has_constr_hess); mirrors acados' per-iteration
+    // `exact_hess` / `compute_hess` gate. When false the QP Hessian is
+    // the pure cost Hessian (Gauss-Newton), regardless of the Dims flags.
     bool compute_hess = true;
     double levenberg_marquardt = 0.0;
     bool with_adaptive_lm = false;        // 3g: adaptive LM (gates the mu schedule)
@@ -1742,9 +1751,9 @@ private:
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
         if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(k, x_trial, u_trial);
+            gv = problem.stage_inequality_value(k, x_trial, u_trial);
         if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(k, x_trial, u_trial);
+            ev = problem.stage_equality_value(k, x_trial, u_trial);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(k);
@@ -1795,9 +1804,9 @@ private:
         typename P::lin_term_t lv{};
         typename P::term_linear_t lin_spec{};
         if constexpr (D::ng_t > 0)
-            gv = problem.terminal_inequality_constr(x_trial);
+            gv = problem.terminal_inequality_value(x_trial);
         if constexpr (D::ne_t > 0)
-            ev = problem.terminal_equality_constr(x_trial);
+            ev = problem.terminal_equality_value(x_trial);
         if constexpr (D::nl_t > 0)
         {
             lin_spec = problem.terminal_linear_constr();
@@ -1832,138 +1841,45 @@ private:
     }
 
     // ---------------------------------------------------------------
-    //  HVP matrix builders (nx+nu unit-vector calls, plan sec. 1.5)
-    // ---------------------------------------------------------------
-
-    /// (u;x)-layout matrix M with M v = dynamics HVP(w, v_x, v_u).
-    Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>
-    build_dyn_hvp(int k, const P& problem, const Solution<P, NH>& sol) const
-    {
-        using Mat = Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>;
-        Mat mat;
-        mat.setZero();
-        const auto& x = sol.x[k];
-        const auto& u = sol.u[k];
-        const auto& w = sol.lambda_dyn[k];
-        for (int i = 0; i < D::nu + D::nx; ++i)
-        {
-            typename P::state_t v_x;
-            typename P::control_t v_u;
-            v_x.setZero();
-            v_u.setZero();
-            if (i < D::nu)
-            {
-                v_u(i) = 1;
-            }
-            else
-            {
-                v_x(i - D::nu) = 1;
-            }
-            typename P::state_t hv_x;
-            typename P::control_t hv_u;
-            problem.dynamics_hess_prod(k, x, u, w, v_x, v_u, hv_x, hv_u);
-            mat.col(i).head(D::nu) = hv_u;
-            mat.col(i).tail(D::nx) = hv_x;
-        }
-        return mat;
-    }
-
-    /// (u;x)-layout matrix M with M v = stage-inequality HVP.
-    Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>
-    build_ineq_hvp(int k, const P& problem, const Solution<P, NH>& sol) const
-    {
-        using Mat = Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>;
-        Mat mat;
-        mat.setZero();
-        if constexpr (D::ng > 0)
-        {
-            const auto& x = sol.x[k];
-            const auto& u = sol.u[k];
-            const auto& w = sol.lambda_ineq_stage[k];
-            for (int i = 0; i < D::nu + D::nx; ++i)
-            {
-                typename P::state_t v_x;
-                typename P::control_t v_u;
-                v_x.setZero();
-                v_u.setZero();
-                if (i < D::nu)
-                {
-                    v_u(i) = 1;
-                }
-                else
-                {
-                    v_x(i - D::nu) = 1;
-                }
-                typename P::state_t hv_x;
-                typename P::control_t hv_u;
-                problem.stage_inequality_constr_hess_prod(
-                    k, x, u, w, v_x, v_u, hv_x, hv_u);
-                mat.col(i).head(D::nu) = hv_u;
-                mat.col(i).tail(D::nx) = hv_x;
-            }
-        }
-        return mat;
-    }
-
-    /// (u;x)-layout matrix M with M v = stage-equality HVP.
-    Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>
-    build_eq_hvp(int k, const P& problem, const Solution<P, NH>& sol) const
-    {
-        using Mat = Eigen::Matrix<S, D::nu + D::nx, D::nu + D::nx>;
-        Mat mat;
-        mat.setZero();
-        if constexpr (D::ne > 0)
-        {
-            const auto& x = sol.x[k];
-            const auto& u = sol.u[k];
-            const auto& w = sol.lambda_eq_stage[k];
-            for (int i = 0; i < D::nu + D::nx; ++i)
-            {
-                typename P::state_t v_x;
-                typename P::control_t v_u;
-                v_x.setZero();
-                v_u.setZero();
-                if (i < D::nu)
-                {
-                    v_u(i) = 1;
-                }
-                else
-                {
-                    v_x(i - D::nu) = 1;
-                }
-                typename P::state_t hv_x;
-                typename P::control_t hv_u;
-                problem.stage_equality_constr_hess_prod(
-                    k, x, u, w, v_x, v_u, hv_x, hv_u);
-                mat.col(i).head(D::nu) = hv_u;
-                mat.col(i).tail(D::nx) = hv_x;
-            }
-        }
-        return mat;
-    }
-
-    /// (nx)-layout matrix M with M v = terminal constraint HVP.
-    template <class F>
-    Eigen::Matrix<S, D::nx, D::nx> build_term_hvp(const F& call) const
-    {
-        using Mat = Eigen::Matrix<S, D::nx, D::nx>;
-        Mat mat;
-        mat.setZero();
-        for (int i = 0; i < D::nx; ++i)
-        {
-            typename P::state_t v;
-            v.setZero();
-            v(i) = 1;
-            typename P::state_t hv;
-            call(v, hv);
-            mat.col(i) = hv;
-        }
-        return mat;
-    }
-
-    // ---------------------------------------------------------------
     //  Per-stage assembly helpers
     // ---------------------------------------------------------------
+
+    // stage nonlinear-constraint evaluations at one iterate (value +
+    // Jacobians), filled by a single fused problem call
+    struct StageConstr
+    {
+        typename P::ineq_t g{};
+        typename P::eq_t e{};
+        typename P::ineq_dg_dx_t g_dx{};
+        typename P::ineq_dg_du_t g_du{};
+        typename P::eq_de_dx_t e_dx{};
+        typename P::eq_de_du_t e_du{};
+    };
+
+    // terminal nonlinear-constraint evaluations (state only)
+    struct TermConstr
+    {
+        typename P::ineq_term_t g{};
+        typename P::eq_term_t e{};
+        typename P::ineq_term_dg_dx_t g_dx{};
+        typename P::eq_term_de_dx_t e_dx{};
+    };
+
+    // [x;u]-layout matrix into the QP (u;x) layout, element-wise
+    template <class HessT>
+    void add_permuted_hess(HessT& hess, const typename P::constr_hess_t& M,
+                           double sign)
+    {
+        for (int i = 0; i < D::nu + D::nx; ++i)
+        {
+            for (int j = 0; j < D::nu + D::nx; ++j)
+            {
+                const int pi = (i < D::nu) ? D::nx + i : i - D::nu;
+                const int pj = (j < D::nu) ? D::nx + j : j - D::nu;
+                hess(i, j) += sign * static_cast<S>(M(pi, pj));
+            }
+        }
+    }
 
     Status assemble_first(const P& problem, const Solution<P, NH>& sol)
     {
@@ -1972,9 +1888,74 @@ private:
         auto& st = qp_in_.first;
         constexpr int nux = D::nu + D::nx;
 
-        // hess: permuted cost Hessian + HVP terms + slack diagonal
+        // cost: fused value + grad + hess at the working iterate
+        double lcost;
+        typename P::stage_grad_t g_cost;
+        typename P::stage_hess_t H;
+        problem.stage_cost_value_grad_hess(0, x, u, lcost, g_cost, H);
+
+        // dynamics: fused value + Jacobian (+ contracted Hessian)
+        typename P::state_t f;
+        typename P::dyn_df_dx_t A;
+        typename P::dyn_df_du_t B;
+        typename P::dyn_hess_t M_dyn;
+        if constexpr (P::has_dynamics_hess)
         {
-            const auto H = problem.stage_cost_hessian(0, x, u);
+            if (opts_.compute_hess)
+                problem.dynamics_value_jac_hess(0, x, u, sol.lambda_dyn[0],
+                                                f, A, B, M_dyn);
+            else
+                problem.dynamics_value_jac(0, x, u, f, A, B);
+        }
+        else
+        {
+            problem.dynamics_value_jac(0, x, u, f, A, B);
+        }
+
+        // stage nonlinear constraints: fused value + Jacobians
+        // (+ contracted Hessians)
+        StageConstr c;
+        typename P::constr_hess_t M_ineq;
+        typename P::constr_hess_t M_eq;
+        if constexpr (D::ng > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.stage_inequality_value_jac_hess(
+                        0, x, u, sol.lambda_ineq_stage[0],
+                        c.g, c.g_dx, c.g_du, M_ineq);
+                else
+                    problem.stage_inequality_value_jac(0, x, u, c.g, c.g_dx,
+                                                       c.g_du);
+            }
+            else
+            {
+                problem.stage_inequality_value_jac(0, x, u, c.g, c.g_dx,
+                                                   c.g_du);
+            }
+        }
+        if constexpr (D::ne > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.stage_equality_value_jac_hess(
+                        0, x, u, sol.lambda_eq_stage[0],
+                        c.e, c.e_dx, c.e_du, M_eq);
+                else
+                    problem.stage_equality_value_jac(0, x, u, c.e, c.e_dx,
+                                                     c.e_du);
+            }
+            else
+            {
+                problem.stage_equality_value_jac(0, x, u, c.e, c.e_dx,
+                                                 c.e_du);
+            }
+        }
+
+        // hess: permuted cost Hessian + contracted Hessians + slack diagonal
+        {
             // element-wise: block extraction from the small local H trips
             // a GCC 13 -Warray-bounds false positive on small matrices
             for (int i = 0; i < nux; ++i)
@@ -1989,41 +1970,14 @@ private:
 
             if (opts_.compute_hess)
             {
-                if constexpr (P::has_dynamics_hess_prod)
-                {
-                    const auto M = build_dyn_hvp(0, problem, sol);
-                    for (int i = 0; i < nux; ++i)
-                    {
-                        for (int j = 0; j < nux; ++j)
-                        {
-                            st.hess(i, j) -= M(i, j);
-                        }
-                    }
-                }
-                if constexpr (P::has_constr_hess_prod)
+                if constexpr (P::has_dynamics_hess)
+                    add_permuted_hess(st.hess, M_dyn, -1.0);
+                if constexpr (P::has_constr_hess)
                 {
                     if constexpr (D::ng > 0)
-                    {
-                        const auto M = build_ineq_hvp(0, problem, sol);
-                        for (int i = 0; i < nux; ++i)
-                        {
-                            for (int j = 0; j < nux; ++j)
-                            {
-                                st.hess(i, j) += M(i, j);
-                            }
-                        }
-                    }
+                        add_permuted_hess(st.hess, M_ineq, +1.0);
                     if constexpr (D::ne > 0)
-                    {
-                        const auto M = build_eq_hvp(0, problem, sol);
-                        for (int i = 0; i < nux; ++i)
-                        {
-                            for (int j = 0; j < nux; ++j)
-                            {
-                                st.hess(i, j) += M(i, j);
-                            }
-                        }
-                    }
+                        add_permuted_hess(st.hess, M_eq, +1.0);
                 }
             }
             fill_slack_diag(st.hess, problem, /*is_first=*/true, /*k=*/0);
@@ -2031,18 +1985,14 @@ private:
 
         // grad: [g_u; g_x], slack part 0
         {
-            const auto g = problem.stage_cost_gradient(0, x, u);
             for (int i = 0; i < nux; ++i)
             {
-                st.grad(i) = g((i < D::nu) ? D::nx + i : i - D::nu);
+                st.grad(i) = g_cost((i < D::nu) ? D::nx + i : i - D::nu);
             }
         }
 
         // BA = [B | A], b = f(x_0, u_0) - x_1
         {
-            typename P::dyn_df_dx_t A;
-            typename P::dyn_df_du_t B;
-            problem.dynamics_jacobian(0, x, u, A, B);
             for (int i = 0; i < D::nx; ++i)
             {
                 for (int j = 0; j < D::nu; ++j)
@@ -2054,15 +2004,14 @@ private:
                     st.BA(i, D::nu + j) = A(i, j);
                 }
             }
-            const auto f = problem.dynamics_next_state(0, x, u);
             for (int i = 0; i < D::nx; ++i)
             {
                 st.b(i) = f(i) - sol.x[1](i);
             }
         }
 
-        fill_dc_first(problem, sol, st);
-        fill_d_mask_first(problem, sol, st);
+        fill_dc_first(problem, sol, st, c);
+        fill_d_mask_first(problem, sol, st, c);
         mask_trivial_zero_rows(D::lay_first, D::nu + D::nx, st);
 
         // degenerate first-stage check (plan sec. 2f.6)
@@ -2084,9 +2033,74 @@ private:
         auto& st = qp_in_.path[k - 1];
         constexpr int nux = D::nu + D::nx;
 
-        // hess
+        // cost: fused value + grad + hess at the working iterate
+        double lcost;
+        typename P::stage_grad_t g_cost;
+        typename P::stage_hess_t H;
+        problem.stage_cost_value_grad_hess(k, x, u, lcost, g_cost, H);
+
+        // dynamics: fused value + Jacobian (+ contracted Hessian)
+        typename P::state_t f;
+        typename P::dyn_df_dx_t A;
+        typename P::dyn_df_du_t B;
+        typename P::dyn_hess_t M_dyn;
+        if constexpr (P::has_dynamics_hess)
         {
-            const auto H = problem.stage_cost_hessian(k, x, u);
+            if (opts_.compute_hess)
+                problem.dynamics_value_jac_hess(k, x, u, sol.lambda_dyn[k],
+                                                f, A, B, M_dyn);
+            else
+                problem.dynamics_value_jac(k, x, u, f, A, B);
+        }
+        else
+        {
+            problem.dynamics_value_jac(k, x, u, f, A, B);
+        }
+
+        // stage nonlinear constraints: fused value + Jacobians
+        // (+ contracted Hessians)
+        StageConstr c;
+        typename P::constr_hess_t M_ineq;
+        typename P::constr_hess_t M_eq;
+        if constexpr (D::ng > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.stage_inequality_value_jac_hess(
+                        k, x, u, sol.lambda_ineq_stage[k],
+                        c.g, c.g_dx, c.g_du, M_ineq);
+                else
+                    problem.stage_inequality_value_jac(k, x, u, c.g, c.g_dx,
+                                                       c.g_du);
+            }
+            else
+            {
+                problem.stage_inequality_value_jac(k, x, u, c.g, c.g_dx,
+                                                   c.g_du);
+            }
+        }
+        if constexpr (D::ne > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.stage_equality_value_jac_hess(
+                        k, x, u, sol.lambda_eq_stage[k],
+                        c.e, c.e_dx, c.e_du, M_eq);
+                else
+                    problem.stage_equality_value_jac(k, x, u, c.e, c.e_dx,
+                                                     c.e_du);
+            }
+            else
+            {
+                problem.stage_equality_value_jac(k, x, u, c.e, c.e_dx,
+                                                 c.e_du);
+            }
+        }
+
+        // hess: permuted cost Hessian + contracted Hessians + slack diagonal
+        {
             for (int i = 0; i < nux; ++i)
             {
                 for (int j = 0; j < nux; ++j)
@@ -2099,41 +2113,14 @@ private:
 
             if (opts_.compute_hess)
             {
-                if constexpr (P::has_dynamics_hess_prod)
-                {
-                    const auto M = build_dyn_hvp(k, problem, sol);
-                    for (int i = 0; i < nux; ++i)
-                    {
-                        for (int j = 0; j < nux; ++j)
-                        {
-                            st.hess(i, j) -= M(i, j);
-                        }
-                    }
-                }
-                if constexpr (P::has_constr_hess_prod)
+                if constexpr (P::has_dynamics_hess)
+                    add_permuted_hess(st.hess, M_dyn, -1.0);
+                if constexpr (P::has_constr_hess)
                 {
                     if constexpr (D::ng > 0)
-                    {
-                        const auto M = build_ineq_hvp(k, problem, sol);
-                        for (int i = 0; i < nux; ++i)
-                        {
-                            for (int j = 0; j < nux; ++j)
-                            {
-                                st.hess(i, j) += M(i, j);
-                            }
-                        }
-                    }
+                        add_permuted_hess(st.hess, M_ineq, +1.0);
                     if constexpr (D::ne > 0)
-                    {
-                        const auto M = build_eq_hvp(k, problem, sol);
-                        for (int i = 0; i < nux; ++i)
-                        {
-                            for (int j = 0; j < nux; ++j)
-                            {
-                                st.hess(i, j) += M(i, j);
-                            }
-                        }
-                    }
+                        add_permuted_hess(st.hess, M_eq, +1.0);
                 }
             }
             fill_slack_diag(st.hess, problem, /*is_first=*/false, k);
@@ -2141,18 +2128,14 @@ private:
 
         // grad: [g_u; g_x], slack part 0
         {
-            const auto g = problem.stage_cost_gradient(k, x, u);
             for (int i = 0; i < nux; ++i)
             {
-                st.grad(i) = g((i < D::nu) ? D::nx + i : i - D::nu);
+                st.grad(i) = g_cost((i < D::nu) ? D::nx + i : i - D::nu);
             }
         }
 
         // BA = [B | A], b = f(x_k, u_k) - x_{k+1}
         {
-            typename P::dyn_df_dx_t A;
-            typename P::dyn_df_du_t B;
-            problem.dynamics_jacobian(k, x, u, A, B);
             for (int i = 0; i < D::nx; ++i)
             {
                 for (int j = 0; j < D::nu; ++j)
@@ -2164,15 +2147,14 @@ private:
                     st.BA(i, D::nu + j) = A(i, j);
                 }
             }
-            const auto f = problem.dynamics_next_state(k, x, u);
             for (int i = 0; i < D::nx; ++i)
             {
                 st.b(i) = f(i) - sol.x[k + 1](i);
             }
         }
 
-        fill_dc_path(problem, sol, k, st);
-        fill_d_mask_path(problem, sol, k, st);
+        fill_dc_path(problem, sol, k, st, c);
+        fill_d_mask_path(problem, sol, k, st, c);
         mask_trivial_zero_rows(D::lay_path, D::nu + D::nx, st);
     }
 
@@ -2183,10 +2165,51 @@ private:
         auto& st = qp_in_.term;
         constexpr int nx = D::nx;
 
-        // hess: terminal cost Hessian + terminal constraint HVPs + slack
+        // terminal cost: fused value + grad + hess
+        double tcost;
+        typename P::term_grad_t g_term;
+        typename P::term_hess_t Ht;
+        problem.terminal_cost_value_grad_hess(x, tcost, g_term, Ht);
+
+        // terminal nonlinear constraints: fused value + Jacobian
+        // (+ contracted Hessian)
+        TermConstr tc;
+        typename P::term_constr_hess_t M_ineq;
+        typename P::term_constr_hess_t M_eq;
+        if constexpr (D::ng_t > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.terminal_inequality_value_jac_hess(
+                        x, sol.lambda_ineq_term, tc.g, tc.g_dx, M_ineq);
+                else
+                    problem.terminal_inequality_value_jac(x, tc.g, tc.g_dx);
+            }
+            else
+            {
+                problem.terminal_inequality_value_jac(x, tc.g, tc.g_dx);
+            }
+        }
+        if constexpr (D::ne_t > 0)
+        {
+            if constexpr (P::has_constr_hess)
+            {
+                if (opts_.compute_hess)
+                    problem.terminal_equality_value_jac_hess(
+                        x, sol.lambda_eq_term, tc.e, tc.e_dx, M_eq);
+                else
+                    problem.terminal_equality_value_jac(x, tc.e, tc.e_dx);
+            }
+            else
+            {
+                problem.terminal_equality_value_jac(x, tc.e, tc.e_dx);
+            }
+        }
+
+        // hess: terminal cost Hessian + contracted Hessians + slack
         // (state block only; the slack diagonal is filled separately)
         {
-            const auto Ht = problem.terminal_cost_hessian(x);
             for (int i = 0; i < nx; ++i)
             {
                 for (int j = 0; j < nx; ++j)
@@ -2196,35 +2219,27 @@ private:
             }
             if (opts_.compute_hess)
             {
-                if constexpr (P::has_constr_hess_prod)
+                if constexpr (P::has_constr_hess)
                 {
+                    // terminal constraint Hessians are state-only (nx x nx)
+                    // and match the QP terminal layout; no permutation
                     if constexpr (D::ng_t > 0)
                     {
-                        const auto& w = sol.lambda_ineq_term;
-                        auto mat = build_term_hvp([&](const auto& v, auto& hv) {
-                            problem.terminal_inequality_constr_hess_prod(
-                                x, w, v, hv);
-                        });
                         for (int i = 0; i < nx; ++i)
                         {
                             for (int j = 0; j < nx; ++j)
                             {
-                                st.hess(i, j) += mat(i, j);
+                                st.hess(i, j) += M_ineq(i, j);
                             }
                         }
                     }
                     if constexpr (D::ne_t > 0)
                     {
-                        const auto& w = sol.lambda_eq_term;
-                        auto mat = build_term_hvp([&](const auto& v, auto& hv) {
-                            problem.terminal_equality_constr_hess_prod(
-                                x, w, v, hv);
-                        });
                         for (int i = 0; i < nx; ++i)
                         {
                             for (int j = 0; j < nx; ++j)
                             {
-                                st.hess(i, j) += mat(i, j);
+                                st.hess(i, j) += M_eq(i, j);
                             }
                         }
                     }
@@ -2235,15 +2250,14 @@ private:
 
         // grad: [g_x], slack part 0
         {
-            const auto gt = problem.terminal_cost_gradient(x);
             for (int i = 0; i < nx; ++i)
             {
-                st.grad(i) = gt(i);
+                st.grad(i) = g_term(i);
             }
         }
 
-        fill_dc_term(problem, sol, st);
-        fill_d_mask_term(problem, sol, st);
+        fill_dc_term(problem, sol, st, tc);
+        fill_d_mask_term(problem, sol, st, tc);
         mask_trivial_zero_rows(D::lay_term, D::nx, st);
     }
 
@@ -2252,10 +2266,9 @@ private:
     // ---------------------------------------------------------------
 
     template <class StT>
-    void fill_dc_first(const P& problem, const Solution<P, NH>& sol, StT& st)
+    void fill_dc_first(const P& problem, const Solution<P, NH>&, StT& st,
+                       const StageConstr& c)
     {
-        const auto& x = sol.x[0];
-        const auto& u = sol.u[0];
         const auto& lay = D::lay_first;
 
         // pin rows: unit vector at the pinned x_0 variable
@@ -2312,9 +2325,8 @@ private:
         // ineq (Jacobian [d/du | d/dx]; hi-side slack column -1)
         if constexpr (D::ng > 0)
         {
-            typename P::ineq_dg_dx_t g_dx;
-            typename P::ineq_dg_du_t g_du;
-            problem.stage_inequality_constr_jacobian(0, x, u, g_dx, g_du);
+            const auto& g_dx = c.g_dx;
+            const auto& g_du = c.g_du;
             for (int j = 0; j < D::ng; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -2337,9 +2349,8 @@ private:
         // eq (lo slack column +1, hi slack column -1)
         if constexpr (D::ne > 0)
         {
-            typename P::eq_de_dx_t e_dx;
-            typename P::eq_de_du_t e_du;
-            problem.stage_equality_constr_jacobian(0, x, u, e_dx, e_du);
+            const auto& e_dx = c.e_dx;
+            const auto& e_du = c.e_du;
             for (int j = 0; j < D::ne; ++j)
             {
                 const int r = lay.row_off(detail::g_eq) + j;
@@ -2394,11 +2405,9 @@ private:
     }
 
     template <class StT>
-    void fill_dc_path(const P& problem, const Solution<P, NH>& sol, int k,
-                      StT& st)
+    void fill_dc_path(const P& problem, const Solution<P, NH>&, int k,
+                      StT& st, const StageConstr& c)
     {
-        const auto& x = sol.x[k];
-        const auto& u = sol.u[k];
         const auto& lay = D::lay_path;
 
         if constexpr (D::nbx > 0)
@@ -2441,9 +2450,8 @@ private:
         }
         if constexpr (D::ng > 0)
         {
-            typename P::ineq_dg_dx_t g_dx;
-            typename P::ineq_dg_du_t g_du;
-            problem.stage_inequality_constr_jacobian(k, x, u, g_dx, g_du);
+            const auto& g_dx = c.g_dx;
+            const auto& g_du = c.g_du;
             for (int j = 0; j < D::ng; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -2464,9 +2472,8 @@ private:
         }
         if constexpr (D::ne > 0)
         {
-            typename P::eq_de_dx_t e_dx;
-            typename P::eq_de_du_t e_du;
-            problem.stage_equality_constr_jacobian(k, x, u, e_dx, e_du);
+            const auto& e_dx = c.e_dx;
+            const auto& e_du = c.e_du;
             for (int j = 0; j < D::ne; ++j)
             {
                 const int r = lay.row_off(detail::g_eq) + j;
@@ -2519,10 +2526,9 @@ private:
     }
 
     template <class StT>
-    void fill_dc_term(const P& problem, const Solution<P, NH>& sol, StT& st)
+    void fill_dc_term(const P& problem, const Solution<P, NH>&, StT& st,
+                      const TermConstr& tc)
     {
-        const int N = sol.N;
-        const auto& x = sol.x[N];
         const auto& lay = D::lay_term;
 
         if constexpr (D::nbx_t > 0)
@@ -2546,8 +2552,7 @@ private:
         }
         if constexpr (D::ng_t > 0)
         {
-            typename P::ineq_term_dg_dx_t g_dx;
-            problem.terminal_inequality_constr_jacobian(x, g_dx);
+            const auto& g_dx = tc.g_dx;
             for (int j = 0; j < D::ng_t; ++j)
             {
                 const int r = lay.row_off(detail::g_ineq) + j;
@@ -2564,8 +2569,7 @@ private:
         }
         if constexpr (D::ne_t > 0)
         {
-            typename P::eq_term_de_dx_t e_dx;
-            problem.terminal_equality_constr_jacobian(x, e_dx);
+            const auto& e_dx = tc.e_dx;
             for (int j = 0; j < D::ne_t; ++j)
             {
                 const int r = lay.row_off(detail::g_eq) + j;
@@ -2615,21 +2619,17 @@ private:
 
     template <class StageT>
     void fill_d_mask_first(const P& problem, const Solution<P, NH>& sol,
-                           StageT& st)
+                           StageT& st, const StageConstr& c)
     {
         const auto& x = sol.x[0];
         const auto& u = sol.u[0];
         const auto& lay = D::lay_first;
         constexpr int nrow = D::nrow_first;
 
-        typename P::ineq_t gv{};
-        typename P::eq_t ev{};
+        const auto& gv = c.g;
+        const auto& ev = c.e;
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
-        if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(0, x, u);
-        if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(0, x, u);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(0);
@@ -2730,22 +2730,18 @@ private:
     }
 
     template <class StageT>
-    void fill_d_mask_path(const P& problem, const Solution<P, NH>& sol,
-                          int k, StageT& st)
+    void fill_d_mask_path(const P& problem, const Solution<P, NH>& sol, int k,
+                          StageT& st, const StageConstr& c)
     {
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
         const auto& lay = D::lay_path;
         constexpr int nrow = D::nrow_path;
 
-        typename P::ineq_t gv{};
-        typename P::eq_t ev{};
+        const auto& gv = c.g;
+        const auto& ev = c.e;
         typename P::lin_t lv{};
         typename P::stage_linear_t lin_spec{};
-        if constexpr (D::ng > 0)
-            gv = problem.stage_inequality_constr(k, x, u);
-        if constexpr (D::ne > 0)
-            ev = problem.stage_equality_constr(k, x, u);
         if constexpr (D::nl > 0)
         {
             lin_spec = problem.stage_linear_constr(k);
@@ -2836,21 +2832,17 @@ private:
 
     template <class StageT>
     void fill_d_mask_term(const P& problem, const Solution<P, NH>& sol,
-                          StageT& st)
+                          StageT& st, const TermConstr& tc)
     {
         const int N = sol.N;
         const auto& x = sol.x[N];
         const auto& lay = D::lay_term;
         constexpr int nrow = D::nrow_term;
 
-        typename P::ineq_term_t gv{};
-        typename P::eq_term_t ev{};
-        typename P::lin_term_t lv{};
+        const auto& gv = tc.g;
+        const auto& ev = tc.e;
+        typename P::lin_t lv{};
         typename P::term_linear_t lin_spec{};
-        if constexpr (D::ng_t > 0)
-            gv = problem.terminal_inequality_constr(x);
-        if constexpr (D::ne_t > 0)
-            ev = problem.terminal_equality_constr(x);
         if constexpr (D::nl_t > 0)
         {
             lin_spec = problem.terminal_linear_constr();
@@ -3168,10 +3160,10 @@ private:
 
         if constexpr (D::ng > 0)
         {
-            const auto g = problem.stage_inequality_constr(0, x, u);
+            typename P::ineq_t g;
             typename P::ineq_dg_dx_t g_dx;
             typename P::ineq_dg_du_t g_du;
-            problem.stage_inequality_constr_jacobian(0, x, u, g_dx, g_du);
+            problem.stage_inequality_value_jac(0, x, u, g, g_dx, g_du);
             for (int j = 0; j < D::ng; ++j)
             {
                 if (static_cast<double>(g(j)) > 0.0)
