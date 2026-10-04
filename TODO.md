@@ -5,7 +5,7 @@
 - [x] reimplement acados style explicit and implicit RK solver/integrator alloc free template class
 - [x] Define a continuous time problem interface using an integrator class to implement the discrete time interface
 - [x] write JSON generator (tools/acados2ocp_pp.py) to write interface definition for new framework from acados_ocp_nlp.json, reusing CasADi generated dynamics, cost and constraint code
-- [DEV] implement GAUSS_NEWTON for dynamics part of the cost function. add switch in dims to activate
+- [x] implement GAUSS_NEWTON for dynamics part of the cost function. add switch in dims to activate
 - [x] write project README
 - [PLANNED] rework problem contract to use nested triplets for value/grad/hess
 - [DEV] cppduals calculation of grad and hess

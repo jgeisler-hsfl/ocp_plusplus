@@ -22,12 +22,20 @@
 //            static constexpr bool fixed_initial_state = true;  // false: x_0 is a
 //                                                               // decision variable
 //                                                               // (e.g. MHE)
-//            static constexpr bool has_dynamics_hess_prod = true; // false: dynamics
-//                                                                 // map is linear, the
-//                                                                 // HVP is not provided
-//            static constexpr bool has_constr_hess_prod   = true; // false: constraint
-//                                                                 // maps are linear,
-//                                                                 // the HVPs not provided
+//            static constexpr bool has_dynamics_hess_prod = true; // true: exact
+//                                                                 // Lagrangian Hessian
+//                                                                 // (acados EXACT);
+//                                                                 // false: Gauss-Newton
+//                                                                 // QP Hessian, dynamics
+//                                                                 // only via the
+//                                                                 // linearized BA (acados
+//                                                                 // GAUSS_NEWTON)
+//            static constexpr bool has_constr_hess_prod   = true; // true: constraint
+//                                                                 // HVPs included;
+//                                                                 // false: constraint
+//                                                                 // Hessian terms
+//                                                                 // omitted (valid if
+//                                                                 // the maps are linear)
 //            static constexpr std::array<int, 1> state_box_idx   = {0};
 //            static constexpr std::array<int, 1> control_box_idx = {0};
 //            static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -356,11 +364,16 @@ struct TerminalLinearSpec
 ///   and of the constraint maps (`*_constr_hess_prod`) support
 ///   exact-Lagrangian Hessian assembly in the solver. Two independent
 ///   flags, `Dims::has_dynamics_hess_prod` and `Dims::has_constr_hess_prod`,
-///   tell the solver whether these methods exist: when a flag is false the
-///   corresponding methods must not be called and the solver omits the
-///   corresponding Hessian term — valid only if the map is linear
-///   (Hessian identically zero), or if the user accepts the resulting
-///   approximate QP Hessian.
+///   tell the solver whether these methods exist. `has_dynamics_hess_prod`
+///   selects the QP Hessian model: `true` assembles the exact Lagrangian
+///   Hessian (cost + dynamics HVP, acados `hessian_approx = EXACT`);
+///   `false` assembles the Gauss-Newton Hessian, where the dynamics enter
+///   the QP only through the linearized BA matrix (acados
+///   `hessian_approx = GAUSS_NEWTON` / historical `ROSEN`). The two models
+///   coincide when the dynamics map is linear (zero dynamics Hessian).
+///   `has_constr_hess_prod` = false omits the constraint HVP terms (valid
+///   exactly when the constraint maps are linear, i.e. their Hessians are
+///   identically zero).
 /// - Extensions anticipated beyond this draft (not yet part of the
 ///   contract): parameter sensitivities, and algebraic (eliminated)
 ///   variables.
@@ -385,14 +398,19 @@ public:
     // decision variable (e.g. MHE) and initial_state() is not available
     static constexpr bool fixed_initial_state = Dims::fixed_initial_state;
 
-    // true: dynamics_hess_prod is implemented and may be used for
-    // exact-Lagrangian Hessian assembly; false: the dynamics map is linear,
-    // do not call the HVP (the dynamics Hessian term is identically zero)
+    // true: dynamics_hess_prod is implemented; the solver assembles the
+    // exact Lagrangian QP Hessian (cost Hessian + multiplier-weighted
+    // dynamics HVP; acados hessian_approx = EXACT). false: the HVP is not
+    // provided; the solver assembles the Gauss-Newton QP Hessian, where the
+    // dynamics enter only through the linearized BA matrix (acados
+    // hessian_approx = GAUSS_NEWTON; the two models coincide for a linear
+    // dynamics map, where the dynamics Hessian term is zero anyway).
     static constexpr bool has_dynamics_hess_prod = Dims::has_dynamics_hess_prod;
 
-    // true: the *_constr_hess_prod methods are implemented and may be used;
-    // false: the constraint maps are linear, do not call the HVPs (the
-    // constraint Hessian terms are identically zero)
+    // true: the *_constr_hess_prod methods are implemented; the solver adds
+    // the multiplier-weighted constraint HVPs to the QP Hessian (EXACT).
+    // false: no constraint HVPs; the constraint Hessian terms are omitted
+    // (identically zero when the constraint maps are linear).
     static constexpr bool has_constr_hess_prod = Dims::has_constr_hess_prod;
 
     // active box-constraint rows: the const index sets select which
