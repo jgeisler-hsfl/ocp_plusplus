@@ -24,7 +24,8 @@
 //   sum_s b[s]    == 1
 // The Radau IIA tableaus additionally satisfy the collocation order
 // conditions sum_j b_j c_j^k == 1/(k+1), k = 0..2*NS-2, and the last-row
-// property A[NS-1][j] == b[j].
+// property A[NS-1][j] == b[j].  The Gauss-Legendre tableau satisfies the
+// collocation order conditions (no L-stability; nodes in (0,1)).
 
 #pragma once
 
@@ -74,6 +75,13 @@ struct RadauIia4Tag
 {
 };
 
+/// Gauss-Legendre collocation, 4 stages (implicit; acados default for the
+/// IRK integrator). Nodes are the mapped GL4 roots in (0,1); the collocation
+/// order conditions hold for 2*ns-1 = 7 (no L-stability, unlike Radau IIA).
+struct GaussLegendre4Tag
+{
+};
+
 // =========================================================================
 //  ButcherTableau
 // =========================================================================
@@ -89,8 +97,8 @@ struct ButcherTableau
 {
     static_assert(false,
         "ocp::ButcherTableau: unsupported (NS, Tag); use K1Tag..K4Tag "
-        "(explicit) or RadauIia2Tag..RadauIia4Tag (Radau IIA) with the "
-        "matching stage count.");
+        "(explicit), RadauIia2Tag..RadauIia4Tag (Radau IIA), or "
+        "GaussLegendre4Tag (GL collocation) with the matching stage count.");
 };
 
 // ---- explicit RK tableaus (acados get_explicit_butcher_tableau) ---------
@@ -183,6 +191,30 @@ struct ButcherTableau<Dims, 4, RadauIia4Tag>
     static constexpr std::array<double, 4> c = { 0.08858795951270420632,
                                                  0.40946686444073465694,
                                                  0.78765946176084700170, 1.0 };
+};
+
+// ---- Gauss-Legendre collocation tableaus (implicit, symmetric) ----------
+
+template <class Dims>
+struct ButcherTableau<Dims, 4, GaussLegendre4Tag>
+{
+    static constexpr std::array<std::array<double, 4>, 4> A = {
+        { { 0.08696371128436348, -0.02660418008499881, 0.01262746268940474,
+            -0.0035551496857956877 },
+          { 0.188118117499868, 0.16303628871563663, -0.027880428602470968,
+            0.0067355005945381775 },
+          { 0.16719192197418847, 0.35395300603374447, 0.1630362887156358,
+            -0.014190694931141057 },
+          { 0.17748257225452213, 0.31344511474187, 0.35267675751627037,
+            0.08696371128436398 } } };
+    static constexpr std::array<double, 4> b = { 0.17392742256872679,
+                                                 0.3260725774312732,
+                                                 0.3260725774312732,
+                                                 0.17392742256872679 };
+    static constexpr std::array<double, 4> c = { 0.06943184420297371,
+                                                 0.33000947820757187,
+                                                 0.6699905217924281,
+                                                 0.9305681557970262 };
 };
 
 }  // namespace ocp

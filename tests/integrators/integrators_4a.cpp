@@ -148,6 +148,24 @@ int run_integrators_4a_tests()
     check_common<4, Dims, ocp::RadauIia4Tag>("RadauIia4");
     check_irk<4, Dims, ocp::RadauIia4Tag>("RadauIia4");
 
+    // Gauss-Legendre collocation (implicit, nodes in (0,1); no L-stability)
+    check_common<4, Dims, ocp::GaussLegendre4Tag>("GaussLegendre4");
+    {
+        using T = ocp::ButcherTableau<Dims, 4, ocp::GaussLegendre4Tag>;
+        for (int k = 0; k <= 2 * 4 - 2; ++k)
+        {
+            double s = 0.0;
+            for (int j = 0; j < 4; ++j)
+            {
+                s += T::b[j] * std::pow(T::c[j], k);
+            }
+            check(std::abs(s - 1.0 / (k + 1)) < 1e-12,
+                  (std::string("GaussLegendre4 order cond k=") +
+                   std::to_string(k)).c_str());
+        }
+        std::printf("GaussLegendre4 (NS=4): order conditions  OK\n");
+    }
+
     // Trait: positive and negative cases
     static_assert(ocp::ode_supports_hess_prod<NonlinearOde, Dims>,
                   "NonlinearOde must expose hess_prod");
