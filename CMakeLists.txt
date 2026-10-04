@@ -245,8 +245,10 @@ add_executable(integrators_unit
                  tests/integrators/rk_multistep_4g.cpp
                  tests/integrators/time_varying_4h.cpp
                  tests/integrators/cstr_4i.cpp)
-target_include_directories(integrators_unit
-                            PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+ target_include_directories(integrators_unit
+                            PRIVATE include examples
+                            ${CMAKE_SOURCE_DIR}/thirdparty/cppduals
+                            ${EIGEN3_INCLUDE_DIR})
 target_compile_options(integrators_unit PRIVATE ${OCP_WARN_FLAGS})
 
 add_executable(sqp_continuous
