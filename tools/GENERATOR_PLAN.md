@@ -1,11 +1,9 @@
-# acados Example Port + MATLAB Generator Plan
+# acados Example Port + JSON Generator Plan
 
-> TODO items: *"write matlab generator to write interface definition for new
-> framework from AcadosOcp matlab object, reusing CasADi generated dynamics,
-> cost and constraint code"* + *"Test more examples from acados repo"*.
->
-> This is the live planning document for the acados→ocp++ porting workflow.
-> It is updated as the work progresses; open questions are in §9.
+> This document is the planning record for the acados→ocp++ porting workflow
+> (archived as of P5; kept for reference and the generator scope matrix).
+> The generator is JSON-driven: it consumes `acados_ocp_nlp.json`, which any
+> acados codegen interface (MATLAB or Python) emits identically.
 
 ## 1. Goal
 
@@ -13,48 +11,39 @@ A repeatable pipeline that turns an acados OCP example into an ocp++ problem
 and proves the ocp++ SQP reproduces the acados solution:
 
 ```
- acados example .m  ──(MATLAB)──►  generated C (model/cost/constr + derivatives)
-                                       + standalone acados main  +  acados_ocp_nlp.json
-                                   │
-                                   ├──► compiled acados main  ──►  xref / uref / cost_ref  (REFERENCE)
-                                   │
-                                   └──► ocp++ wrapper (.hpp) + demo main ──► x / u / cost
-                                                                              │
-                                              compare(x,u,cost)  pass if within tol
+ acados OCP (any interface)  ──►  generated C (model/cost/constr + derivatives)
+                                     + standalone acados main  +  acados_ocp_nlp.json
+                                 │
+                                 ├──► compiled acados main  ──►  xref / uref / cost_ref  (REFERENCE)
+                                 │
+                                 └──► ocp++ wrapper (.hpp) + demo main ──► x / u / cost
+                                                                            │
+                                            compare(x,u,cost)  pass if within tol
 ```
 
 Two deliverables:
 1. **ocp++ wrapper** for a chosen example: a `Problem`/`Ode` that **links the
    generated CasADi C** (values + derivatives), a demo `main`, and a
    comparison against the compiled acados main.
-2. **The generator**: a MATLAB function `acados2ocp_pp(ocp)` (the `acados2ocp_pp`
-   hook from the roadmap) that, given a live `AcadosOcp` object, emits the
-   ocp++ wrapper `.hpp` + `main` automatically — reusing the generated C for
-   any model / cost / constraint and emitting the cost/box code itself when
-   acados uses a native (no-code-file) cost/constraint form.
+2. **The generator**: a Python tool `tools/acados2ocp_pp.py` that, given the
+   codegen artifact `acados_ocp_nlp.json`, emits the ocp++ wrapper `.hpp` +
+   `main` automatically — reusing the generated C for any model / cost /
+   constraint and emitting the cost/box code itself when acados uses a native
+   (no-code-file) cost/constraint form.
 
 ## 2. Environment (current state, 2026-10-03)
 
 | Component | Status |
 |---|---|
-| MATLAB | **available** (`/usr/local/MATLAB/R2025a/bin/matlab`) |
 | acados C lib | **built** (`/home/jgeisler/repos/acados/lib`: libacados, hpipm, blasfeo) |
-| CasADi | **available** (installed for the MATLAB interface) |
-| acados Python (`acados_toolbox` + casadi 3.8.1) | **available** — `example_ocp.py` codegen verified (pendulum_on_cart, unicycle); JSON identical in structure to the MATLAB output |
+| acados Python (`acados_toolbox` + casadi 3.8.1) | **available** — `example_ocp.py` codegen verified (pendulum_on_cart, unicycle, p5probe, p5probe_b) |
 | ocp++ | builds clean (`cmake -B build && cmake --build build`) |
 
-MATLAB run (verified):
-```
-cd /home/jgeisler/repos/acados/examples/acados_matlab_octave/masses_chain_model
-source env.sh
-ACADOS_INSTALL_DIR=/home/jgeisler/repos/acados \
-  /usr/local/MATLAB/R2025a/bin/matlab -nosplash -nodesktop \
-  -r "example_ocp; quit"
-```
-This produced `codegen_ocp_masses_chain_21ef639b/` (a fresh hash every
-regeneration).
+Any acados codegen interface (MATLAB or Python) emits the same
+`acados_ocp_nlp.json`; the generator consumes that JSON and needs no live
+problem object.
 
-## 3. What the MATLAB run actually produces
+## 3. What the codegen run produces
 
 `codegen_ocp_<name>_<hash>/` contains:
 - **Standalone reference main** `main_ocp_<name>_<hash>.c` — builds and runs
@@ -109,15 +98,13 @@ rest positions (constants in the .m).
 
 ## 5. ocp++ wrapper architecture
 
-Location: **`examples/masses_chain/`** (MATLAB `.m`, the codegen folder, the
+Location: **`examples/masses_chain/`** (the codegen folder, the
 ocp++ wrapper, the demo main, and the reference artifacts all live here —
 no symlinks / no vendoring outside the tree).
 
 ```
 examples/masses_chain/
-  example_ocp.m                  # migrated to NEW AcadosOcp interface
-  masses_chain_model.m           # model (or inlined)
-  codegen_masses_chain/          # generated (committed): *.c, *.h, acados_ocp_nlp.json
+  acados_codegen/                # generated (committed): *.c, *.h, acados_ocp_nlp.json
   capi.hpp                       # extern "C" decls + caller shim for the generated C
   masses_chain_ode.hpp           # Ode over the implicit DAE residual (f + jacobian)
   masses_chain.hpp               # Dims + ContinuousProblem + LINEAR_LS cost + box + x0
@@ -149,7 +136,7 @@ convention is *not* uniform across acados codegen paths:
 
 | codegen path | residual | `∂F/∂xdot` | `F(x,0,u)` |
 |---|---|---|---|
-| MATLAB (`AcadosOcp`) | `f − xdot` | `−I` | `+f` |
+| MATLAB codegen | `f − xdot` | `−I` | `+f` |
 | Python / casadi (`acados_toolbox`) | `xdot − f` | `+I` | `−f` |
 
 The generated Ode therefore must not hard-code the sign. The emitted Ode
@@ -169,8 +156,7 @@ yield `c=+1` (pre-fix they had negated dynamics, `max|dx| ≈ 19`).
 - **Fixed x0**: `Dims::fixed_initial_state=true`, `initial_state()` = the
   Newton-solved `x0` (constant from the .m).
 
-### 5.3 Integ
-rator + solver — must match acados exactly
+### 5.3 Integrator + solver — must match acados exactly
 
 - `ImplicitRkIntegrator<Dims, MassesChainOde, 4, <GL4Tag>, 2>` via
   `ContinuousProblem` → a discrete `Problem` with `dt = 0.2`.
@@ -190,7 +176,7 @@ collocation system, no Radau-specific assumption), so adding
 specialization (nodes/weights/A from acados `sim_collocation_utils.c`) is a
 small, isolated change. **Required for an exact integrator match** (§9 Q1).
 
-## 6. Reference capture (no MATLAB needed at solve time)
+## 6. Reference capture (no codegen needed at solve time)
 
 The reference is the **compiled acados main**, per your preference:
 ```
@@ -234,15 +220,14 @@ CI tests therefore assert, in addition to loose cost/trajectory tolerances:
 ## 8. The generator (`tools/acados2ocp_pp.py`, Phase 2)
 
 **Pivot (2026-10-03):** the generator is a **Python script** reading the
-`acados_ocp_nlp.json` artifact, *not* a MATLAB function over a live
-`AcadosOcp` object. Rationale:
+`acados_ocp_nlp.json` artifact. Rationale:
 - the JSON is a complete, self-sufficient OCP spec (dims, full cost matrices
   `Vx/Vu/W/yref(_e)`, all box idx/bounds + the `lbx_0==ubx_0` fixed-x0 marker,
   integrator + collocation + Newton config, and the generated C residual file
   names). Verified on `masses_chain`.
 - `acados_ocp_nlp.json` is emitted identically by **both** the MATLAB and the
-  Python (`acados_toolbox`) interfaces, so consuming it decouples the generator
-  from MATLAB and works for code produced by either.
+  Python (`acados_toolbox`) codegen interfaces, so consuming it decouples the
+  generator from the codegen front-end and works for code produced by either.
 - JSON parsing + templated C++ emission is idiomatic in Python (stdlib `json`
   + f-strings); no MATLAB licence, trivial to test (run → diff).
 
@@ -263,7 +248,7 @@ CI tests therefore assert, in addition to loose cost/trajectory tolerances:
 |---|---|
 | **P0** | This plan + decisions locked (§10). ✅ |
 | **P1a** | Add `GaussLegendre4Tag` + tableau to `butcher.hpp` (ocp++ prereq). Build clean. ✅ |
-| **P1b** | Migrate `masses_chain` `.m` → new `AcadosOcp` interface; run in MATLAB → `codegen_masses_chain/`; move the example + codegen into `examples/masses_chain/`. ✅ |
+| **P1b** | Run the `masses_chain` codegen → `codegen_masses_chain/`; move the example + codegen into `examples/masses_chain/`. ✅ |
 | **P1c** | Build the compiled acados reference main; capture `ref_acados.csv`. ✅ |
 | **P1d** | Hand-write the ocp++ wrapper (`capi.hpp`, `*_ode.hpp`, `masses_chain.hpp`, `main.cpp`) + CMake; build warning-free. ✅ |
 | **P1e** | Run ocp++ main; compare to reference; iterate until within §7 tolerances; emit CSV. ✅ (cost rel 4e-7) |
@@ -277,7 +262,7 @@ CI tests therefore assert, in addition to loose cost/trajectory tolerances:
 1. **Integrator tableau** — add a **Gauss-Legendre 4-stage** (`GaussLegendre4Tag`)
    tableau to `butcher.hpp` so the IRK matches acados exactly (P1a).
 2. **Phase ordering** — hand-written wrapper first (P1d) to de-risk the ocp++
-   side end-to-end; the MATLAB generator (P2) then reproduces it.
+    side end-to-end; the JSON generator (P2) then reproduces it.
 3. **Reference capture** — add a CSV-dump block to the generated
    `main_ocp_masses_chain_*.c` → `ref_acados.csv`.
 4. **Reproducible comparison** — `examples/masses_chain/compare.sh` builds+runs
@@ -289,8 +274,8 @@ CI tests therefore assert, in addition to loose cost/trajectory tolerances:
 1. P1a: `GaussLegendre4Tag` + `ButcherTableau` specialization (copy GL4 nodes /
    A / weights from acados `sim_collocation_utils.c`); add a unit test in
    `tests/integrators/` sanity-checking the collocation identities.
-2. P1b: migrate the `.m`; run MATLAB; relocate the example + codegen into
-   `examples/masses_chain/`.
+2. P1b: run the codegen; relocate the example + codegen into
+    `examples/masses_chain/`.
 3. P1c: build + run the reference main; produce `ref_acados.csv`.
 4. P1d/e: wrapper + demo + comparison; iterate to tolerance.
 

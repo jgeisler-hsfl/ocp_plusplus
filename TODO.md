@@ -4,7 +4,7 @@
 - [x] Reimplement acados SQP solver with HPIPM SQ solver
 - [x] reimplement acados style explicit and implicit RK solver/integrator alloc free template class
 - [x] Define a continuous time problem interface using an integrator class to implement the discrete time interface
-- [] write matlab generator to write interface definition for new framework from AcadosOcp matlab object, reusing CasADi generated dynamics, cost and constraint code
+- [x] write JSON generator (tools/acados2ocp_pp.py) to write interface definition for new framework from acados_ocp_nlp.json, reusing CasADi generated dynamics, cost and constraint code
 - [DEV] implement GAUSS_NEWTON for dynamics part of the cost function. add switch in dims to activate
 - [] write project README
 - [PLANNED] rework problem contract to use nested triplets for value/grad/hess

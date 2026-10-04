@@ -435,10 +435,11 @@ timeout; soft box rows (`idxs_rev`).
 **Phase 5 — validation & acados interoperability.**
 
 - CSV reference-diff utility (done: `tests/sqp_acados_ref`).
-- MATLAB generator: emit the ocp++ `Problem` interface from an `AcadosOcp`
-  MATLAB object, reusing CasADi-generated dynamics / cost / constraint code
-  (design to be detailed separately).
-- Test more acados examples end-to-end.
+- JSON generator (done: `tools/acados2ocp_pp.py`): emit the ocp++ `Problem`
+  interface from `acados_ocp_nlp.json`, reusing the CasADi-generated dynamics
+  / cost / constraint code (plan: `tools/GENERATOR_PLAN.md`).
+- Test more acados examples end-to-end (done: masses_chain,
+  pendulum_on_cart, unicycle, p5probe, p5probe_b).
 
 ## 12. Open items (verify at implementation time, not design decisions)
 
