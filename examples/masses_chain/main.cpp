@@ -39,6 +39,13 @@ int main()
 
     SqpOptions opts;
     opts.print_level = 1;
+    // Mirror the acados codegen settings (acados_ocp_nlp.json,
+    // nlp_solver_tol_* = 1e-6): with the default 1e-8 tolerances the SQP
+    // stalls in kMinStep just short of kSolved on this weakly-convex OCP.
+    opts.tol_stat = 1e-6;
+    opts.tol_eq = 1e-6;
+    opts.tol_ineq = 1e-6;
+    opts.tol_comp = 1e-6;
 
     SqpSolver<MassesChain> solver(opts);
     Solution<MassesChain> sol = warm_start(problem);

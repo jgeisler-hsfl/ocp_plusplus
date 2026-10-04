@@ -23,10 +23,7 @@ cmake --build acados_codegen/build --target main_ocp_masses_chain_21ef639b >/dev
 echo "==> ocp++"
 cmake -S "${ROOT}" -B "${ROOT}/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
 cmake --build "${ROOT}/build" --target masses_chain >/dev/null
-# kMinStep (step shrank below floor with tiny residuals) is effectively
-# converged but not kSolved, so the example may exit nonzero; still write the CSV.
-( "${ROOT}/build/masses_chain" >/dev/null ) \
-    || echo "  (ocp++ example exited nonzero; CSV still written)"
+( "${ROOT}/build/masses_chain" >/dev/null )
 
 echo "==> comparison"
 python3 - "${HERE}/acados_codegen/ref_acados.csv" "${HERE}/ocp_pp.csv" <<'PY'
