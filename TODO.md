@@ -5,7 +5,9 @@
 - [x] reimplement acados style explicit and implicit RK solver/integrator alloc free template class
 - [x] Define a continuous time problem interface using an integrator class to implement the discrete time interface
 - [] write matlab generator to write interface definition for new framework from AcadosOcp matlab object, reusing CasADi generated dynamics, cost and constraint code
+- [] implement GAUSS_NEWTON for dynamics part of the cost function. add switch in dims to activate
 - [] write project README
-- [] rewrite options and statistics to use a dual access approach: direct via struct members or by name via a reference map. aim: make values "discoverable" and settable in an interactive environment.
+- [] rewrite options and statistics to use a dual access approach: direct via struct/class members (like currently) or by name via a reference map. aim: make values "discoverable" and settable in an interactive environment.
+- [] investigate a way to implement a central "discovery"-map where all parts of a problem/solver-object can "register" their run-time mutable values (lists) like options and parameters. all values shall be alloc-free class members somewhere, only the "by-name"-access refs them from a map. every part of the problem has its own local list or lists (maps that ref values). the central registry maps theses lists/maps forming a hierarchie. maybe add a special accessor that takes complete value-"paths" and resolves them through the maps (of course handling nonexistent entries gracefully), like get("solver/hpimp/options/i_max") would return the value i_max that is an option in the hpipm solver.
 - [] Test acados reimplementation with simple example from acados repo
 - [] Test more examples from acados repo

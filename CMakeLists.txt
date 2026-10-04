@@ -43,7 +43,79 @@ add_executable(mass_spring examples/mass_spring/main.cpp)
 target_include_directories(mass_spring PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mass_spring PRIVATE ${OCP_WARN_FLAGS})
 
+# masses_chain: ocp++ port of the acados masses_chain OCP. The dynamics are
+# the CasADi-generated implicit-DAE residual (compiled as C); the wrapper
+# (capi + Ode + ContinuousProblem subclass) and the SQP driver are C++.
+enable_language(C)
+set(MC_MODEL_C examples/masses_chain/acados_codegen/masses_chain_model/masses_chain_impl_dae_fun.c)
+set_source_files_properties(${MC_MODEL_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+add_executable(masses_chain examples/masses_chain/main.cpp ${MC_MODEL_C})
+target_include_directories(masses_chain PRIVATE include examples/masses_chain ${EIGEN3_INCLUDE_DIR})
+target_compile_options(masses_chain PRIVATE ${OCP_WARN_FLAGS})
+
+# masses_chain reference comparison (Phase 1): embeds the acados reference
+# trajectory and verifies the ocp++ port (integrator exactness, cost,
+# trajectory, KKT residuals). Links the same CasADi C residual.
+add_executable(sqp_masses_chain
+               tests/sqp_masses_chain/sqp_masses_chain.cpp ${MC_MODEL_C})
+target_include_directories(sqp_masses_chain
+                           PRIVATE include examples/masses_chain ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_masses_chain PRIVATE ${OCP_WARN_FLAGS})
+
+# JSON-generated masses_chain port (Phase 1): the wrapper / problem class is
+# emitted by tools/acados2ocp_pp.py from acados_codegen/acados_ocp_nlp.json.
+# Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json examples/masses_chain/acados_codegen/acados_ocp_nlp.json \
+#     --name MassesChainGen --out examples/masses_chain/generated \
+#     --csrc examples/masses_chain/acados_codegen/masses_chain_model/masses_chain_impl_dae_fun.c
+add_executable(masseschaingen_gen
+               examples/masses_chain/generated/masseschaingen_main.cpp
+               ${MC_MODEL_C})
+target_include_directories(masseschaingen_gen
+                           PRIVATE include examples/masses_chain/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(masseschaingen_gen PRIVATE ${OCP_WARN_FLAGS})
+
+# Generator equivalence check (Phase 1): proves the JSON-generated problem
+# class (tools/acados2ocp_pp.py) reproduces the hand-written port.
+add_executable(sqp_masses_chain_gen_equiv
+               tests/sqp_masses_chain/gen_equivalence.cpp ${MC_MODEL_C})
+target_include_directories(sqp_masses_chain_gen_equiv
+                           PRIVATE include examples/masses_chain
+                                   examples/masses_chain/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_masses_chain_gen_equiv PRIVATE ${OCP_WARN_FLAGS})
+
+# pendulum_on_cart: ocp++ port of the acados pendulum_on_cart OCP (Phase 3).
+# The dynamics are the CasADi-generated implicit-DAE residual (compiled as C);
+# the wrapper + driver are emitted by tools/acados2ocp_pp.py from
+# acados_codegen/acados_ocp_nlp.json (Python codegen; see example_ocp.py).
+# Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json examples/pendulum_on_cart/acados_codegen/acados_ocp_nlp.json \
+#     --name PendulumGen --out examples/pendulum_on_cart/generated \
+#     --csrc examples/pendulum_on_cart/acados_codegen/pendulum_model/pendulum_impl_dae_fun.c
+set(PC_MODEL_C examples/pendulum_on_cart/acados_codegen/pendulum_model/pendulum_impl_dae_fun.c)
+set_source_files_properties(${PC_MODEL_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+add_executable(pendulum_on_cart
+               examples/pendulum_on_cart/generated/pendulumgen_main.cpp
+               ${PC_MODEL_C})
+target_include_directories(pendulum_on_cart
+                           PRIVATE include examples/pendulum_on_cart/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(pendulum_on_cart PRIVATE ${OCP_WARN_FLAGS})
+
 # ---- tests ----
+
+add_executable(sqp_pendulum
+               tests/sqp_pendulum/sqp_pendulum.cpp ${PC_MODEL_C})
+target_include_directories(sqp_pendulum
+                           PRIVATE include examples/pendulum_on_cart/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(sqp_pendulum PRIVATE ${OCP_WARN_FLAGS})
 add_executable(qp_dim tests/hpipm/qp_dim.cpp)
 target_include_directories(qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_dim PRIVATE ${OCP_WARN_FLAGS})
