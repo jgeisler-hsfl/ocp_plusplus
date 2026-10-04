@@ -22,20 +22,20 @@
 //            static constexpr bool fixed_initial_state = true;  // false: x_0 is a
 //                                                               // decision variable
 //                                                               // (e.g. MHE)
-//            static constexpr bool has_dynamics_hess_prod = true; // true: exact
-//                                                                 // Lagrangian Hessian
-//                                                                 // (acados EXACT);
-//                                                                 // false: Gauss-Newton
-//                                                                 // QP Hessian, dynamics
-//                                                                 // only via the
-//                                                                 // linearized BA (acados
-//                                                                 // GAUSS_NEWTON)
-//            static constexpr bool has_constr_hess_prod   = true; // true: constraint
-//                                                                 // HVPs included;
-//                                                                 // false: constraint
-//                                                                 // Hessian terms
-//                                                                 // omitted (valid if
-//                                                                 // the maps are linear)
+//            static constexpr bool has_dynamics_hess = true;      // true: exact
+//                                                                // Lagrangian Hessian
+//                                                                // (acados EXACT);
+//                                                                // false: Gauss-Newton
+//                                                                // QP Hessian, dynamics
+//                                                                // only via the
+//                                                                // linearized BA (acados
+//                                                                // GAUSS_NEWTON)
+//            static constexpr bool has_constr_hess   = true;      // true: constraint
+//                                                                // Hessian terms
+//                                                                // included;
+//                                                                // false: omitted
+//                                                                // (valid if the maps
+//                                                                // are linear)
 //            static constexpr std::array<int, 1> state_box_idx   = {0};
 //            static constexpr std::array<int, 1> control_box_idx = {0};
 //            static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -265,78 +265,87 @@ struct TerminalLinearSpec
 ///   when Dims::fixed_initial_state is true)
 ///     state_t initial_state() const;
 ///
-///   dynamics (k = 0..N-1)
+///   dynamics (k = 0..N-1); fused evaluation entries
 ///     state_t dynamics_next_state(int k, const state_t& x,
 ///                                 const control_t& u) const;
-///     void dynamics_jacobian(int k, const state_t& x, const control_t& u,
-///                            dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const;
-///     void dynamics_hess_prod(int k, const state_t& x, const control_t& u,
-///                              const state_t& w, const state_t& v_x,
-///                              const control_t& v_u, state_t& hv_x,
-///                              control_t& hv_u) const;
+///     void dynamics_value_jac(int k, const state_t& x, const control_t& u,
+///                             state_t& x_next, dyn_df_dx_t& df_dx,
+///                             dyn_df_du_t& df_du) const;
+///     void dynamics_value_jac_hess(int k, const state_t& x,
+///                                  const control_t& u, const state_t& lam,
+///                                  state_t& x_next, dyn_df_dx_t& df_dx,
+///                                  dyn_df_du_t& df_du,
+///                                  dyn_hess_t& hess) const;
+///       // hess v = sum_i lam_i D^2 f_i v, [x; u] layout
 ///
-///   stage cost (k = 0..N-1)
+///   stage cost (k = 0..N-1); fused evaluation entries
 ///     Scalar stage_cost_value(int k, const state_t& x,
 ///                             const control_t& u) const;
-///     stage_grad_t stage_cost_gradient(int k, const state_t& x,
-///                                      const control_t& u) const;
-///     stage_hess_t stage_cost_hessian(int k, const state_t& x,
-///                                     const control_t& u) const;
+///     void stage_cost_value_grad(int k, const state_t& x,
+///                                const control_t& u,
+///                                Scalar& value, stage_grad_t& grad) const;
+///     void stage_cost_value_grad_hess(int k, const state_t& x,
+///                                     const control_t& u,
+///                                     Scalar& value, stage_grad_t& grad,
+///                                     stage_hess_t& hess) const;
 ///
 ///   terminal cost (stage N)
 ///     Scalar terminal_cost_value(const state_t& x) const;
-///     term_grad_t terminal_cost_gradient(const state_t& x) const;
-///     term_hess_t terminal_cost_hessian(const state_t& x) const;
+///     void terminal_cost_value_grad(const state_t& x, Scalar& value,
+///                                   term_grad_t& grad) const;
+///     void terminal_cost_value_grad_hess(const state_t& x, Scalar& value,
+///                                        term_grad_t& grad,
+///                                        term_hess_t& hess) const;
 ///
-///   stage constraints (k = 0..N-1)
-///     ineq_t stage_inequality_constr(int k, const state_t& x,
-///                                    const control_t& u) const;  // g <= 0
-///     void stage_inequality_constr_jacobian(int k, const state_t& x,
-///                                           const control_t& u,
-///                                           ineq_dg_dx_t& g_dx,
-///                                           ineq_dg_du_t& g_du) const;
-///     eq_t stage_equality_constr(int k, const state_t& x,
-///                                const control_t& u) const;      // e == 0
-///     void stage_equality_constr_jacobian(int k, const state_t& x,
-///                                         const control_t& u,
-///                                         eq_de_dx_t& e_dx,
-///                                         eq_de_du_t& e_du) const;
-///     void stage_inequality_constr_hess_prod(int k, const state_t& x,
-///                                           const control_t& u,
-///                                           const ineq_t& lam,
-///                                           const state_t& v_x,
-///                                           const control_t& v_u,
-///                                           state_t& hv_x,
-///                                           control_t& hv_u) const;
-///     void stage_equality_constr_hess_prod(int k, const state_t& x,
+///   stage constraints (k = 0..N-1); fused evaluation entries
+///     ineq_t stage_inequality_value(int k, const state_t& x,
+///                                   const control_t& u) const;  // g <= 0
+///     void stage_inequality_value_jac(int k, const state_t& x,
+///                                     const control_t& u, ineq_t& g,
+///                                     ineq_dg_dx_t& g_dx,
+///                                     ineq_dg_du_t& g_du) const;
+///     void stage_inequality_value_jac_hess(int k, const state_t& x,
 ///                                          const control_t& u,
-///                                          const eq_t& lam,
-///                                          const state_t& v_x,
-///                                          const control_t& v_u,
-///                                          state_t& hv_x,
-///                                          control_t& hv_u) const;
+///                                          const ineq_t& lam, ineq_t& g,
+///                                          ineq_dg_dx_t& g_dx,
+///                                          ineq_dg_du_t& g_du,
+///                                          constr_hess_t& hess) const;
+///     eq_t stage_equality_value(int k, const state_t& x,
+///                               const control_t& u) const;       // e == 0
+///     void stage_equality_value_jac(int k, const state_t& x,
+///                                   const control_t& u, eq_t& e,
+///                                   eq_de_dx_t& e_dx,
+///                                   eq_de_du_t& e_du) const;
+///     void stage_equality_value_jac_hess(int k, const state_t& x,
+///                                        const control_t& u,
+///                                        const eq_t& lam, eq_t& e,
+///                                        eq_de_dx_t& e_dx,
+///                                        eq_de_du_t& e_du,
+///                                        constr_hess_t& hess) const;
 ///     stage_linear_t stage_linear_constr(int k) const;
 ///     state_box_t stage_state_box_constr(int k) const;        // rows: state_box_idx
 ///     control_box_t stage_control_box_constr(int k) const;    // rows: control_box_idx
 ///     ineq_pen_t stage_inequality_constr_soft_penalty(int k) const;  // rows: ineq_soft_idx
 ///     eq_pen_t   stage_equality_constr_soft_penalty(int k) const;    // rows: eq_soft_idx
 ///
-///   terminal constraints (stage N, state only)
+///   terminal constraints (stage N, state only); fused evaluation entries
 ///     term_state_box_t terminal_state_box_constr() const;  // rows: terminal_state_box_idx
-///     ineq_term_t terminal_inequality_constr(const state_t& x) const;  // g <= 0
-///     void terminal_inequality_constr_jacobian(const state_t& x,
-///                                              ineq_term_dg_dx_t& g_dx) const;
-///     eq_term_t terminal_equality_constr(const state_t& x) const;      // e == 0
-///     void terminal_equality_constr_jacobian(const state_t& x,
-///                                            eq_term_de_dx_t& e_dx) const;
-///     void terminal_inequality_constr_hess_prod(const state_t& x,
-///                                              const ineq_term_t& lam,
-///                                              const state_t& v,
-///                                              state_t& hv) const;
-///     void terminal_equality_constr_hess_prod(const state_t& x,
-///                                             const eq_term_t& lam,
-///                                             const state_t& v,
-///                                             state_t& hv) const;
+///     ineq_term_t terminal_inequality_value(const state_t& x) const;  // g <= 0
+///     void terminal_inequality_value_jac(const state_t& x, ineq_term_t& g,
+///                                        ineq_term_dg_dx_t& g_dx) const;
+///     void terminal_inequality_value_jac_hess(const state_t& x,
+///                                             const ineq_term_t& lam,
+///                                             ineq_term_t& g,
+///                                             ineq_term_dg_dx_t& g_dx,
+///                                             term_constr_hess_t& hess) const;
+///     eq_term_t terminal_equality_value(const state_t& x) const;      // e == 0
+///     void terminal_equality_value_jac(const state_t& x, eq_term_t& e,
+///                                      eq_term_de_dx_t& e_dx) const;
+///     void terminal_equality_value_jac_hess(const state_t& x,
+///                                           const eq_term_t& lam,
+///                                           eq_term_t& e,
+///                                           eq_term_de_dx_t& e_dx,
+///                                           term_constr_hess_t& hess) const;
 ///     term_linear_t terminal_linear_constr() const;
 ///     ineq_term_pen_t terminal_inequality_constr_soft_penalty() const; // rows: terminal_ineq_soft_idx
 ///     eq_term_pen_t   terminal_equality_constr_soft_penalty() const;   // rows: terminal_eq_soft_idx
@@ -360,20 +369,23 @@ struct TerminalLinearSpec
 ///   methods; box and linear groups carry their weights in the returned
 ///   spec's `soft_penalty` field. The slack variables themselves are
 ///   solver-internal.
-/// - Hessian-vector products of the dynamics map (`dynamics_hess_prod`)
-///   and of the constraint maps (`*_constr_hess_prod`) support
-///   exact-Lagrangian Hessian assembly in the solver. Two independent
-///   flags, `Dims::has_dynamics_hess_prod` and `Dims::has_constr_hess_prod`,
-///   tell the solver whether these methods exist. `has_dynamics_hess_prod`
-///   selects the QP Hessian model: `true` assembles the exact Lagrangian
-///   Hessian (cost + dynamics HVP, acados `hessian_approx = EXACT`);
-///   `false` assembles the Gauss-Newton Hessian, where the dynamics enter
-///   the QP only through the linearized BA matrix (acados
-///   `hessian_approx = GAUSS_NEWTON` / historical `ROSEN`). The two models
-///   coincide when the dynamics map is linear (zero dynamics Hessian).
-///   `has_constr_hess_prod` = false omits the constraint HVP terms (valid
-///   exactly when the constraint maps are linear, i.e. their Hessians are
-///   identically zero).
+/// - The `*_value_jac_hess` entries return the multiplier-contracted
+///   Hessian in one call: `hess v = sum_i lam_i D^2(·)_i v`, where `lam`
+///   is the net KKT multiplier of the corresponding group (e.g.
+///   `lambda_dyn[k]` for dynamics). Model-side Hessians use the `[x; u]`
+///   layout; the solver permutes into its internal `(u; x)` layout.
+/// - Two independent flags, `Dims::has_dynamics_hess` and
+///   `Dims::has_constr_hess`, tell the solver whether the
+///   `dynamics_value_jac_hess` / constraint `*_value_jac_hess` entries
+///   exist. `has_dynamics_hess` selects the QP Hessian model: `true`
+///   assembles the exact Lagrangian Hessian (cost + dynamics Hessian,
+///   acados `hessian_approx = EXACT`); `false` assembles the
+///   Gauss-Newton Hessian, where the dynamics enter the QP only through
+///   the linearized BA matrix (acados `hessian_approx = GAUSS_NEWTON` /
+///   historical `ROSEN`). The two models coincide when the dynamics map is
+///   linear (zero dynamics Hessian). `has_constr_hess` = false omits the
+///   constraint Hessian terms (valid exactly when the constraint maps are
+///   linear, i.e. their Hessians are identically zero).
 /// - Extensions anticipated beyond this draft (not yet part of the
 ///   contract): parameter sensitivities, and algebraic (eliminated)
 ///   variables.
@@ -398,20 +410,21 @@ public:
     // decision variable (e.g. MHE) and initial_state() is not available
     static constexpr bool fixed_initial_state = Dims::fixed_initial_state;
 
-    // true: dynamics_hess_prod is implemented; the solver assembles the
-    // exact Lagrangian QP Hessian (cost Hessian + multiplier-weighted
-    // dynamics HVP; acados hessian_approx = EXACT). false: the HVP is not
-    // provided; the solver assembles the Gauss-Newton QP Hessian, where the
-    // dynamics enter only through the linearized BA matrix (acados
-    // hessian_approx = GAUSS_NEWTON; the two models coincide for a linear
-    // dynamics map, where the dynamics Hessian term is zero anyway).
-    static constexpr bool has_dynamics_hess_prod = Dims::has_dynamics_hess_prod;
+    // true: dynamics_value_jac_hess is implemented; the solver assembles
+    // the exact Lagrangian QP Hessian (cost Hessian + multiplier-contracted
+    // dynamics Hessian; acados hessian_approx = EXACT). false: the Hessian
+    // is not provided; the solver assembles the Gauss-Newton QP Hessian,
+    // where the dynamics enter only through the linearized BA matrix
+    // (acados hessian_approx = GAUSS_NEWTON; the two models coincide for a
+    // linear dynamics map, where the dynamics Hessian term is zero anyway).
+    static constexpr bool has_dynamics_hess = Dims::has_dynamics_hess;
 
-    // true: the *_constr_hess_prod methods are implemented; the solver adds
-    // the multiplier-weighted constraint HVPs to the QP Hessian (EXACT).
-    // false: no constraint HVPs; the constraint Hessian terms are omitted
-    // (identically zero when the constraint maps are linear).
-    static constexpr bool has_constr_hess_prod = Dims::has_constr_hess_prod;
+    // true: the constraint *_value_jac_hess methods are implemented; the
+    // solver adds the multiplier-contracted constraint Hessians to the QP
+    // Hessian (EXACT). false: no constraint Hessians; the constraint
+    // Hessian terms are omitted (identically zero when the constraint maps
+    // are linear).
+    static constexpr bool has_constr_hess = Dims::has_constr_hess;
 
     // active box-constraint rows: the const index sets select which
     // state/control components are bounded; their size *is* the number of
@@ -475,6 +488,12 @@ public:
     // dynamics Jacobian blocks  (f_k: (x, u) -> x_{k+1})
     using dyn_df_dx_t = Eigen::Matrix<Scalar, nx, nx>;
     using dyn_df_du_t = Eigen::Matrix<Scalar, nx, nu>;
+
+    // multiplier-contracted Hessians, [x; u] layout (D^2 L contracted with
+    // the group multiplier); symmetric by contract
+    using dyn_hess_t         = Eigen::Matrix<Scalar, nx + nu, nx + nu>;
+    using constr_hess_t      = Eigen::Matrix<Scalar, nx + nu, nx + nu>;
+    using term_constr_hess_t = Eigen::Matrix<Scalar, nx, nx>;
 
     // constraint Jacobians
     using ineq_dg_dx_t = Eigen::Matrix<Scalar, ng, nx>;
@@ -545,30 +564,33 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
-    void dynamics_jacobian(int /*k*/, const state_t& /*x*/,
+    void dynamics_value_jac(int /*k*/, const state_t& /*x*/,
                             const control_t& /*u*/,
+                            state_t& /*x_next*/,
                             dyn_df_dx_t& /*df_dx*/,
                             dyn_df_du_t& /*df_du*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void dynamics_jacobian(int k, const state_t&, const control_t&, "
-            "dyn_df_dx_t&, dyn_df_du_t&) const' in the concrete problem.");
+            "'void dynamics_value_jac(int k, const state_t&, const control_t&, "
+            "state_t& x_next, dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const' "
+            "in the concrete problem.");
     }
-    void dynamics_hess_prod(int /*k*/, const state_t& /*x*/,
-                            const control_t& /*u*/,
-                            const state_t& /*w*/,
-                            const state_t& /*v_x*/,
-                            const control_t& /*v_u*/,
-                            state_t& /*hv_x*/,
-                            control_t& /*hv_u*/) const
+    void dynamics_value_jac_hess(int /*k*/, const state_t& /*x*/,
+                                 const control_t& /*u*/,
+                                 const state_t& /*lam*/,
+                                 state_t& /*x_next*/,
+                                 dyn_df_dx_t& /*df_dx*/,
+                                 dyn_df_du_t& /*df_du*/,
+                                 dyn_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void dynamics_hess_prod(int k, const state_t&, const control_t&, "
-            "const state_t& w, const state_t& v_x, const control_t& v_u, "
-            "state_t& hv_x, control_t& hv_u) const' in the concrete problem "
-            "(bilinear Hessian contraction of the dynamics map).");
+            "'void dynamics_value_jac_hess(int k, const state_t&, "
+            "const control_t&, const state_t& lam, state_t& x_next, "
+            "dyn_df_dx_t& df_dx, dyn_df_du_t& df_du, dyn_hess_t& hess) const' "
+            "in the concrete problem (multiplier-contracted Hessian, "
+            "[x; u] layout; hess v = sum_i lam_i D^2 f_i v).");
     }
 
     // stage cost (k = 0..N-1)
@@ -582,26 +604,30 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
-    stage_grad_t stage_cost_gradient(int /*k*/, const state_t& /*x*/,
-                                     const control_t& /*u*/) const
+    void stage_cost_value_grad(int /*k*/, const state_t& /*x*/,
+                               const control_t& /*u*/,
+                               Scalar& /*value*/,
+                               stage_grad_t& /*grad*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'stage_grad_t stage_cost_gradient(int k, const state_t&, const control_t&) const' "
-            "in the concrete problem (layout [g_x; g_u]).");
-        // unreachable; the static_assert above fires first
-        return {};
+            "'void stage_cost_value_grad(int k, const state_t&, const control_t&, "
+            "Scalar& value, stage_grad_t& grad) const' in the concrete problem "
+            "(layout [g_x; g_u]).");
     }
-    stage_hess_t stage_cost_hessian(int /*k*/, const state_t& /*x*/,
-                                    const control_t& /*u*/) const
+    void stage_cost_value_grad_hess(int /*k*/, const state_t& /*x*/,
+                                    const control_t& /*u*/,
+                                    Scalar& /*value*/,
+                                    stage_grad_t& /*grad*/,
+                                    stage_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'stage_hess_t stage_cost_hessian(int k, const state_t&, const control_t&) const' "
-            "in the concrete problem (block layout [H_xx H_xu; H_ux H_uu], "
-            "exact or Gauss-Newton, user's choice).");
-        // unreachable; the static_assert above fires first
-        return {};
+            "'void stage_cost_value_grad_hess(int k, const state_t&, "
+            "const control_t&, Scalar& value, stage_grad_t& grad, "
+            "stage_hess_t& hess) const' in the concrete problem "
+            "(block layout [H_xx H_xu; H_ux H_uu], exact or Gauss-Newton, "
+            "user's choice).");
     }
 
     // terminal cost (stage N, state only)
@@ -613,93 +639,106 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
-    term_grad_t terminal_cost_gradient(const state_t& /*x*/) const
+    void terminal_cost_value_grad(const state_t& /*x*/,
+                                  Scalar& /*value*/,
+                                  term_grad_t& /*grad*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'term_grad_t terminal_cost_gradient(const state_t&) const' "
-            "in the concrete problem.");
-        // unreachable; the static_assert above fires first
-        return {};
+            "'void terminal_cost_value_grad(const state_t&, Scalar& value, "
+            "term_grad_t& grad) const' in the concrete problem.");
     }
-    term_hess_t terminal_cost_hessian(const state_t& /*x*/) const
+    void terminal_cost_value_grad_hess(const state_t& /*x*/,
+                                       Scalar& /*value*/,
+                                       term_grad_t& /*grad*/,
+                                       term_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'term_hess_t terminal_cost_hessian(const state_t&) const' "
-            "in the concrete problem.");
-        // unreachable; the static_assert above fires first
-        return {};
+            "'void terminal_cost_value_grad_hess(const state_t&, Scalar& value, "
+            "term_grad_t& grad, term_hess_t& hess) const' in the concrete "
+            "problem (block layout [H_xx], exact or Gauss-Newton, user's "
+            "choice).");
     }
 
     // stage constraints (k = 0..N-1)
-    ineq_t stage_inequality_constr(int /*k*/, const state_t& /*x*/,
-                                   const control_t& /*u*/) const
+    ineq_t stage_inequality_value(int /*k*/, const state_t& /*x*/,
+                                  const control_t& /*u*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'ineq_t stage_inequality_constr(int k, const state_t&, const control_t&) const' "
-            "in the concrete problem (g(x,u) <= 0), or set ng to 0.");
+            "'ineq_t stage_inequality_value(int k, const state_t&, "
+            "const control_t&) const' in the concrete problem "
+            "(g(x,u) <= 0), or set ng to 0.");
         // unreachable; the static_assert above fires first
         return {};
     }
-    void stage_inequality_constr_jacobian(int /*k*/, const state_t& /*x*/,
-                                          const control_t& /*u*/,
-                                          ineq_dg_dx_t& /*g_dx*/,
-                                          ineq_dg_du_t& /*g_du*/) const
+    void stage_inequality_value_jac(int /*k*/, const state_t& /*x*/,
+                                    const control_t& /*u*/,
+                                    ineq_t& /*g*/,
+                                    ineq_dg_dx_t& /*g_dx*/,
+                                    ineq_dg_du_t& /*g_du*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void stage_inequality_constr_jacobian(int k, const state_t&, const control_t&, "
-            "ineq_dg_dx_t&, ineq_dg_du_t&) const' in the concrete problem.");
+            "'void stage_inequality_value_jac(int k, const state_t&, "
+            "const control_t&, ineq_t& g, ineq_dg_dx_t& g_dx, "
+            "ineq_dg_du_t& g_du) const' in the concrete problem.");
     }
-    eq_t stage_equality_constr(int /*k*/, const state_t& /*x*/,
-                               const control_t& /*u*/) const
-    {
-        static_assert(false,
-            "ocp::Problem interface: implement "
-            "'eq_t stage_equality_constr(int k, const state_t&, const control_t&) const' "
-            "in the concrete problem (e(x,u) == 0), or set ne to 0.");
-        // unreachable; the static_assert above fires first
-        return {};
-    }
-    void stage_equality_constr_jacobian(int /*k*/, const state_t& /*x*/,
-                                        const control_t& /*u*/,
-                                        eq_de_dx_t& /*e_dx*/,
-                                        eq_de_du_t& /*e_du*/) const
-    {
-        static_assert(false,
-            "ocp::Problem interface: implement "
-            "'void stage_equality_constr_jacobian(int k, const state_t&, const control_t&, "
-            "eq_de_dx_t&, eq_de_du_t&) const' in the concrete problem.");
-    }
-    void stage_inequality_constr_hess_prod(int /*k*/, const state_t& /*x*/,
-                                           const control_t& /*u*/,
-                                           const ineq_t& /*lam*/,
-                                           const state_t& /*v_x*/,
-                                           const control_t& /*v_u*/,
-                                           state_t& /*hv_x*/,
-                                           control_t& /*hv_u*/) const
-    {
-        static_assert(false,
-            "ocp::Problem interface: implement "
-            "'void stage_inequality_constr_hess_prod(int k, const state_t&, const control_t&, "
-            "const ineq_t&, const state_t&, const control_t&, state_t&, control_t&) const' "
-            "in the concrete problem, or set ng to 0.");
-    }
-    void stage_equality_constr_hess_prod(int /*k*/, const state_t& /*x*/,
+    void stage_inequality_value_jac_hess(int /*k*/, const state_t& /*x*/,
                                          const control_t& /*u*/,
-                                         const eq_t& /*lam*/,
-                                         const state_t& /*v_x*/,
-                                         const control_t& /*v_u*/,
-                                         state_t& /*hv_x*/,
-                                         control_t& /*hv_u*/) const
+                                         const ineq_t& /*lam*/,
+                                         ineq_t& /*g*/,
+                                         ineq_dg_dx_t& /*g_dx*/,
+                                         ineq_dg_du_t& /*g_du*/,
+                                         constr_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void stage_equality_constr_hess_prod(int k, const state_t&, const control_t&, "
-            "const eq_t&, const state_t&, const control_t&, state_t&, control_t&) const' "
-            "in the concrete problem, or set ne to 0.");
+            "'void stage_inequality_value_jac_hess(int k, const state_t&, "
+            "const control_t&, const ineq_t& lam, ineq_t& g, "
+            "ineq_dg_dx_t& g_dx, ineq_dg_du_t& g_du, "
+            "constr_hess_t& hess) const' in the concrete problem "
+            "(multiplier-contracted Hessian, [x; u] layout), or set ng to 0.");
+    }
+    eq_t stage_equality_value(int /*k*/, const state_t& /*x*/,
+                              const control_t& /*u*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'eq_t stage_equality_value(int k, const state_t&, "
+            "const control_t&) const' in the concrete problem "
+            "(e(x,u) == 0), or set ne to 0.");
+        // unreachable; the static_assert above fires first
+        return {};
+    }
+    void stage_equality_value_jac(int /*k*/, const state_t& /*x*/,
+                                  const control_t& /*u*/,
+                                  eq_t& /*e*/,
+                                  eq_de_dx_t& /*e_dx*/,
+                                  eq_de_du_t& /*e_du*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void stage_equality_value_jac(int k, const state_t&, "
+            "const control_t&, eq_t& e, eq_de_dx_t& e_dx, "
+            "eq_de_du_t& e_du) const' in the concrete problem.");
+    }
+    void stage_equality_value_jac_hess(int /*k*/, const state_t& /*x*/,
+                                       const control_t& /*u*/,
+                                       const eq_t& /*lam*/,
+                                       eq_t& /*e*/,
+                                       eq_de_dx_t& /*e_dx*/,
+                                       eq_de_du_t& /*e_du*/,
+                                       constr_hess_t& /*hess*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'void stage_equality_value_jac_hess(int k, const state_t&, "
+            "const control_t&, const eq_t& lam, eq_t& e, eq_de_dx_t& e_dx, "
+            "eq_de_du_t& e_du, constr_hess_t& hess) const' in the "
+            "concrete problem (multiplier-contracted Hessian, "
+            "[x; u] layout), or set ne to 0.");
     }
     stage_linear_t stage_linear_constr(int /*k*/) const
     {
@@ -756,63 +795,69 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
-    ineq_term_t terminal_inequality_constr(const state_t& /*x*/) const
+    ineq_term_t terminal_inequality_value(const state_t& /*x*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'ineq_term_t terminal_inequality_constr(const state_t&) const' "
+            "'ineq_term_t terminal_inequality_value(const state_t&) const' "
             "(g(x) <= 0) in the concrete problem, or set ng_t to 0.");
         // unreachable; the static_assert above fires first
         return {};
     }
-    void terminal_inequality_constr_jacobian(const state_t& /*x*/,
-                                             ineq_term_dg_dx_t& /*g_dx*/) const
+    void terminal_inequality_value_jac(const state_t& /*x*/,
+                                       ineq_term_t& /*g*/,
+                                       ineq_term_dg_dx_t& /*g_dx*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void terminal_inequality_constr_jacobian(const state_t&, ineq_term_dg_dx_t&) const' "
-            "in the concrete problem.");
+            "'void terminal_inequality_value_jac(const state_t&, "
+            "ineq_term_t& g, ineq_term_dg_dx_t& g_dx) const' in the "
+            "concrete problem.");
     }
-    eq_term_t terminal_equality_constr(const state_t& /*x*/) const
+    void terminal_inequality_value_jac_hess(const state_t& /*x*/,
+                                           const ineq_term_t& /*lam*/,
+                                           ineq_term_t& /*g*/,
+                                           ineq_term_dg_dx_t& /*g_dx*/,
+                                           term_constr_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'eq_term_t terminal_equality_constr(const state_t&) const' "
+            "'void terminal_inequality_value_jac_hess(const state_t&, "
+            "const ineq_term_t& lam, ineq_term_t& g, ineq_term_dg_dx_t& g_dx, "
+            "term_constr_hess_t& hess) const' in the concrete problem "
+            "(multiplier-contracted Hessian, state only), or set ng_t to 0.");
+    }
+    eq_term_t terminal_equality_value(const state_t& /*x*/) const
+    {
+        static_assert(false,
+            "ocp::Problem interface: implement "
+            "'eq_term_t terminal_equality_value(const state_t&) const' "
             "(e(x) == 0) in the concrete problem, or set ne_t to 0.");
         // unreachable; the static_assert above fires first
         return {};
     }
-    void terminal_equality_constr_jacobian(const state_t& /*x*/,
-                                           eq_term_de_dx_t& /*e_dx*/) const
+    void terminal_equality_value_jac(const state_t& /*x*/,
+                                     eq_term_t& /*e*/,
+                                     eq_term_de_dx_t& /*e_dx*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void terminal_equality_constr_jacobian(const state_t&, eq_term_de_dx_t&) const' "
-            "in the concrete problem.");
+            "'void terminal_equality_value_jac(const state_t&, "
+            "eq_term_t& e, eq_term_de_dx_t& e_dx) const' in the "
+            "concrete problem.");
     }
-    void terminal_inequality_constr_hess_prod(const state_t& /*x*/,
-                                              const ineq_term_t& /*lam*/,
-                                              const state_t& /*v*/,
-                                              state_t& /*hv*/) const
+    void terminal_equality_value_jac_hess(const state_t& /*x*/,
+                                         const eq_term_t& /*lam*/,
+                                         eq_term_t& /*e*/,
+                                         eq_term_de_dx_t& /*e_dx*/,
+                                         term_constr_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
-            "'void terminal_inequality_constr_hess_prod(const state_t&, "
-            "const ineq_term_t&, const state_t&, state_t&) const' in the "
-            "concrete problem (net-multiplier Hessian-vector product, "
-            "state only), or set ng_t to 0.");
-    }
-    void terminal_equality_constr_hess_prod(const state_t& /*x*/,
-                                            const eq_term_t& /*lam*/,
-                                            const state_t& /*v*/,
-                                            state_t& /*hv*/) const
-    {
-        static_assert(false,
-            "ocp::Problem interface: implement "
-            "'void terminal_equality_constr_hess_prod(const state_t&, "
-            "const eq_term_t&, const state_t&, state_t&) const' in the "
-            "concrete problem (net-multiplier Hessian-vector product, "
-            "state only), or set ne_t to 0.");
+            "'void terminal_equality_value_jac_hess(const state_t&, "
+            "const eq_term_t& lam, eq_term_t& e, eq_term_de_dx_t& e_dx, "
+            "term_constr_hess_t& hess) const' in the concrete problem "
+            "(multiplier-contracted Hessian, state only), or set ne_t to 0.");
     }
     term_linear_t terminal_linear_constr() const
     {
