@@ -18,3 +18,8 @@ compile_commands.json
 
 # OS
 .DS_Store
+
+# acados codegen example binaries (no-extension executables built by the
+# cmake builder; the .c sources are kept)
+examples/*/acados_codegen/main_*
+!examples/*/acados_codegen/main_*.c
