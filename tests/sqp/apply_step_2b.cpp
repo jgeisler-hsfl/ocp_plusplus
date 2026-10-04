@@ -57,8 +57,8 @@ struct MapDims
     static constexpr int ng = 1, ne = 1, nl = 1;
     static constexpr int ng_t = 1, ne_t = 1, nl_t = 1;
     static constexpr bool fixed_initial_state = false;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 2> state_box_idx = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};

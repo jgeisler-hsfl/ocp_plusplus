@@ -18,7 +18,7 @@
 //      the dynamics port (incl. the residual sign convention) is exact.
 //  (B) COST: relative error vs the acados reference < 1e-4. ocp++ assembles
 //      the QP Hessian from the stage cost Hessian only
-//      (has_dynamics_hess_prod = false) where acados uses Gauss-Newton;
+//      (has_dynamics_hess = false) where acados uses Gauss-Newton;
 //      the observed gap is ~3e-6 (both at near-identical KKT points).
 //  (C) TRAJECTORY: |dx|, |du| inf-norm vs the acados reference, relaxed
 //      tolerance (Hessian-model gap accumulated over N = 50 stages).

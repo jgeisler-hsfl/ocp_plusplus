@@ -47,8 +47,8 @@ struct ContOcpDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 2> state_box_idx = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -116,25 +116,25 @@ struct ErkOcp : ErkBase
                       wa_ * u(0) * u(0));
     }
 
-    OCP::stage_grad_t
-    stage_cost_gradient(int, const state_t& x, const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, OCP::stage_grad_t& grad) const
     {
-        OCP::stage_grad_t g;
-        g(0) = wq_ * x(0);
-        g(1) = wv_ * x(1);
-        g(2) = wa_ * u(0);
-        return g;
+        value = 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1)
+                       + wa_ * u(0) * u(0));
+        grad(0) = wq_ * x(0);
+        grad(1) = wv_ * x(1);
+        grad(2) = wa_ * u(0);
     }
 
-    OCP::stage_hess_t
-    stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, OCP::stage_grad_t& grad,
+                                    OCP::stage_hess_t& hess) const
     {
-        OCP::stage_hess_t H;
-        H.setZero();
-        H(0, 0) = wq_;
-        H(1, 1) = wv_;
-        H(2, 2) = wa_;
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess(0, 0) = wq_;
+        hess(1, 1) = wv_;
+        hess(2, 2) = wa_;
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -142,21 +142,22 @@ struct ErkOcp : ErkBase
         return wf_ * (x(0) * x(0) + x(1) * x(1));
     }
 
-    OCP::term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  OCP::term_grad_t& grad) const
     {
-        OCP::term_grad_t g;
-        g(0) = 2.0 * wf_ * x(0);
-        g(1) = 2.0 * wf_ * x(1);
-        return g;
+        value = wf_ * (x(0) * x(0) + x(1) * x(1));
+        grad(0) = 2.0 * wf_ * x(0);
+        grad(1) = 2.0 * wf_ * x(1);
     }
 
-    OCP::term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       OCP::term_grad_t& grad,
+                                       OCP::term_hess_t& hess) const
     {
-        OCP::term_hess_t H;
-        H.setZero();
-        H(0, 0) = 2.0 * wf_;
-        H(1, 1) = 2.0 * wf_;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess.setZero();
+        hess(0, 0) = 2.0 * wf_;
+        hess(1, 1) = 2.0 * wf_;
     }
 
     OCP::state_box_t stage_state_box_constr(int) const
@@ -186,24 +187,30 @@ struct ErkOcp : ErkBase
         return spec;
     }
 
-    OCP::eq_term_t terminal_equality_constr(const state_t& x) const
+    OCP::eq_term_t terminal_equality_value(const state_t& x) const
     {
         OCP::eq_term_t e;
         e(0) = x(0) + x(1) - 1.0;
         return e;
     }
 
-    void terminal_equality_constr_jacobian(const state_t&, OCP::eq_term_de_dx_t& e_dx) const
+    void terminal_equality_value_jac(const state_t& x, OCP::eq_term_t& e,
+                                      OCP::eq_term_de_dx_t& e_dx) const
     {
+        e(0) = x(0) + x(1) - 1.0;
         e_dx.setZero();
         e_dx(0, 0) = 1.0;
         e_dx(0, 1) = 1.0;
     }
 
-    void terminal_equality_constr_hess_prod(const state_t&, const OCP::eq_term_t&,
-                                            const state_t&, state_t& hv) const
+    void terminal_equality_value_jac_hess(const state_t& x, const OCP::eq_term_t&,
+                                          OCP::eq_term_t& e,
+                                          OCP::eq_term_de_dx_t& e_dx,
+                                          OCP::term_constr_hess_t& hess) const
     {
-        hv.setZero();
+        terminal_equality_value_jac(x, e, e_dx);
+        // e is affine in x: D2e = 0
+        hess.setZero();
     }
 };
 
@@ -235,25 +242,25 @@ struct IrkOcp : IrkBase
                       wa_ * u(0) * u(0));
     }
 
-    OCP::stage_grad_t
-    stage_cost_gradient(int, const state_t& x, const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, OCP::stage_grad_t& grad) const
     {
-        OCP::stage_grad_t g;
-        g(0) = wq_ * x(0);
-        g(1) = wv_ * x(1);
-        g(2) = wa_ * u(0);
-        return g;
+        value = 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1)
+                       + wa_ * u(0) * u(0));
+        grad(0) = wq_ * x(0);
+        grad(1) = wv_ * x(1);
+        grad(2) = wa_ * u(0);
     }
 
-    OCP::stage_hess_t
-    stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, OCP::stage_grad_t& grad,
+                                    OCP::stage_hess_t& hess) const
     {
-        OCP::stage_hess_t H;
-        H.setZero();
-        H(0, 0) = wq_;
-        H(1, 1) = wv_;
-        H(2, 2) = wa_;
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess(0, 0) = wq_;
+        hess(1, 1) = wv_;
+        hess(2, 2) = wa_;
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -261,21 +268,22 @@ struct IrkOcp : IrkBase
         return wf_ * (x(0) * x(0) + x(1) * x(1));
     }
 
-    OCP::term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  OCP::term_grad_t& grad) const
     {
-        OCP::term_grad_t g;
-        g(0) = 2.0 * wf_ * x(0);
-        g(1) = 2.0 * wf_ * x(1);
-        return g;
+        value = wf_ * (x(0) * x(0) + x(1) * x(1));
+        grad(0) = 2.0 * wf_ * x(0);
+        grad(1) = 2.0 * wf_ * x(1);
     }
 
-    OCP::term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       OCP::term_grad_t& grad,
+                                       OCP::term_hess_t& hess) const
     {
-        OCP::term_hess_t H;
-        H.setZero();
-        H(0, 0) = 2.0 * wf_;
-        H(1, 1) = 2.0 * wf_;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess.setZero();
+        hess(0, 0) = 2.0 * wf_;
+        hess(1, 1) = 2.0 * wf_;
     }
 
     OCP::state_box_t stage_state_box_constr(int) const
@@ -305,24 +313,30 @@ struct IrkOcp : IrkBase
         return spec;
     }
 
-    OCP::eq_term_t terminal_equality_constr(const state_t& x) const
+    OCP::eq_term_t terminal_equality_value(const state_t& x) const
     {
         OCP::eq_term_t e;
         e(0) = x(0) + x(1) - 1.0;
         return e;
     }
 
-    void terminal_equality_constr_jacobian(const state_t&, OCP::eq_term_de_dx_t& e_dx) const
+    void terminal_equality_value_jac(const state_t& x, OCP::eq_term_t& e,
+                                      OCP::eq_term_de_dx_t& e_dx) const
     {
+        e(0) = x(0) + x(1) - 1.0;
         e_dx.setZero();
         e_dx(0, 0) = 1.0;
         e_dx(0, 1) = 1.0;
     }
 
-    void terminal_equality_constr_hess_prod(const state_t&, const OCP::eq_term_t&,
-                                            const state_t&, state_t& hv) const
+    void terminal_equality_value_jac_hess(const state_t& x, const OCP::eq_term_t&,
+                                          OCP::eq_term_t& e,
+                                          OCP::eq_term_de_dx_t& e_dx,
+                                          OCP::term_constr_hess_t& hess) const
     {
-        hv.setZero();
+        terminal_equality_value_jac(x, e, e_dx);
+        // e is affine in x: D2e = 0
+        hess.setZero();
     }
 };
 

@@ -68,8 +68,8 @@ struct MeritDims
     static constexpr int ng = 1, ne = 0, nl = 0;
     static constexpr int ng_t = 0, ne_t = 0, nl_t = 0;
     static constexpr bool fixed_initial_state = false;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 1> state_box_idx = {0};
     static constexpr std::array<int, 0> control_box_idx = {};
     static constexpr std::array<int, 0> terminal_state_box_idx = {};
@@ -104,7 +104,7 @@ public:
         return 10.0 * x(0) * x(0);
     }
 
-    ineq_t stage_inequality_constr(int, const state_t&,
+    ineq_t stage_inequality_value(int, const state_t&,
                                    const control_t& u) const
     {
         ineq_t g;

@@ -38,8 +38,8 @@ struct CstrDims
     static constexpr int ne_t = 3;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state    = true;
-    static constexpr bool has_dynamics_hess_prod = true;
-    static constexpr bool has_constr_hess_prod   = true;
+    static constexpr bool has_dynamics_hess = true;
+    static constexpr bool has_constr_hess   = true;
     static constexpr std::array<int, 3> state_box_idx      = {0, 1, 2};
     static constexpr std::array<int, 2> control_box_idx    = {0, 1};
     static constexpr std::array<int, 3> terminal_state_box_idx = {0, 1, 2};
@@ -543,29 +543,28 @@ struct CstrOcp : ErkBase
                       wTc_ * dTc * dTc + wF_ * dF * dF);
     }
 
-    CstrP::stage_grad_t
-    stage_cost_gradient(int, const state_t& x, const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, CstrP::stage_grad_t& grad) const
     {
-        CstrP::stage_grad_t g;
-        g(0) = wc_  * (x(0) - xs_c);
-        g(1) = wT_  * (x(1) - xs_T);
-        g(2) = wh_  * (x(2) - xs_h);
-        g(3) = wTc_ * (u(0) - us_Tc);
-        g(4) = wF_  * (u(1) - us_F);
-        return g;
+        value = stage_cost_value(0, x, u);
+        grad(0) = wc_  * (x(0) - xs_c);
+        grad(1) = wT_  * (x(1) - xs_T);
+        grad(2) = wh_  * (x(2) - xs_h);
+        grad(3) = wTc_ * (u(0) - us_Tc);
+        grad(4) = wF_  * (u(1) - us_F);
     }
 
-    CstrP::stage_hess_t
-    stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, CstrP::stage_grad_t& grad,
+                                    CstrP::stage_hess_t& hess) const
     {
-        CstrP::stage_hess_t H;
-        H.setZero();
-        H(0, 0) = wc_;
-        H(1, 1) = wT_;
-        H(2, 2) = wh_;
-        H(3, 3) = wTc_;
-        H(4, 4) = wF_;
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess(0, 0) = wc_;
+        hess(1, 1) = wT_;
+        hess(2, 2) = wh_;
+        hess(3, 3) = wTc_;
+        hess(4, 4) = wF_;
     }
 
     // ---- terminal cost ----
@@ -577,23 +576,24 @@ struct CstrOcp : ErkBase
         return 0.5 * (wc_ * dc * dc + wT_ * dT * dT + wh_ * dh * dh);
     }
 
-    CstrP::term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  CstrP::term_grad_t& grad) const
     {
-        CstrP::term_grad_t g;
-        g(0) = wc_ * (x(0) - xs_c);
-        g(1) = wT_ * (x(1) - xs_T);
-        g(2) = wh_ * (x(2) - xs_h);
-        return g;
+        value = terminal_cost_value(x);
+        grad(0) = wc_ * (x(0) - xs_c);
+        grad(1) = wT_ * (x(1) - xs_T);
+        grad(2) = wh_ * (x(2) - xs_h);
     }
 
-    CstrP::term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       CstrP::term_grad_t& grad,
+                                       CstrP::term_hess_t& hess) const
     {
-        CstrP::term_hess_t H;
-        H.setZero();
-        H(0, 0) = wc_;
-        H(1, 1) = wT_;
-        H(2, 2) = wh_;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess.setZero();
+        hess(0, 0) = wc_;
+        hess(1, 1) = wT_;
+        hess(2, 2) = wh_;
     }
 
     // ---- stage box constraints ----
@@ -625,7 +625,7 @@ struct CstrOcp : ErkBase
     }
 
     // ---- terminal equality: x_N = xs ----
-    CstrP::eq_term_t terminal_equality_constr(const state_t& x) const
+    CstrP::eq_term_t terminal_equality_value(const state_t& x) const
     {
         CstrP::eq_term_t e;
         e(0) = x(0) - xs_c;
@@ -634,18 +634,26 @@ struct CstrOcp : ErkBase
         return e;
     }
 
-    void terminal_equality_constr_jacobian(
-        const state_t&, CstrP::eq_term_de_dx_t& e_dx) const
+    void terminal_equality_value_jac(
+        const state_t& x, CstrP::eq_term_t& e,
+        CstrP::eq_term_de_dx_t& e_dx) const
     {
+        e(0) = x(0) - xs_c;
+        e(1) = x(1) - xs_T;
+        e(2) = x(2) - xs_h;
         e_dx = CstrP::eq_term_de_dx_t::Identity();
     }
 
-    void terminal_equality_constr_hess_prod(const state_t&,
-                                            const CstrP::eq_term_t&,
-                                            const state_t&,
-                                            state_t& hv) const
+    void terminal_equality_value_jac_hess(const state_t& x,
+                                             const CstrP::eq_term_t&,
+                                             CstrP::eq_term_t& e,
+                                             CstrP::eq_term_de_dx_t& e_dx,
+                                             CstrP::term_constr_hess_t& hess)
+        const
     {
-        hv.setZero();
+        terminal_equality_value_jac(x, e, e_dx);
+        // e is affine in x: D2e = 0
+        hess.setZero();
     }
 };
 

@@ -95,7 +95,7 @@ double lagrangian(const DoubleIntegrator& p,
         const auto f = p.dynamics_next_state(k, s.x[k], s.u[k]);
         L += s.lambda_dyn[k].dot(s.x[k + 1] - f);
 
-        const auto g = p.stage_inequality_constr(k, s.x[k], s.u[k]);
+        const auto g = p.stage_inequality_value(k, s.x[k], s.u[k]);
         L += s.lambda_ineq_stage[k].dot(g);
 
         const auto lin = p.stage_linear_constr(k);

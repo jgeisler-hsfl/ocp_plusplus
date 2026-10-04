@@ -129,7 +129,7 @@ int main()
     }
 
     // hard terminal ineq must be satisfied (raw, no slacks)
-    const auto ge = p.terminal_inequality_constr(sol.x[N]);
+    const auto ge = p.terminal_inequality_value(sol.x[N]);
     check(static_cast<double>(ge(0)) < 1e-9, "terminal ineq lo satisfied");
     check(static_cast<double>(ge(1)) < 1e-9, "terminal ineq hi satisfied");
 

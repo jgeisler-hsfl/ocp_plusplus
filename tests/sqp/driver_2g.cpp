@@ -302,8 +302,8 @@ struct DegProbeDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 0> state_box_idx = {};
     static constexpr std::array<int, 0> control_box_idx = {};
     static constexpr std::array<int, 0> terminal_state_box_idx = {};
@@ -331,9 +331,11 @@ public:
         return x;
     }
 
-    void dynamics_jacobian(int, const state_t&, const control_t&,
-                           dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    void dynamics_value_jac(int, const state_t& x, const control_t&,
+                            state_t& x_next, dyn_df_dx_t& df_dx,
+                            dyn_df_du_t& df_du) const
     {
+        x_next = x;
         df_dx(0, 0) = 1.0;
         df_du.setZero();
     }
@@ -343,22 +345,21 @@ public:
         return x(0) * x(0) + u(0) * u(0);
     }
 
-    stage_grad_t stage_cost_gradient(int, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, stage_grad_t& grad) const
     {
-        stage_grad_t g;
-        g << 2.0 * x(0), 2.0 * u(0);
-        return g;
+        value = stage_cost_value(0, x, u);
+        grad << 2.0 * x(0), 2.0 * u(0);
     }
 
-    stage_hess_t stage_cost_hessian(int, const state_t&,
-                                    const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {
-        stage_hess_t H;
-        H.setZero();
-        H(0, 0) = 2.0;
-        H(1, 1) = 2.0;
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess(0, 0) = 2.0;
+        hess(1, 1) = 2.0;
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -366,29 +367,33 @@ public:
         return x(0) * x(0);
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& grad) const
     {
-        return term_grad_t::Constant(1, 2.0 * x(0));
+        value = terminal_cost_value(x);
+        grad = term_grad_t::Constant(1, 2.0 * x(0));
     }
 
-    term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& grad,
+                                       term_hess_t& hess) const
     {
-        term_hess_t H;
-        H(0, 0) = 2.0;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess(0, 0) = 2.0;
     }
 
     // x - 1 <= 0: violated at the pinned x_0 = 2, independent of u
-    ineq_t stage_inequality_constr(int, const state_t& x,
+    ineq_t stage_inequality_value(int, const state_t& x,
                                    const control_t&) const
     {
         return ineq_t::Constant(1, x(0) - 1.0);
     }
 
-    void stage_inequality_constr_jacobian(
-        int, const state_t&, const control_t&, ineq_dg_dx_t& g_dx,
-        ineq_dg_du_t& g_du) const
+    void stage_inequality_value_jac(
+        int, const state_t& x, const control_t&, ineq_t& g,
+        ineq_dg_dx_t& g_dx, ineq_dg_du_t& g_du) const
     {
+        g(0) = x(0) - 1.0;
         g_dx(0, 0) = 1.0;
         g_du.setZero();
     }

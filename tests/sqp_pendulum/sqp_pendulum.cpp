@@ -17,7 +17,7 @@
 //      the dynamics port (including the residual sign convention) is exact.
 //  (B) COST: relative error vs the acados reference < 1e-3. ocp++ assembles
 //      the QP Hessian from the stage cost Hessian only
-//      (Dims::has_dynamics_hess_prod = false), whereas acados uses
+//      (Dims::has_dynamics_hess = false), whereas acados uses
 //      Gauss-Newton (cost + dynamics J'J). On this non-convex OCP the two
 //      quadratic SQP models follow different paths and settle at different
 //      local KKT points; a relative gap of ~1e-4 is observed and expected.

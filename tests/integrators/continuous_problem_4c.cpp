@@ -2,7 +2,7 @@
 // the integrator and produces a well-formed QP through the SQP assembler.
 //
 // Test problem: a continuous double integrator (qdot = v, vdot = a) wrapped
-// in ContinuousProblem with K4Tag. The ODE is linear, so has_dynamics_hess_prod
+// in ContinuousProblem with K4Tag. The ODE is linear, so has_dynamics_hess
 // is false and the ODE does not provide hess_prod. For a linear ODE the RK4
 // stages are exact, so dynamics_next_state must reproduce the exact discrete
 // map to machine precision.
@@ -30,8 +30,8 @@ struct ContDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // linear ODE
-    static constexpr bool has_constr_hess_prod = false;    // linear constraints
+    static constexpr bool has_dynamics_hess = false;  // linear ODE
+    static constexpr bool has_constr_hess = false;    // linear constraints
     static constexpr std::array<int, 2> state_box_idx = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -69,7 +69,7 @@ struct DoubleIntegratorOde
         df_du.setZero();
         df_du(1, 0) = 1.0;
     }
-    // No hess_prod: the ODE is linear (has_dynamics_hess_prod = false).
+    // No hess_prod: the ODE is linear (has_dynamics_hess = false).
 };
 
 // --- Concrete problem --------------------------------------------------
@@ -101,25 +101,25 @@ struct ContDoubleIntegrator : Base
                       wa_ * u(0) * u(0));
     }
 
-    CP::stage_grad_t
-    stage_cost_gradient(int, const state_t& x, const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value, CP::stage_grad_t& grad) const
     {
-        CP::stage_grad_t g;
-        g(0) = wq_ * x(0);
-        g(1) = wv_ * x(1);
-        g(2) = wa_ * u(0);
-        return g;
+        value = 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1)
+                       + wa_ * u(0) * u(0));
+        grad(0) = wq_ * x(0);
+        grad(1) = wv_ * x(1);
+        grad(2) = wa_ * u(0);
     }
 
-    CP::stage_hess_t
-    stage_cost_hessian(int, const state_t&, const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value, CP::stage_grad_t& grad,
+                                    CP::stage_hess_t& hess) const
     {
-        CP::stage_hess_t H;
-        H.setZero();
-        H(0, 0) = wq_;
-        H(1, 1) = wv_;
-        H(2, 2) = wa_;
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess.setZero();
+        hess(0, 0) = wq_;
+        hess(1, 1) = wv_;
+        hess(2, 2) = wa_;
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -127,21 +127,22 @@ struct ContDoubleIntegrator : Base
         return wf_ * (x(0) * x(0) + x(1) * x(1));
     }
 
-    CP::term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  CP::term_grad_t& grad) const
     {
-        CP::term_grad_t g;
-        g(0) = 2.0 * wf_ * x(0);
-        g(1) = 2.0 * wf_ * x(1);
-        return g;
+        value = wf_ * (x(0) * x(0) + x(1) * x(1));
+        grad(0) = 2.0 * wf_ * x(0);
+        grad(1) = 2.0 * wf_ * x(1);
     }
 
-    CP::term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       CP::term_grad_t& grad,
+                                       CP::term_hess_t& hess) const
     {
-        CP::term_hess_t H;
-        H.setZero();
-        H(0, 0) = 2.0 * wf_;
-        H(1, 1) = 2.0 * wf_;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess.setZero();
+        hess(0, 0) = 2.0 * wf_;
+        hess(1, 1) = 2.0 * wf_;
     }
 
     CP::state_box_t stage_state_box_constr(int) const
@@ -224,7 +225,7 @@ int run_erk_4c_tests()
     }
 
     // ---------------------------------------------------------------
-    //  dynamics_jacobian: for the linear ODE the composed-map Jacobian is
+    //  dynamics_value_jac: for the linear ODE the composed-map Jacobian is
     //  constant and equal to the exact discrete Jacobian
     //      df/dx = [[1, h + h^2/2], [0, 1]]  (RK4 exact for linear ODE)
     //      df/du = [[h^2/2], [h]]
@@ -236,7 +237,8 @@ int run_erk_4c_tests()
         u << 0.5;
         CP::dyn_df_dx_t Jx;
         CP::dyn_df_du_t Ju;
-        prob.dynamics_jacobian(0, x, u, Jx, Ju);
+        CP::state_t x_jac;
+        prob.dynamics_value_jac(0, x, u, x_jac, Jx, Ju);
         // exact: for linear ODE, df/dx = I + h*A_discrete where A_discrete
         // is the state-transition matrix of the discrete map.
         // For the double integrator with exact integration:
@@ -249,7 +251,7 @@ int run_erk_4c_tests()
         check_close(Jx(1, 1), 1.0, 1e-14, "4c Jx(1,1)");
         check_close(Ju(0, 0), 0.5 * h * h, 1e-14, "4c Ju(0,0)");
         check_close(Ju(1, 0), h, 1e-14, "4c Ju(1,0)");
-        std::printf("  dynamics_jacobian exact  OK\n");
+        std::printf("  dynamics_value_jac exact  OK\n");
     }
 
     // ---------------------------------------------------------------

@@ -107,8 +107,8 @@ struct TermConstrDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 1;
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = true;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = true;
     static constexpr std::array<int, 2> state_box_idx = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -147,8 +147,8 @@ struct SoftBoxDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 1> state_box_idx = {0};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 1> terminal_state_box_idx = {0};

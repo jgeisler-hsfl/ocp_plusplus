@@ -16,10 +16,10 @@
 //  (C) TRAJECTORY: |dx|, |du| inf-norm vs the acados reference, at a
 //      RELAXED tolerance. Both solvers use the SAME QP Hessian model:
 //      Gauss-Newton, cost Hessian only (ocp++:
-//      Dims::has_dynamics_hess_prod = false; acados:
+//      Dims::has_dynamics_hess = false; acados:
 //      hessian_approx = GAUSS_NEWTON, which adds no dynamics Hessian term —
 //      the dynamics enter the QP only through the linearized BA matrix;
-//      see (E) and include/ocp/solvers/acados/GN_HESSIAN_PLAN.md sec. 1).
+//      see (E) and docs/plans/finished/GN_HESSIAN_PLAN.md sec. 1).
 //      The residual QP differences come from the dynamics Jacobian
 //      (ocp++ central FD, h = 1e-6, vs acados CasADi analytic) plus
 //      solver-level numerics. On this weakly-convex OCP (control weight
@@ -71,7 +71,7 @@ using Dim = MassesChainDims;
 // hessian_approx = GAUSS_NEWTON adds no dynamics Hessian term to the QP
 // (verified in the acados source: the collocation Hessian S_hess is EXACT-
 // only), so the acados-GN QP Hessian is exactly the cost Hessian.  ocp++
-// (has_dynamics_hess_prod = false) must assemble the same matrix.  The
+// (has_dynamics_hess = false) must assemble the same matrix.  The
 // multipliers lambda_dyn are set to NONZERO values on purpose: an EXACT-mode
 // assembly would add -lambda^T H_f here, so equality to the cost Hessian
 // with nonzero lambda proves the dynamics HVP path is absent.
@@ -142,11 +142,16 @@ void check_qp_gn()
         const auto& st = qp.first;
         const Eigen::Matrix<double, nx, 1> x0 = sol.x[0];
         const Eigen::Matrix<double, nu, 1> u0 = sol.u[0];
-        const auto g = problem.stage_cost_gradient(0, x0, u0);
+        double cval;
+        Eigen::Matrix<double, nx + nu, 1> g;
+        problem.stage_cost_value_grad(0, x0, u0, cval, g);
         stage_hess_err(st.hess, g, st.grad);
+        (void)cval;
         Eigen::Matrix<double, nx, nu> B;
         Eigen::Matrix<double, nx, nx> A;
-        problem.dynamics_jacobian(0, x0, u0, A, B);
+        Eigen::Matrix<double, nx, 1> f_jac;
+        problem.dynamics_value_jac(0, x0, u0, f_jac, A, B);
+        (void)f_jac;
         for (int i = 0; i < nx; ++i)
         {
             for (int j = 0; j < nu; ++j)
@@ -177,11 +182,16 @@ void check_qp_gn()
         const auto& st = qp.path[k - 1];
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
-        const auto g = problem.stage_cost_gradient(k, x, u);
+        double cval;
+        Eigen::Matrix<double, nx + nu, 1> g;
+        problem.stage_cost_value_grad(k, x, u, cval, g);
         stage_hess_err(st.hess, g, st.grad);
+        (void)cval;
         Eigen::Matrix<double, nx, nu> B;
         Eigen::Matrix<double, nx, nx> A;
-        problem.dynamics_jacobian(k, x, u, A, B);
+        Eigen::Matrix<double, nx, 1> f_jac;
+        problem.dynamics_value_jac(k, x, u, f_jac, A, B);
+        (void)f_jac;
         for (int i = 0; i < nx; ++i)
         {
             for (int j = 0; j < nu; ++j)
@@ -228,7 +238,7 @@ void check_qp_gn()
 
     check(max_h < 1e-12, "QP stage H == cost Hessian (GN, nonzero lambda_dyn)");
     check(max_g < 1e-12, "QP grad == permuted cost gradient");
-    check(max_ba < 1e-12, "QP BA == [B | A] from problem dynamics_jacobian");
+    check(max_ba < 1e-12, "QP BA == [B | A] from problem dynamics_value_jac");
     check(max_b < 1e-12, "QP b == Phi(x_k,u_k) - x_{k+1}");
     std::printf("  (E) QP-level GN     |H-H_cost| = %.3e  |g-g| = %.3e  "
                 "|BA| = %.3e  |b| = %.3e\n",

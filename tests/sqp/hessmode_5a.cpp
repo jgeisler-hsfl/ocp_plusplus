@@ -1,8 +1,8 @@
 // Phase 5a test: QP Hessian modes (GN_HESSIAN_PLAN.md sec. 3a.1).
 //
 // One quadratic problem is instantiated with two Dims tags:
-//   ExactDims: has_dynamics_hess_prod = true,  has_constr_hess_prod = true
-//   GnDims:    has_dynamics_hess_prod = false, has_constr_hess_prod = false
+//   ExactDims: has_dynamics_hess = true,  has_constr_hess = true
+//   GnDims:    has_dynamics_hess = false, has_constr_hess = false
 //
 // Checks:
 //   1. GN mode: first-stage hess (u;x) == H_cost exactly, terminal hess ==
@@ -62,8 +62,8 @@ struct ExactDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = false;
-    static constexpr bool has_dynamics_hess_prod = true;
-    static constexpr bool has_constr_hess_prod = true;
+    static constexpr bool has_dynamics_hess = true;
+    static constexpr bool has_constr_hess = true;
     static constexpr std::array<int, 1> state_box_idx = {0};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 0> terminal_state_box_idx = {};
@@ -89,8 +89,8 @@ struct GnDims
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
     static constexpr bool fixed_initial_state = false;
-    static constexpr bool has_dynamics_hess_prod = false;
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;
+    static constexpr bool has_constr_hess = false;
     static constexpr std::array<int, 1> state_box_idx = {0};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 0> terminal_state_box_idx = {};
@@ -137,21 +137,28 @@ public:
         return state_t::Constant(1, x(0) + Ts * x(0) * u(0));
     }
 
-    void dynamics_jacobian(int, const state_t& x, const control_t& u,
-                           typename P::dyn_df_dx_t& df_dx,
-                           typename P::dyn_df_du_t& df_du) const
+    void dynamics_value_jac(int, const state_t& x, const control_t& u,
+        state_t& x_next,
+        typename P::dyn_df_dx_t& df_dx,
+        typename P::dyn_df_du_t& df_du) const
     {
+        x_next(0) = x(0) + Ts * x(0) * u(0);
         df_dx(0, 0) = 1.0 + Ts * u(0);
         df_du(0, 0) = Ts * x(0);
     }
 
-    void dynamics_hess_prod(int, const state_t&, const control_t&,
-                            const state_t& w, const state_t& v_x,
-                            const control_t& v_u, state_t& hv_x,
-                            control_t& hv_u) const
+    void dynamics_value_jac_hess(int, const state_t& x, const control_t& u,
+                                 const state_t& w, state_t& x_next,
+                                 typename P::dyn_df_dx_t& df_dx,
+                                 typename P::dyn_df_du_t& df_du,
+                                 typename P::dyn_hess_t& hess) const
     {
-        hv_x(0) = w(0) * Ts * v_u(0);
-        hv_u(0) = w(0) * Ts * v_x(0);
+        dynamics_value_jac(0, x, u, x_next, df_dx, df_du);
+        // contracted Hessian w^T D2f, [x; u] layout:
+        // D2f = Ts * [[0, 1], [1, 0]]  =>  w * Ts * [[0,1],[1,0]]
+        hess.setZero();
+        hess(0, 1) = w(0) * Ts;
+        hess(1, 0) = w(0) * Ts;
     }
 
     double stage_cost_value(int, const state_t& x,
@@ -160,21 +167,22 @@ public:
         return x(0) * x(0) + 0.5 * x(0) * u(0) + 0.25 * u(0) * u(0);
     }
 
-    typename P::stage_grad_t stage_cost_gradient(int, const state_t& x,
-                                                 const control_t& u) const
+    void stage_cost_value_grad(int, const state_t& x, const control_t& u,
+                               double& value,
+                               typename P::stage_grad_t& grad) const
     {
-        typename P::stage_grad_t g;
-        g(0) = 0.5 * x(0) + 0.5 * u(0);
-        g(1) = 2.0 * x(0) + 0.5 * u(0);
-        return g;
+        value = x(0) * x(0) + 0.5 * x(0) * u(0) + 0.25 * u(0) * u(0);
+        grad(0) = 0.5 * x(0) + 0.5 * u(0);
+        grad(1) = 2.0 * x(0) + 0.5 * u(0);
     }
 
-    typename P::stage_hess_t stage_cost_hessian(int, const state_t&,
-                                                const control_t&) const
+    void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
+                                    double& value,
+                                    typename P::stage_grad_t& grad,
+                                    typename P::stage_hess_t& hess) const
     {
-        typename P::stage_hess_t H;
-        H << 2.0, 0.5, 0.5, 0.5;  // [x; u] layout
-        return H;
+        stage_cost_value_grad(0, x, u, value, grad);
+        hess << 2.0, 0.5, 0.5, 0.5;  // [x; u] layout
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -182,21 +190,22 @@ public:
         return 4.0 * x(0) * x(0);
     }
 
-    typename P::term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  typename P::term_grad_t& grad) const
     {
-        typename P::term_grad_t g;
-        g(0) = 8.0 * x(0);
-        return g;
+        value = 4.0 * x(0) * x(0);
+        grad(0) = 8.0 * x(0);
     }
 
-    typename P::term_hess_t terminal_cost_hessian(const state_t&) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       typename P::term_grad_t& grad,
+                                       typename P::term_hess_t& hess) const
     {
-        typename P::term_hess_t H;
-        H(0, 0) = 8.0;
-        return H;
+        terminal_cost_value_grad(x, value, grad);
+        hess(0, 0) = 8.0;
     }
 
-    typename P::ineq_t stage_inequality_constr(int, const state_t& x,
+    typename P::ineq_t stage_inequality_value(int, const state_t& x,
                                                const control_t& u) const
     {
         typename P::ineq_t g;
@@ -204,25 +213,31 @@ public:
         return g;
     }
 
-    void stage_inequality_constr_jacobian(int, const state_t& x,
+    void stage_inequality_value_jac(int, const state_t& x,
                                           const control_t& u,
+                                          typename P::ineq_t& g,
                                           typename P::ineq_dg_dx_t& g_dx,
                                           typename P::ineq_dg_du_t& g_du) const
     {
+        g(0) = x(0) * u(0) + x(0) - 0.5;
         g_dx(0, 0) = u(0) + 1.0;
         g_du(0, 0) = x(0);
     }
 
-    void stage_inequality_constr_hess_prod(int, const state_t&,
-                                           const control_t&,
-                                           const typename P::ineq_t& w,
-                                           const state_t& v_x,
-                                           const control_t& v_u,
-                                           state_t& hv_x,
-                                           control_t& hv_u) const
+    void stage_inequality_value_jac_hess(int, const state_t& x,
+                                          const control_t& u,
+                                          const typename P::ineq_t& lam,
+                                          typename P::ineq_t& g,
+                                          typename P::ineq_dg_dx_t& g_dx,
+                                          typename P::ineq_dg_du_t& g_du,
+                                          typename P::constr_hess_t& hess) const
     {
-        hv_x(0) = w(0) * v_u(0);
-        hv_u(0) = w(0) * v_x(0);
+        stage_inequality_value_jac(0, x, u, g, g_dx, g_du);
+        // contracted Hessian lam^T D2g, [x; u] layout:
+        // D2g = [[0, 1], [1, 0]]
+        hess.setZero();
+        hess(0, 1) = lam(0);
+        hess(1, 0) = lam(0);
     }
 
     typename P::ineq_pen_t stage_inequality_constr_soft_penalty(int) const
@@ -250,26 +265,33 @@ public:
         return spec;
     }
 
-    typename P::eq_term_t terminal_equality_constr(const state_t& x) const
+    typename P::eq_term_t terminal_equality_value(const state_t& x) const
     {
         typename P::eq_term_t e;
         e(0) = x(0) * x(0) - 1.0;
         return e;
     }
 
-    void terminal_equality_constr_jacobian(const state_t& x,
-                                           typename P::eq_term_de_dx_t& e_dx)
+    void terminal_equality_value_jac(const state_t& x,
+                                          typename P::eq_term_t& e,
+                                          typename P::eq_term_de_dx_t& e_dx)
         const
     {
+        e(0) = x(0) * x(0) - 1.0;
         e_dx(0, 0) = 2.0 * x(0);
     }
 
-    void terminal_equality_constr_hess_prod(const state_t&,
-                                            const typename P::eq_term_t& w,
-                                            const state_t& v,
-                                            state_t& hv) const
+    void terminal_equality_value_jac_hess(const state_t& x,
+                                           const typename P::eq_term_t& lam,
+                                           typename P::eq_term_t& e,
+                                           typename P::eq_term_de_dx_t& e_dx,
+                                           typename P::term_constr_hess_t& hess)
+        const
     {
-        hv(0) = 2.0 * w(0) * v(0);
+        terminal_equality_value_jac(x, e, e_dx);
+        // contracted Hessian lam^T D2e, state-only: D2e = 2
+        hess.setZero();
+        hess(0, 0) = 2.0 * lam(0);
     }
 
     typename P::eq_term_pen_t terminal_equality_constr_soft_penalty() const
@@ -295,7 +317,7 @@ double stage_lagrangian(const HessModeProb<ExactDims>& prob,
                         const HessModeProb<ExactDims>::control_t& u)
 {
     const auto f = prob.dynamics_next_state(0, x, u);
-    const auto g = prob.stage_inequality_constr(0, x, u);
+    const auto g = prob.stage_inequality_value(0, x, u);
     return prob.stage_cost_value(0, x, u)
         + lam_dyn * (x1b - f(0)) + lam_ineq * g(0);
 }
@@ -344,7 +366,7 @@ void check_hess_block(const Qp<P, Eigen::Dynamic>& qp, bool exact,
 template <class Dims>
 void check_assembly(const std::string& tag)
 {
-    const bool exact = Dims::has_dynamics_hess_prod;
+    const bool exact = Dims::has_dynamics_hess;
     HessModeProb<Dims> prob;
     static constexpr int N = 1;
 
