@@ -7,7 +7,7 @@
 - [x] write JSON generator (tools/acados2ocp_pp.py) to write interface definition for new framework from acados_ocp_nlp.json, reusing CasADi generated dynamics, cost and constraint code
 - [x] implement GAUSS_NEWTON for dynamics part of the cost function. add switch in dims to activate
 - [x] write project README
-- [PLANNED] rework problem contract to use nested triplets for value/grad/hess
+- [x] rework problem contract to use nested triplets for value/grad/hess
 - [DEV] cppduals calculation of grad and hess
 - [PLANNED] rewrite options and statistics to use a dual access approach: direct via struct/class members (like currently) or by name via a reference map. aim: make values "discoverable" and settable in an interactive environment.
 - [PLANNED] investigate a way to implement a central "discovery"-map where all parts of a problem/solver-object can "register" their run-time mutable values (lists) like options and parameters. all values shall be alloc-free class members somewhere, only the "by-name"-access refs them from a map. every part of the problem has its own local list or lists (maps that ref values). the central registry maps theses lists/maps forming a hierarchie. maybe add a special accessor that takes complete value-"paths" and resolves them through the maps (of course handling nonexistent entries gracefully), like get("solver/hpimp/options/i_max") would return the value i_max that is an option in the hpipm solver.
