@@ -161,7 +161,7 @@ yield `c=+1` (pre-fix they had negated dynamics, `max|dx| ≈ 19`).
 - `ImplicitRkIntegrator<Dims, MassesChainOde, 4, <GL4Tag>, 2>` via
   `ContinuousProblem` → a discrete `Problem` with `dt = 0.2`.
 - `SqpSolver` with `PartialCondensingHpipm`, `cond_N=5`,
-  `hessian_approx = GAUSS_NEWTON` → set `Dims::has_dynamics_hess_prod = false`
+  `hessian_approx = GAUSS_NEWTON` → set `Dims::has_dynamics_hess = false`
   (drop the dynamics HVP; keep the exact LINEAR_LS cost Hessian), matching
   acados. Globalization set to fixed-step (full step) to mirror the JSON.
 - 3 Newton iters per sub-step, tol 0 (ocp++ defaults) = acados defaults.
@@ -211,7 +211,7 @@ The QP Hessian model is **identical** on both sides: acados
 dynamics enter the QP only through the linearized BA matrix; verified in the
 acados source, see
 `include/ocp/solvers/acades/GN_HESSIAN_PLAN.md` §1), and ocp++ sets
-`has_dynamics_hess_prod = false` (cost Hessian only) — for the LINEAR_LS
+`has_dynamics_hess = false` (cost Hessian only) — for the LINEAR_LS
 quadratic costs the cost Hessian `Vᵀ W V` is exact, so both QPs carry the
 same Hessian. The residual differences are the dynamics **Jacobian**
 (ocp++ central finite differences, h = 1e-6, vs acados CasADi analytic)
@@ -316,7 +316,7 @@ offending JSON field.
 | 16 | DAE with algebraic vars (`nz > 0`) | solver must handle z in KKT — not yet | deferred |
 | 17 | time-varying model (`t` in model signature) | Ode contract has `t` | P5 (check) |
 | 18 | non-uniform `time_steps` | `ContinuousProblem` assumes uniform dt | deferred |
-| 19 | `hessian_approx = GAUSS_NEWTON` | `has_dynamics_hess_prod=false` | ✅ done (QP-level verified: `tests/sqp/hessmode_5a.cpp`, `tests/sqp_masses_chain` check (E)) |
-| 20 | `hessian_approx = EXACT / ROSEN / NONE` | solver supports EXACT (`has_dynamics_hess_prod=true` + `dynamics_hess_prod`; FD-verified in `hessmode_5a`); generating a DAE-residual HVP wrapper for the codegen models | P5 |
+| 19 | `hessian_approx = GAUSS_NEWTON` | `has_dynamics_hess=false` | ✅ done (QP-level verified: `tests/sqp/hessmode_5a.cpp`, `tests/sqp_masses_chain` check (E)) |
+| 20 | `hessian_approx = EXACT / ROSEN / NONE` | solver supports EXACT (`has_dynamics_hess=true` + `dynamics_value_jac_hess`; FD-verified in `hessmode_5a`); generating a DAE-residual HVP wrapper for the codegen models | P5 |
 | 21 | `globalization = SQP_STEP / FILTER / TRUST_REGION` | fixed-step SQP only | deferred |
 | 22 | `qp_solver = FULL_CONDENSING_HPIPM / SQR_METHOD / QPOASES` | `PartialCondensingHpipm` only | deferred |

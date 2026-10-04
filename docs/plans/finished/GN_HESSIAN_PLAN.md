@@ -41,38 +41,38 @@ Key facts:
 
 ## 2. ocp++ current state (already implements the GN behavior)
 
-- **Cost Hessian** is user-provided per stage (`stage_cost_hessian` /
-  `terminal_cost_hessian`): the user decides exact vs GN form. The generated
-  wrappers (masses_chain, pendulum, unicycle) all provide the GN form
+- **Cost Hessian** is user-provided per stage (`stage_cost_value_grad_hess` /
+  `terminal_cost_value_grad_hess`): the user decides exact vs GN form. The
+  generated wrappers (masses_chain, pendulum, unicycle) all provide the GN form
   `Vᵀ W V`, which for LINEAR_LS equals the exact cost Hessian — matching
   acados in both `ROSEN` and `GAUSS_NEWTON` for these examples.
 - **Dynamics second-order term**: gated by the compile-time
-  `Dims::has_dynamics_hess_prod` **and** the runtime
+  `Dims::has_dynamics_hess` **and** the runtime
   `SqpOptions::compute_hess` (sqp.hpp `assemble_first` / `assemble_path`):
   `st.hess -= build_dyn_hvp(...)`, i.e. the exact term `−λ_dynᵀ H_f`
   (constraint residual `x_{k+1} − f_k(x_k,u_k)`, Lagrangian Hessian w.r.t.
   `(x_k,u_k)` is `−λᵀ H_f`).
-- **Constraint HVPs**: gated by `Dims::has_constr_hess_prod` + `compute_hess`.
+- **Constraint HVPs**: gated by `Dims::has_constr_hess` + `compute_hess`.
 
 Mapping to acados:
 
 | ocp++ setting | QP Hessian | acados equivalent |
 |---|---|---|
-| `has_dynamics_hess_prod=true`, `compute_hess=true`, exact cost H | `H_cost − λᵀH_f` (+ constr HVPs) | `EXACT` |
+| `has_dynamics_hess=true`, `compute_hess=true`, exact cost H | `H_cost − λᵀH_f` (+ constr HVPs) | `EXACT` |
 | no dynamics HVP, exact cost H | `H_cost` | `ROSEN` |
 | no dynamics HVP, GN cost H (`VᵀWV`) | `H_cost = JᵀWJ` | `GAUSS_NEWTON` |
 
 So the "switch in dims" from the TODO item **exists**
-(`has_dynamics_hess_prod`), and the GAUSS_NEWTON dynamics behavior (no
+(`has_dynamics_hess`), and the GAUSS_NEWTON dynamics behavior (no
 second-order dynamics term; linearized `BA` only) is **implemented**. All
 three ported acados examples declare `hessian_approx: GAUSS_NEWTON` in their
-JSON and ocp++ sets `has_dynamics_hess_prod = false`; masses_chain matches
+JSON and ocp++ sets `has_dynamics_hess = false`; masses_chain matches
 acados to cost rel. 4e-7 / ‖Δx‖∞ 1e-8, which is only possible if the QP
 Hessians agree (a missing dynamics JᵀJ term would be a systematic O(1)
 difference, not 1e-8).
 
 The ROSEN/GN distinction for ocp++ lives entirely on the cost-Hessian side
-(user's choice per `stage_cost_hessian`); no separate solver switch is
+(user's choice per `stage_cost_value_grad_hess`); no separate solver switch is
 needed (and current acados no longer exposes ROSEN at all).
 
 ## 3. Work (status: done, 2026-10-04)
@@ -82,10 +82,10 @@ needed (and current acados no longer exposes ROSEN at all).
 1. **Unit test `tests/sqp/hessmode_5a.cpp`** (added to the `sqp_unit`
    target in `CMakeLists.txt`) — DONE. A small synthetic problem with
    known analytic `H_f` and `H_cost` and nonzero fixed multipliers:
-   - GN mode (`has_dynamics_hess_prod=false`): `H_qp == H_cost` exactly
+   - GN mode (`has_dynamics_hess=false`): `H_qp == H_cost` exactly
      (0.0 error), `BA == [B|A]`, `b == f(x,u) − x̄` — with nonzero
      `λ_dyn`, so the absence of the `−λᵀH_f` term is discriminating.
-   - EXACT mode (`has_dynamics_hess_prod=true`, `compute_hess=true`):
+   - EXACT mode (`has_dynamics_hess=true`, `compute_hess=true`):
      `H_qp == H_cost − λᵀH_f` + constraint HVP terms, checked against
      analytic values.
    - **FD cross-check of the EXACT path**: central-FD of the Lagrangian
@@ -115,7 +115,7 @@ needed (and current acados no longer exposes ROSEN at all).
 
 ### 3b. Interface / documentation cleanup ("switch in dims") — DONE
 
-- `problem.hpp`: `has_dynamics_hess_prod` docs rewritten (Dims example,
+- `problem.hpp`: `has_dynamics_hess` docs rewritten (Dims example,
   interface note, flag comment): `false` = no exact dynamics HVP, the SQP
   uses the Gauss-Newton Hessian (dynamics only via the linearized BA;
   acados `GAUSS_NEWTON`/historical `ROSEN`); `true` = exact Lagrangian
@@ -149,7 +149,7 @@ needed (and current acados no longer exposes ROSEN at all).
 
 1. `solver: add FD-checked QP Hessian assembly test (exact vs GN)`
 2. `test: add masses_chain QP-level acados equivalence check`
-3. `problem: document GN/EXACT semantics of has_dynamics_hess_prod`
+3. `problem: document GN/EXACT semantics of has_dynamics_hess`
 4. `docs: correct plan §7 Hessian claim; update GN status`
 
 ## 5. Verification

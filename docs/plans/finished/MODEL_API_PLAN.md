@@ -1,7 +1,7 @@
 # Plan: Fused model-evaluation entries (value / value+first / value+first+hess)
 
-Status: **re-evaluated vs current master** (2026-10-04, branch `model-api`).
-This file is the working reference for the implementation. It reworks the
+Status: **implemented** (2026-10-04, branch `model-api`).
+This file was the working reference for the implementation. It reworks the
 model-evaluation part of the problem contract (`include/ocp/problem.hpp`):
 the stage/terminal cost, the dynamics map, and the nonlinear (in)equality
 constraints move from separate value / gradient / HVP entries to nested

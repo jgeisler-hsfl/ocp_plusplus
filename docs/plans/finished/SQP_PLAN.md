@@ -64,6 +64,10 @@ Standing defaults (not separately discussed):
 
 ## 3. Problem interface extension (`problem.hpp`)
 
+> **Superseded (2026-10-04):** the HVP-based entries below were replaced by
+> fused value / value+first / value+first+hess triplets; see
+> `MODEL_API_PLAN.md`. The block is kept as a historical record.
+
 New contract methods (base stubs with `static_assert`; keep the "Interface
 contract" comment block and the "Extensions anticipated" note in sync):
 

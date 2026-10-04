@@ -31,6 +31,9 @@ No other dependencies. C++17 required.
   staged QP data model (`qp.hpp`: `QpDim<P>`, `Qp<P,NH>`, `QpSol<P,NH>`,
   `QpRes<P,NH>`).
 - `examples/double_integrator/` — minimal concrete problem + finite-difference sanity test.
+- `docs/plans/` — working plan docs; `docs/plans/finished/` holds completed
+  plans/worklogs (SQP phases 1–4, GN-Hessian, model API, generator,
+  phase-1 worklog).
 - `acados/` — reference only.
 
 ## Conventions

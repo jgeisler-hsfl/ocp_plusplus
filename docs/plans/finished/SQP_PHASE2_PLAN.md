@@ -1,5 +1,10 @@
 # Phase 2 plan: SQP driver (NLP level)
 
+> **Superseded (2026-10-04):** the model entries referenced here
+> (`dynamics_hess_prod`, `*_constr_hess_prod`, `stage_cost_hessian`,
+> `dynamics_jacobian`, ...) were replaced by fused triplets; see
+> `MODEL_API_PLAN.md`.
+
 Companion to `SQP_PLAN.md` (§3, §7–§9, §11 Phase 2). This file is the
 working reference for the phase: the refined sub-step plan, the
 conventions this phase nails down, and the running checkpoints (append a

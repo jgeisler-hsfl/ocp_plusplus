@@ -1,5 +1,11 @@
 # Phase 4 plan: RK integrator + continuous-time problem interface
 
+> **Superseded in part (2026-10-04):** the problem-level dynamics entries
+> (`dynamics_jacobian`, `dynamics_hess_prod`) were replaced by fused
+> `dynamics_value_jac` / `dynamics_value_jac_hess` triplets; the flags are
+> `has_dynamics_hess` / `has_constr_hess`. See `MODEL_API_PLAN.md`.
+> ODE-level and integrator-level `hess_prod` are unchanged.
+
 Companion to `SQP_PLAN.md` (§11 Phase 4) and the two `TODO.md` items it
 advances:
 
@@ -332,17 +338,18 @@ public:
     typename P::state_t
     dynamics_next_state(int, const typename P::state_t& x,
                         const typename P::control_t& u) const;
-    void dynamics_jacobian(int, const typename P::state_t& x,
-                           const typename P::control_t& u,
-                           typename P::dyn_df_dx_t& df_dx,
-                           typename P::dyn_df_du_t& df_du) const;
-    void dynamics_hess_prod(int, const typename P::state_t& x,
+    void dynamics_value_jac(int, const typename P::state_t& x,
                             const typename P::control_t& u,
-                            const typename P::state_t& w,
-                            const typename P::state_t& v_x,
-                            const typename P::control_t& v_u,
-                            typename P::state_t& hv_x,
-                            typename P::control_t& hv_u) const;
+                            typename P::state_t& x_next,
+                            typename P::dyn_df_dx_t& df_dx,
+                            typename P::dyn_df_du_t& df_du) const;
+    void dynamics_value_jac_hess(int, const typename P::state_t& x,
+                                 const typename P::control_t& u,
+                                 const typename P::state_t& lam,
+                                 typename P::state_t& x_next,
+                                 typename P::dyn_df_dx_t& df_dx,
+                                 typename P::dyn_df_du_t& df_du,
+                                 typename P::dyn_hess_t& hess) const;
     // cost / constraint / initial_state: inherited stubs (user implements).
 };
 ```
@@ -358,10 +365,11 @@ Notes:
   stage/terminal cost, constraint, and soft-penalty methods are untouched
   and are the same signatures as a discrete problem. This keeps the
   discrete `SqpSolver` unchanged.
-- Because `dynamics_hess_prod` is only called when
-  `Dims::has_dynamics_hess_prod` is true, a linear ODE (zero HVP) may set
-  `has_dynamics_hess_prod = false` and the adapter's method is never
-  instantiated (the `static_assert` trait in §1.1 is not fired).
+- Because `dynamics_value_jac_hess` is only instantiated when
+  `Dims::has_dynamics_hess` is true (solver-side `if constexpr`), a linear
+  ODE (zero HVP) may set `has_dynamics_hess = false` and the adapter's
+  method is never instantiated (the `static_assert` trait in §1.1 is not
+  fired).
 
 ## 2. Source-verified conventions
 
