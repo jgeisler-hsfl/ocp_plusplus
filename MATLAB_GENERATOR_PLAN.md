@@ -216,15 +216,25 @@ hold only when both SQPs converge to the *same* KKT point:
 
 | example | cost rel. diff | `‖Δx‖∞` | `‖Δu‖∞` | note |
 |---|---|---|---|---|
-| masses_chain | ~4e-7 | ~1e-8 | ~1e-9 | smooth, convex-ish → identical KKT point |
+| masses_chain | ~4e-7 | ~1.1e-3 | ~8e-3 | same KKT point; gap from dynamics-Jacobian accuracy (see below) |
 | unicycle | ~3e-6 | 4.5e-2 | 1.1e-1 | smooth but non-convex; distinct KKT points |
 | pendulum_on_cart | ~1.7e-4 | 9.7e-2 | 0.78 | bang-bang controls; distinct KKT points |
 
-The ocp++ SQP uses the *cost-only* Hessian (`has_dynamics_hess_prod=false`),
-while acados uses Gauss-Newton (cost + J′J). For non-convex OCPs the two
-iterations can land on **different local KKT points** (ocp++ even finds a
-*lower* cost for the pendulum: 44834.14 vs acados 44841.68). The per-example
-CI tests therefore assert, in addition to loose cost/trajectory tolerances:
+The QP Hessian model is **identical** on both sides: acados
+`hessian_approx = GAUSS_NEWTON` adds *no* dynamics Hessian term (the
+dynamics enter the QP only through the linearized BA matrix; verified in the
+acados source, see
+`include/ocp/solvers/acades/GN_HESSIAN_PLAN.md` §1), and ocp++ sets
+`has_dynamics_hess_prod = false` (cost Hessian only) — for the LINEAR_LS
+quadratic costs the cost Hessian `Vᵀ W V` is exact, so both QPs carry the
+same Hessian. The residual differences are the dynamics **Jacobian**
+(ocp++ central finite differences, h = 1e-6, vs acados CasADi analytic)
+plus solver-level numerics; on weakly-convex / non-convex OCPs (control
+weight 1e-2) the ill-conditioned KKT system amplifies those tiny QP
+differences, and for non-convex OCPs the two iterations can land on
+**different local KKT points** (ocp++ even finds a *lower* cost for the
+pendulum: 44834.14 vs acados 44841.68). The per-example CI tests therefore
+assert, in addition to loose cost/trajectory tolerances:
 1. **integrator-map exactness** (ocp++ IRK on the acados reference
    trajectory must reproduce the acados stage values to ~1e-9 — this is the
    true "same problem" guard), and
@@ -321,7 +331,7 @@ offending JSON field.
 | 16 | DAE with algebraic vars (`nz > 0`) | solver must handle z in KKT — not yet | deferred |
 | 17 | time-varying model (`t` in model signature) | Ode contract has `t` | P5 (check) |
 | 18 | non-uniform `time_steps` | `ContinuousProblem` assumes uniform dt | deferred |
-| 19 | `hessian_approx = GAUSS_NEWTON` | `has_dynamics_hess_prod=false` | ✅ done |
-| 20 | `hessian_approx = EXACT / ROSEN / NONE` | exact/ROSEN HVP for DAE residual | deferred |
+| 19 | `hessian_approx = GAUSS_NEWTON` | `has_dynamics_hess_prod=false` | ✅ done (QP-level verified: `tests/sqp/hessmode_5a.cpp`, `tests/sqp_masses_chain` check (E)) |
+| 20 | `hessian_approx = EXACT / ROSEN / NONE` | solver supports EXACT (`has_dynamics_hess_prod=true` + `dynamics_hess_prod`; FD-verified in `hessmode_5a`); generating a DAE-residual HVP wrapper for the codegen models | P5 |
 | 21 | `globalization = SQP_STEP / FILTER / TRUST_REGION` | fixed-step SQP only | deferred |
 | 22 | `qp_solver = FULL_CONDENSING_HPIPM / SQR_METHOD / QPOASES` | `PartialCondensingHpipm` only | deferred |
