@@ -182,7 +182,8 @@ void test_solve_double_integrator()
 
     // independent residual recheck (free function, plan sec. 2c)
     const NlpResiduals res =
-        compute_nlp_residuals(prob, sol, opts.tau_min);
+        compute_nlp_residuals<DoubleIntegrator, Eigen::Dynamic>(
+            prob, sol, nullptr, opts.tau_min);
     check(res.res_stat < opts.tol_stat, "DI solve: res_stat < tol");
     check(res.res_eq < opts.tol_eq, "DI solve: res_eq < tol");
     check(res.res_ineq < opts.tol_ineq, "DI solve: res_ineq < tol");

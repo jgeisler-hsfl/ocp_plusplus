@@ -120,7 +120,7 @@ void test_infeasible_iterate()
     sol.lambda_eq_term(0) = 1.5;
 
     const NlpResiduals r =
-        compute_nlp_residuals<DI, Eigen::Dynamic>(prob, sol, tau_min);
+        compute_nlp_residuals<DI, Eigen::Dynamic>(prob, sol, nullptr, tau_min);
 
     // res_stat = max(0.095, 12.05, 17.7) = 17.7
     //   k=0 u-part: |0.005 - 0.2 + 0.1| = 0.095 (x_0 skipped: fixed)
@@ -179,7 +179,7 @@ void test_zero_tau_min()
     sol.lambda_eq_term(0) = 1.5;
 
     const NlpResiduals r =
-        compute_nlp_residuals<DI, Eigen::Dynamic>(prob, sol, 0.0);
+        compute_nlp_residuals<DI, Eigen::Dynamic>(prob, sol, nullptr, 0.0);
 
     check_close(r.res_stat, 17.7, p + "res_stat");
     check_close(r.res_eq, 10.6, p + "res_eq");

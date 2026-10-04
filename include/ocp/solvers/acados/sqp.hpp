@@ -79,11 +79,15 @@ struct NlpResiduals
 ///
 /// @param problem  the concrete problem (provides model functions).
 /// @param sol      the current NLP iterate (primal + multipliers).
+/// @param sl       the solver-internal slacks (null for the raw residual;
+///                 non-null soft rows are measured at their slack-relaxed
+///                 values, acados counts the slacks as NLP variables).
 /// @param tau_min  complementarity floor added to every active non-equality
 ///                 side (acados quirk: added, not subtracted; sec. 1.4).
 template <class P, int NH = Eigen::Dynamic>
 NlpResiduals compute_nlp_residuals(const P& problem,
                                    const Solution<P, NH>& sol,
+                                   const SqpSlacks<P, NH>* sl = nullptr,
                                    double tau_min = 1e-16)
 {
     using D = QpDim<P>;
@@ -244,20 +248,54 @@ NlpResiduals compute_nlp_residuals(const P& problem,
     {
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
+        const auto& lay = (k == 0) ? D::lay_first : D::lay_path;
+        // Current slack of a soft side (col = full variable-vector column
+        // in this stage type); hard sides / missing slacks -> 0.
+        const auto slv = [sl, k](int col) -> double
+        {
+            if (col < 0 || sl == nullptr)
+                return 0.0;
+            if (k == 0)
+            {
+                const int base = D::nvar_first - D::nslack_first;
+                return static_cast<double>(sl->first[col - base]);
+            }
+            const int base = D::nvar_path - D::nslack_path;
+            return static_cast<double>(sl->path[k - 1][col - base]);
+        };
 
         if constexpr (D::ng > 0)
         {
             const auto g = problem.stage_inequality_constr(k, x, u);
             for (int j = 0; j < D::ng; ++j)
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(std::max(0.0, g(j))));
+            {
+                const int r = lay.row_off(detail::g_ineq) + j;
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
+                const double v =
+                    static_cast<double>(g(j)) - slv(ch);
+                res.res_ineq =
+                    std::max(res.res_ineq, std::max(0.0, v));
+            }
         }
         if constexpr (D::ne > 0)
         {
             const auto e = problem.stage_equality_constr(k, x, u);
             for (int j = 0; j < D::ne; ++j)
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(std::fabs(e(j))));
+            {
+                const int r = lay.row_off(detail::g_eq) + j;
+                const int cl =
+                    (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
+                const double v = static_cast<double>(e(j));
+                // Soft eq: relaxed interval [−s_lo, s_hi].
+                const double viol =
+                    (cl < 0 && ch < 0)
+                        ? std::fabs(v)
+                        : std::max({ 0.0, -v - slv(cl), v - slv(ch) });
+                res.res_ineq = std::max(res.res_ineq, viol);
+            }
         }
         if constexpr (D::nl > 0)
         {
@@ -265,27 +303,45 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto v = lin_spec.A * x + lin_spec.B * u;
             for (int j = 0; j < D::nl; ++j)
             {
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(
-                        std::max(0.0, v(j) - lin_spec.bounds.hi(j))));
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(
-                        std::max(0.0, lin_spec.bounds.lo(j) - v(j))));
+                const int r = lay.row_off(detail::g_lin) + j;
+                const int cl =
+                    (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
+                const double val = static_cast<double>(v(j));
+                const double lo =
+                    static_cast<double>(lin_spec.bounds.lo(j));
+                const double hi =
+                    static_cast<double>(lin_spec.bounds.hi(j));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, val - hi - slv(ch)));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, lo - val - slv(cl)));
             }
         }
         if constexpr (D::nbx > 0)
         {
-            const auto spec = problem.stage_state_box_constr(k);
-            for (int j = 0; j < D::nbx; ++j)
+            // State-box rows are absent from the first-stage layout when
+            // x_0 is fixed (pin rows replace them); no residual there.
+            if (lay.rows[detail::g_bx] > 0)
             {
-                const double v = static_cast<double>(
-                    x(P::state_box_idx[j]));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        v - static_cast<double>(spec.hi(j))));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        static_cast<double>(spec.lo(j)) - v));
+                const auto spec = problem.stage_state_box_constr(k);
+                for (int j = 0; j < D::nbx; ++j)
+                {
+                    const int r = lay.row_off(detail::g_bx) + j;
+                    const int cl =
+                        (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                    const int ch =
+                        (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
+                    const double v = static_cast<double>(
+                        x(P::state_box_idx[j]));
+                    const double lo = static_cast<double>(spec.lo(j));
+                    const double hi = static_cast<double>(spec.hi(j));
+                    res.res_ineq = std::max(
+                        res.res_ineq, std::max(0.0, v - hi - slv(ch)));
+                    res.res_ineq = std::max(
+                        res.res_ineq, std::max(0.0, lo - v - slv(cl)));
+                }
             }
         }
         if constexpr (D::nbu > 0)
@@ -293,14 +349,19 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto spec = problem.stage_control_box_constr(k);
             for (int j = 0; j < D::nbu; ++j)
             {
+                const int r = lay.row_off(detail::g_bu) + j;
+                const int cl =
+                    (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
                 const double v = static_cast<double>(
                     u(P::control_box_idx[j]));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        v - static_cast<double>(spec.hi(j))));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        static_cast<double>(spec.lo(j)) - v));
+                const double lo = static_cast<double>(spec.lo(j));
+                const double hi = static_cast<double>(spec.hi(j));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, v - hi - slv(ch)));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, lo - v - slv(cl)));
             }
         }
     }
@@ -308,19 +369,42 @@ NlpResiduals compute_nlp_residuals(const P& problem,
     // terminal
     {
         const auto& xN = sol.x[N];
+        const auto& lay = D::lay_term;
+        const auto slv = [sl](int col) -> double
+        {
+            if (col < 0 || sl == nullptr)
+                return 0.0;
+            const int base = D::nvar_term - D::nslack_term;
+            return static_cast<double>(sl->term[col - base]);
+        };
         if constexpr (D::ng_t > 0)
         {
             const auto g = problem.terminal_inequality_constr(xN);
             for (int j = 0; j < D::ng_t; ++j)
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(std::max(0.0, g(j))));
+            {
+                const int r = lay.row_off(detail::g_ineq) + j;
+                const int ch = D::idxs_hi_term[r];
+                const double v =
+                    static_cast<double>(g(j)) - slv(ch);
+                res.res_ineq =
+                    std::max(res.res_ineq, std::max(0.0, v));
+            }
         }
         if constexpr (D::ne_t > 0)
         {
             const auto e = problem.terminal_equality_constr(xN);
             for (int j = 0; j < D::ne_t; ++j)
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(std::fabs(e(j))));
+            {
+                const int r = lay.row_off(detail::g_eq) + j;
+                const int cl = D::idxs_lo_term[r];
+                const int ch = D::idxs_hi_term[r];
+                const double v = static_cast<double>(e(j));
+                const double viol =
+                    (cl < 0 && ch < 0)
+                        ? std::fabs(v)
+                        : std::max({ 0.0, -v - slv(cl), v - slv(ch) });
+                res.res_ineq = std::max(res.res_ineq, viol);
+            }
         }
         if constexpr (D::nl_t > 0)
         {
@@ -328,12 +412,18 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto v = lin_spec.A * xN;
             for (int j = 0; j < D::nl_t; ++j)
             {
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(
-                        std::max(0.0, v(j) - lin_spec.bounds.hi(j))));
-                res.res_ineq = std::max(res.res_ineq,
-                    static_cast<double>(
-                        std::max(0.0, lin_spec.bounds.lo(j) - v(j))));
+                const int r = lay.row_off(detail::g_lin) + j;
+                const int cl = D::idxs_lo_term[r];
+                const int ch = D::idxs_hi_term[r];
+                const double val = static_cast<double>(v(j));
+                const double lo =
+                    static_cast<double>(lin_spec.bounds.lo(j));
+                const double hi =
+                    static_cast<double>(lin_spec.bounds.hi(j));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, val - hi - slv(ch)));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, lo - val - slv(cl)));
             }
         }
         if constexpr (D::nbx_t > 0)
@@ -341,14 +431,17 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto spec = problem.terminal_state_box_constr();
             for (int j = 0; j < D::nbx_t; ++j)
             {
+                const int r = lay.row_off(detail::g_bx) + j;
+                const int cl = D::idxs_lo_term[r];
+                const int ch = D::idxs_hi_term[r];
                 const double v = static_cast<double>(
                     xN(P::terminal_state_box_idx[j]));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        v - static_cast<double>(spec.hi(j))));
-                res.res_ineq = std::max(res.res_ineq,
-                    std::max(0.0,
-                        static_cast<double>(spec.lo(j)) - v));
+                const double lo = static_cast<double>(spec.lo(j));
+                const double hi = static_cast<double>(spec.hi(j));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, v - hi - slv(ch)));
+                res.res_ineq = std::max(
+                    res.res_ineq, std::max(0.0, lo - v - slv(cl)));
             }
         }
     }
@@ -368,6 +461,21 @@ NlpResiduals compute_nlp_residuals(const P& problem,
         const auto& x = sol.x[k];
         const auto& u = sol.u[k];
         double stage_max = 0.0;
+        const auto& lay = (k == 0) ? D::lay_first : D::lay_path;
+        // Soft sides are measured at their slack-relaxed violation (the
+        // slacks are NLP variables in the residual; see res_ineq above).
+        const auto slv = [sl, k](int col) -> double
+        {
+            if (col < 0 || sl == nullptr)
+                return 0.0;
+            if (k == 0)
+            {
+                const int base = D::nvar_first - D::nslack_first;
+                return static_cast<double>(sl->first[col - base]);
+            }
+            const int base = D::nvar_path - D::nslack_path;
+            return static_cast<double>(sl->path[k - 1][col - base]);
+        };
 
         // box state (skipped at stage 0 when x_0 is fixed: pin rows
         // replace the state box, so no box multipliers exist)
@@ -378,6 +486,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                 const auto spec = problem.stage_state_box_constr(k);
                 for (int j = 0; j < D::nbx; ++j)
                 {
+                    const int r = lay.row_off(detail::g_bx) + j;
+                    const int cl =
+                        (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                    const int ch =
+                        (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
                     const double v = static_cast<double>(
                         x(P::state_box_idx[j]));
                     const double lo =
@@ -391,10 +504,10 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                         static_cast<double>(
                             sol.lambda_box_state[k](D::nbx + j));
                     stage_max = std::max(stage_max,
-                        std::fabs(lam_lo * std::max(0.0, lo - v)
+                        std::fabs(lam_lo * std::max(0.0, lo - v - slv(cl))
                                   + tau_min));
                     stage_max = std::max(stage_max,
-                        std::fabs(lam_hi * std::max(0.0, v - hi)
+                        std::fabs(lam_hi * std::max(0.0, v - hi - slv(ch))
                                   + tau_min));
                 }
             }
@@ -406,6 +519,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto spec = problem.stage_control_box_constr(k);
             for (int j = 0; j < D::nbu; ++j)
             {
+                const int r = lay.row_off(detail::g_bu) + j;
+                const int cl =
+                    (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
                 const double v = static_cast<double>(
                     u(P::control_box_idx[j]));
                 const double lo =
@@ -419,10 +537,10 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                     static_cast<double>(
                         sol.lambda_box_control[k](D::nbu + j));
                 stage_max = std::max(stage_max,
-                    std::fabs(lam_lo * std::max(0.0, lo - v)
+                    std::fabs(lam_lo * std::max(0.0, lo - v - slv(cl))
                               + tau_min));
                 stage_max = std::max(stage_max,
-                    std::fabs(lam_hi * std::max(0.0, v - hi)
+                    std::fabs(lam_hi * std::max(0.0, v - hi - slv(ch))
                               + tau_min));
             }
         }
@@ -433,7 +551,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto g = problem.stage_inequality_constr(k, x, u);
             for (int j = 0; j < D::ng; ++j)
             {
-                const double v = static_cast<double>(g(j));
+                const int r = lay.row_off(detail::g_ineq) + j;
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
+                const double v =
+                    static_cast<double>(g(j)) - slv(ch);
                 const double lam_hi =
                     static_cast<double>(
                         sol.lambda_ineq_stage[k](j));
@@ -451,6 +573,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto v = lin_spec.A * x + lin_spec.B * u;
             for (int j = 0; j < D::nl; ++j)
             {
+                const int r = lay.row_off(detail::g_lin) + j;
+                const int cl =
+                    (k == 0) ? D::idxs_lo_first[r] : D::idxs_lo_path[r];
+                const int ch =
+                    (k == 0) ? D::idxs_hi_first[r] : D::idxs_hi_path[r];
                 const double val = static_cast<double>(v(j));
                 const double lo =
                     static_cast<double>(lin_spec.bounds.lo(j));
@@ -461,9 +588,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                         sol.lambda_lin_stage[k](j));
                 double entry;
                 if (net >= 0.0)
-                    entry = net * std::max(0.0, val - hi) + tau_min;
+                    entry = net * std::max(0.0, val - hi - slv(ch))
+                            + tau_min;
                 else
-                    entry = (-net) * std::max(0.0, lo - val) + tau_min;
+                    entry = (-net) * std::max(0.0, lo - val - slv(cl))
+                            + tau_min;
                 stage_max = std::max(stage_max, std::fabs(entry));
             }
         }
@@ -477,12 +606,23 @@ NlpResiduals compute_nlp_residuals(const P& problem,
     {
         const auto& xN = sol.x[N];
         double stage_max = 0.0;
+        const auto& lay = D::lay_term;
+        const auto slv = [sl](int col) -> double
+        {
+            if (col < 0 || sl == nullptr)
+                return 0.0;
+            const int base = D::nvar_term - D::nslack_term;
+            return static_cast<double>(sl->term[col - base]);
+        };
 
         if constexpr (D::nbx_t > 0)
         {
             const auto spec = problem.terminal_state_box_constr();
             for (int j = 0; j < D::nbx_t; ++j)
             {
+                const int r = lay.row_off(detail::g_bx) + j;
+                const int cl = D::idxs_lo_term[r];
+                const int ch = D::idxs_hi_term[r];
                 const double v = static_cast<double>(
                     xN(P::terminal_state_box_idx[j]));
                 const double lo =
@@ -496,10 +636,10 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                     static_cast<double>(
                         sol.lambda_box_state[N](D::nbx + j));
                 stage_max = std::max(stage_max,
-                    std::fabs(lam_lo * std::max(0.0, lo - v)
+                    std::fabs(lam_lo * std::max(0.0, lo - v - slv(cl))
                               + tau_min));
                 stage_max = std::max(stage_max,
-                    std::fabs(lam_hi * std::max(0.0, v - hi)
+                    std::fabs(lam_hi * std::max(0.0, v - hi - slv(ch))
                               + tau_min));
             }
         }
@@ -509,7 +649,10 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto g = problem.terminal_inequality_constr(xN);
             for (int j = 0; j < D::ng_t; ++j)
             {
-                const double v = static_cast<double>(g(j));
+                const int r = lay.row_off(detail::g_ineq) + j;
+                const int ch = D::idxs_hi_term[r];
+                const double v =
+                    static_cast<double>(g(j)) - slv(ch);
                 const double lam_hi =
                     static_cast<double>(sol.lambda_ineq_term(j));
                 stage_max = std::max(stage_max,
@@ -525,6 +668,9 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             const auto v = lin_spec.A * xN;
             for (int j = 0; j < D::nl_t; ++j)
             {
+                const int r = lay.row_off(detail::g_lin) + j;
+                const int cl = D::idxs_lo_term[r];
+                const int ch = D::idxs_hi_term[r];
                 const double val = static_cast<double>(v(j));
                 const double lo =
                     static_cast<double>(lin_spec.bounds.lo(j));
@@ -534,9 +680,11 @@ NlpResiduals compute_nlp_residuals(const P& problem,
                     static_cast<double>(sol.lambda_lin_term(j));
                 double entry;
                 if (net >= 0.0)
-                    entry = net * std::max(0.0, val - hi) + tau_min;
+                    entry = net * std::max(0.0, val - hi - slv(ch))
+                            + tau_min;
                 else
-                    entry = (-net) * std::max(0.0, lo - val) + tau_min;
+                    entry = (-net) * std::max(0.0, lo - val - slv(cl))
+                            + tau_min;
                 stage_max = std::max(stage_max, std::fabs(entry));
             }
         }
@@ -985,7 +1133,8 @@ public:
             scaler_.scale_qp(qp_in_);
 
             const NlpResiduals res =
-                compute_nlp_residuals(problem, sol, opts_.tau_min);
+                compute_nlp_residuals(problem, sol, &slacks_,
+                                      opts_.tau_min);
 
             if (iter == 0)
             {
@@ -1909,6 +2058,7 @@ private:
 
         fill_dc_first(problem, sol, st);
         fill_d_mask_first(problem, sol, st);
+        mask_trivial_zero_rows(D::lay_first, D::nu + D::nx, st);
 
         // degenerate first-stage check (plan sec. 2f.6)
         if constexpr (P::fixed_initial_state)
@@ -2018,6 +2168,7 @@ private:
 
         fill_dc_path(problem, sol, k, st);
         fill_d_mask_path(problem, sol, k, st);
+        mask_trivial_zero_rows(D::lay_path, D::nu + D::nx, st);
     }
 
     void assemble_term(const P& problem, const Solution<P, NH>& sol)
@@ -2038,35 +2189,38 @@ private:
                     st.hess(i, j) = Ht(i, j);
                 }
             }
-            if (opts_.compute_hess && P::has_constr_hess_prod)
+            if (opts_.compute_hess)
             {
-                if constexpr (D::ng_t > 0)
+                if constexpr (P::has_constr_hess_prod)
                 {
-                    const auto& w = sol.lambda_ineq_term;
-                    auto mat = build_term_hvp([&](const auto& v, auto& hv) {
-                        problem.terminal_inequality_constr_hess_prod(
-                            x, w, v, hv);
-                    });
-                    for (int i = 0; i < nx; ++i)
+                    if constexpr (D::ng_t > 0)
                     {
-                        for (int j = 0; j < nx; ++j)
+                        const auto& w = sol.lambda_ineq_term;
+                        auto mat = build_term_hvp([&](const auto& v, auto& hv) {
+                            problem.terminal_inequality_constr_hess_prod(
+                                x, w, v, hv);
+                        });
+                        for (int i = 0; i < nx; ++i)
                         {
-                            st.hess(i, j) += mat(i, j);
+                            for (int j = 0; j < nx; ++j)
+                            {
+                                st.hess(i, j) += mat(i, j);
+                            }
                         }
                     }
-                }
-                if constexpr (D::ne_t > 0)
-                {
-                    const auto& w = sol.lambda_eq_term;
-                    auto mat = build_term_hvp([&](const auto& v, auto& hv) {
-                        problem.terminal_equality_constr_hess_prod(
-                            x, w, v, hv);
-                    });
-                    for (int i = 0; i < nx; ++i)
+                    if constexpr (D::ne_t > 0)
                     {
-                        for (int j = 0; j < nx; ++j)
+                        const auto& w = sol.lambda_eq_term;
+                        auto mat = build_term_hvp([&](const auto& v, auto& hv) {
+                            problem.terminal_equality_constr_hess_prod(
+                                x, w, v, hv);
+                        });
+                        for (int i = 0; i < nx; ++i)
                         {
-                            st.hess(i, j) += mat(i, j);
+                            for (int j = 0; j < nx; ++j)
+                            {
+                                st.hess(i, j) += mat(i, j);
+                            }
                         }
                     }
                 }
@@ -2085,6 +2239,7 @@ private:
 
         fill_dc_term(problem, sol, st);
         fill_d_mask_term(problem, sol, st);
+        mask_trivial_zero_rows(D::lay_term, D::nx, st);
     }
 
     // ---------------------------------------------------------------
@@ -2545,12 +2700,16 @@ private:
             const int sl = lay.side_lo(r);
             if (sl >= 0)
             {
-                st.d(sl) = static_cast<S>(lo - w_cur);
+                // Inactive sides store d = 0 to keep all downstream
+                // arithmetic finite (they are masked out anyway).
+                st.d(sl) = std::isfinite(lo)
+                    ? static_cast<S>(lo - w_cur) : static_cast<S>(0.0);
                 st.d_mask(sl) =
                     std::isfinite(lo) ? static_cast<S>(1) : static_cast<S>(0);
             }
             const int sh = lay.side_hi(r);
-            st.d(sh) = static_cast<S>(w_cur - hi);
+            st.d(sh) = std::isfinite(hi)
+                ? static_cast<S>(w_cur - hi) : static_cast<S>(0.0);
             st.d_mask(sh) =
                 std::isfinite(hi) ? static_cast<S>(1) : static_cast<S>(0);
         }
@@ -2649,12 +2808,14 @@ private:
             const int sl = lay.side_lo(r);
             if (sl >= 0)
             {
-                st.d(sl) = static_cast<S>(lo - w_cur);
+                st.d(sl) = std::isfinite(lo)
+                    ? static_cast<S>(lo - w_cur) : static_cast<S>(0.0);
                 st.d_mask(sl) =
                     std::isfinite(lo) ? static_cast<S>(1) : static_cast<S>(0);
             }
             const int sh = lay.side_hi(r);
-            st.d(sh) = static_cast<S>(w_cur - hi);
+            st.d(sh) = std::isfinite(hi)
+                ? static_cast<S>(w_cur - hi) : static_cast<S>(0.0);
             st.d_mask(sh) =
                 std::isfinite(hi) ? static_cast<S>(1) : static_cast<S>(0);
         }
@@ -2739,12 +2900,16 @@ private:
             const int sl = lay.side_lo(r);
             if (sl >= 0)
             {
-                st.d(sl) = static_cast<S>(lo - w_cur);
+                // Inactive sides store d = 0 to keep downstream arithmetic
+                // finite (they are masked out anyway).
+                st.d(sl) = std::isfinite(lo)
+                    ? static_cast<S>(lo - w_cur) : static_cast<S>(0.0);
                 st.d_mask(sl) =
                     std::isfinite(lo) ? static_cast<S>(1) : static_cast<S>(0);
             }
             const int sh = lay.side_hi(r);
-            st.d(sh) = static_cast<S>(w_cur - hi);
+            st.d(sh) = std::isfinite(hi)
+                ? static_cast<S>(w_cur - hi) : static_cast<S>(0.0);
             st.d_mask(sh) =
                 std::isfinite(hi) ? static_cast<S>(1) : static_cast<S>(0);
         }
@@ -2755,6 +2920,55 @@ private:
             const int si = lo_sz + nrow + j;
             st.d(si) = 0;
             st.d_mask(si) = 1;
+        }
+    }
+
+    /// Mask general rows (ineq / lin) that are numerically invisible to the
+    /// QP: Jacobian row (u;x part) all ~0 and both sides trivially satisfied
+    /// (d_lo <= 0, d_hi <= 0 at the current iterate). Such a row contributes
+    /// nothing to the KKT matrix (C' diag(Gamma) C = 0), the right-hand side,
+    /// or the dual gap, so masking is QP-equivalent. It matters when the row
+    /// is active at the linearization point (d_lo == 0 with a zero Jacobian,
+    /// e.g. a nonlinear constraint whose gradient vanishes there): the IPM
+    /// then pins t at the floor while lam -> inf, stalls on that
+    /// complementarity pair, and leaves a garbage dual that pollutes the SQP
+    /// merit weights.
+    template <class StT>
+    void mask_trivial_zero_rows(detail::QpLayout lay, int nux, StT& st) const
+    {
+        constexpr double kTol = 1e-12;
+        const auto& dc = st.DC;
+        const int nrow = static_cast<int>(dc.rows());
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int g = lay.group_of(r);
+            if (g != detail::g_ineq && g != detail::g_lin)
+            {
+                continue;
+            }
+            double mx = 0.0;
+            for (int j = 0; j < nux; ++j)
+            {
+                mx = std::max(mx,
+                              std::fabs(static_cast<double>(dc(r, j))));
+            }
+            if (mx > kTol)
+            {
+                continue;
+            }
+            const int sl = lay.side_lo(r);
+            const int sh = lay.side_hi(r);
+            const bool lo_ok =
+                (sl < 0) || (static_cast<double>(st.d(sl)) <= kTol);
+            const bool hi_ok = static_cast<double>(st.d(sh)) <= kTol;
+            if (lo_ok && hi_ok)
+            {
+                if (sl >= 0)
+                {
+                    st.d_mask(sl) = 0;
+                }
+                st.d_mask(sh) = 0;
+            }
         }
     }
 
