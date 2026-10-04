@@ -20,22 +20,25 @@
 //   control box (all stages):                    -1     <= u    <= 1
 //   initial state: fixed (x_0 = the hanging rest configuration)
 //
-// Deviations from the generated acados solver (both benign, verified by
+// Deviations from the generated acados solver (benign, verified by
 // tests/sqp_masses_chain):
 //   * acados carries 24 terminal state-box rows (idxbxe = all 24) with default
 //     +/-inf bounds, i.e. fully inactive.  They are dropped here
 //     (terminal_state_box_idx empty); inactive rows do not affect the KKT
 //     point.
-//   * Hessian model.  has_dynamics_hess_prod = false makes the SQP use the
-//     objective-only (cost) QP Hessian (acados "NONE").  The generated acados
-//     solver uses hessian_approx = GAUSS_NEWTON (cost + dynamics J'J).  The
-//     dynamics port itself is EXACT (tests/sqp_masses_chain: the ocp++
-//     collocation map reproduces acados's x_{k+1} from (x_k, u_k) to 1e-13,
-//     and the cost matches to 4e-7).  On this weakly-convex OCP (control
-//     weight 1e-2, nonlinear dynamics) the two quadratic SQP models land on
-//     two different, both-KKT-valid, near-optimal points: a bounded
-//     trajectory difference (|du| up to ~8e-3, |dx| up to ~1e-3) that is a
-//     Hessian-approximation effect, not a porting error.
+//   * Dynamics Jacobian.  The acados reference uses the CasADi analytic
+//     Jacobian; ocp++ uses central finite differences (h = 1e-6) of the
+//     CasADi residual.  The QP Hessian model is identical on both sides:
+//     Gauss-Newton, cost Hessian only (has_dynamics_hess_prod = false;
+//     acados hessian_approx = GAUSS_NEWTON adds no dynamics Hessian term —
+//     see tests/sqp_masses_chain check (E) and
+//     include/ocp/solvers/acados/GN_HESSIAN_PLAN.md).  On this weakly-convex
+//     OCP (control weight 1e-2, nonlinear spring-chain dynamics) the tiny
+//     Jacobian differences are amplified by the ill-conditioned KKT system
+//     into a bounded trajectory difference (|du| up to ~8e-3, |dx| up to
+//     ~1e-3); not a porting error (the dynamics map itself is exact: the
+//     ocp++ collocation map reproduces acados's x_{k+1} from (x_k, u_k) to
+//     1e-13, and the cost matches to 4e-7).
 
 #pragma once
 

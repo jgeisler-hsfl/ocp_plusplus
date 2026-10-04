@@ -568,7 +568,12 @@ struct SqpOptions
     double tol_stat = 1e-8, tol_eq = 1e-8, tol_ineq = 1e-8, tol_comp = 1e-8;
     double tol_min_step_norm = 1e-12;
     double tol_unbounded = -1e10;
-    bool compute_hess = true;             // gates dynamics/constraint HVP terms
+    // Runtime gate for the multiplier-weighted HVP terms in the QP Hessian
+    // (dynamics HVP when has_dynamics_hess_prod, constraint HVPs when
+    // has_constr_hess_prod); mirrors acados' per-iteration `exact_hess` /
+    // `compute_hess` gate. When false the QP Hessian is the pure cost
+    // Hessian (Gauss-Newton), regardless of the Dims flags.
+    bool compute_hess = true;
     double levenberg_marquardt = 0.0;
     bool with_adaptive_lm = false;        // 3g: adaptive LM (gates the mu schedule)
     double adaptive_lm_mu0 = 1e-3;        // 3g: mu / mu_bar init (ocp_nlp_common.c:1265)
