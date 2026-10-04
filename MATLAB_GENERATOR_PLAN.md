@@ -40,6 +40,7 @@ Two deliverables:
 | MATLAB | **available** (`/usr/local/MATLAB/R2025a/bin/matlab`) |
 | acados C lib | **built** (`/home/jgeisler/repos/acados/lib`: libacados, hpipm, blasfeo) |
 | CasADi | **available** (installed for the MATLAB interface) |
+| acados Python (`acados_toolbox` + casadi 3.8.1) | **available** — `example_ocp.py` codegen verified (pendulum_on_cart, unicycle); JSON identical in structure to the MATLAB output |
 | ocp++ | builds clean (`cmake -B build && cmake --build build`) |
 
 MATLAB run (verified):
@@ -143,6 +144,20 @@ used `DT`); confirmed via `sparsity_in`. The caller shim fills `arg` in the
 acados order `[x; xdot; u; z]`, packs sparsity, calls the function, and
 copies the dense blocks into Eigen matrices.
 
+**Sign convention (found 2026-10-04, systemic bug fix).** The residual
+convention is *not* uniform across acados codegen paths:
+
+| codegen path | residual | `∂F/∂xdot` | `F(x,0,u)` |
+|---|---|---|---|
+| MATLAB (`AcadosOcp`) | `f − xdot` | `−I` | `+f` |
+| Python / casadi (`acados_toolbox`) | `xdot − f` | `+I` | `−f` |
+
+The generated Ode therefore must not hard-code the sign. The emitted Ode
+calibrates `c = dF/dxdot` once in its constructor (a two-point probe, snapped
+to ±1) and computes `f(x,u) = −F(x,0,u)/c` and `J = Jx,Ju / c`. masses_chain
+yields `c=−1` (bit-identical `f` to the pre-fix wrapper); pendulum/unicycle
+yield `c=+1` (pre-fix they had negated dynamics, `max|dx| ≈ 19`).
+
 ### 5.2 Cost / box / x0 — emitted, not reused
 
 - **LINEAR_LS cost** (native, no C file): `stage_cost_value = ½‖V y − yref‖²_W`
@@ -196,6 +211,26 @@ to the main, or parse the `d_print_exp_tran_mat` block — §9 Q3).
   - cost relative diff < 1e-4
   - `‖Δx‖∞ < 1e-3` and `‖Δu‖∞ < 1e-3` over the horizon.
 
+**Tolerance reality check (learned 2026-10-04).** The strict §7 tolerances
+hold only when both SQPs converge to the *same* KKT point:
+
+| example | cost rel. diff | `‖Δx‖∞` | `‖Δu‖∞` | note |
+|---|---|---|---|---|
+| masses_chain | ~4e-7 | ~1e-8 | ~1e-9 | smooth, convex-ish → identical KKT point |
+| unicycle | ~3e-6 | 4.5e-2 | 1.1e-1 | smooth but non-convex; distinct KKT points |
+| pendulum_on_cart | ~1.7e-4 | 9.7e-2 | 0.78 | bang-bang controls; distinct KKT points |
+
+The ocp++ SQP uses the *cost-only* Hessian (`has_dynamics_hess_prod=false`),
+while acados uses Gauss-Newton (cost + J′J). For non-convex OCPs the two
+iterations can land on **different local KKT points** (ocp++ even finds a
+*lower* cost for the pendulum: 44834.14 vs acados 44841.68). The per-example
+CI tests therefore assert, in addition to loose cost/trajectory tolerances:
+1. **integrator-map exactness** (ocp++ IRK on the acados reference
+   trajectory must reproduce the acados stage values to ~1e-9 — this is the
+   true "same problem" guard), and
+2. **ocp++ KKT residual small** (the ocp++ solution must actually solve the
+   OCP it is solving).
+
 ## 8. The generator (`tools/acados2ocp_pp.py`, Phase 2)
 
 **Pivot (2026-10-03):** the generator is a **Python script** reading the
@@ -222,24 +257,20 @@ to the main, or parse the `d_print_exp_tran_mat` block — §9 Q3).
 - The generated C residual (`<model>_impl_dae_fun.c`, listed in the JSON) is
   the shared dynamics backend and is linked in, not regenerated.
 
-**Golden-output check:** `tests/sqp_masses_chain/gen_equivalence.cpp` solves
-both the hand-written `ocp::MassesChain` and the generated `ocp::MassesChainGen`
-from the same warm start and asserts they agree (cost, `x`, `u` to ~1e-8; the
-two share one C residual). Currently passes.
-
 ## 9. Phases
 
 | Phase | Deliverable |
 |---|---|
-| **P0** | This plan + decisions locked (§9). |
-| **P1a** | Add `GaussLegendre4Tag` + tableau to `butcher.hpp` (ocp++ prereq). Build clean. |
-| **P1b** | Migrate `masses_chain` `.m` → new `AcadosOcp` interface; run in MATLAB → `codegen_masses_chain/`; move the example + codegen into `examples/masses_chain/`. |
-| **P1c** | Build the compiled acados reference main; capture `ref_acados.csv`. |
-| **P1d** | Hand-write the ocp++ wrapper (`capi.hpp`, `*_ode.hpp`, `masses_chain.hpp`, `main.cpp`) + CMake; build warning-free. |
-| **P1e** | Run ocp++ main; compare to reference; iterate (integrator tableaus, Newton, QP options) until within §7 tolerances; emit CSV. |
-| **P2** | Build `tools/acados2ocp_pp.py` (Python, JSON-driven); verify it reproduces the P1d wrapper for `masses_chain` via `gen_equivalence.cpp`. ✅ Done. |
-| **P3** | Apply generator to more examples (pendulum_on_cart, furuta, control_rates, swarming, …), one `examples/<name>/` each. |
+| **P0** | This plan + decisions locked (§10). ✅ |
+| **P1a** | Add `GaussLegendre4Tag` + tableau to `butcher.hpp` (ocp++ prereq). Build clean. ✅ |
+| **P1b** | Migrate `masses_chain` `.m` → new `AcadosOcp` interface; run in MATLAB → `codegen_masses_chain/`; move the example + codegen into `examples/masses_chain/`. ✅ |
+| **P1c** | Build the compiled acados reference main; capture `ref_acados.csv`. ✅ |
+| **P1d** | Hand-write the ocp++ wrapper (`capi.hpp`, `*_ode.hpp`, `masses_chain.hpp`, `main.cpp`) + CMake; build warning-free. ✅ |
+| **P1e** | Run ocp++ main; compare to reference; iterate until within §7 tolerances; emit CSV. ✅ (cost rel 4e-7) |
+| **P2** | Build `tools/acados2ocp_pp.py` (Python, JSON-driven); verify it reproduces the P1d wrapper for `masses_chain` via `gen_equivalence.cpp`. ✅ |
+| **P3** | Apply generator to more examples, one `examples/<name>/` each: **pendulum_on_cart ✅, unicycle ✅** (both Python-codegen; sign-convention fix §5.1); furuta / control_rates / swarming need P5 features (NONLINEAR_LS / ERK) — moved to P5. |
 | **P4** | (later) mex interface for ocp++ solvers; direct MATLAB comparison. |
+| **P5** | Extend the generator to the full JSON feature space (§12): nonlinear/external cost, stage-0 cost, free x0, linear + nonlinear constraints, soft (slack) constraints, ERK + Radau-IRK integrators. No example needed; validate via unit-level emission tests + any new example ported afterward. |
 
 ## 10. Decisions (locked 2026-10-03)
 
@@ -262,3 +293,35 @@ two share one C residual). Currently passes.
    `examples/masses_chain/`.
 3. P1c: build + run the reference main; produce `ref_acados.csv`.
 4. P1d/e: wrapper + demo + comparison; iterate to tolerance.
+
+## 12. Generator scope matrix (updated 2026-10-04)
+
+Full `acados_ocp_nlp.json` feature space → ocp++ support status. The generator
+must accept every row marked **supported**, and reject every row marked
+**deferred / out-of-scope** with a precise `Unsupported` message naming the
+offending JSON field.
+
+| # | acados JSON feature | ocp++ support | Status |
+|---|---|---|---|
+| 1 | `sim_method = IRK`, `collocation_type = GAUSS_LEGENDRE`, stages 2/3/4 | `ImplicitRkIntegrator` + `GaussLegendre{2,3,4}Tag` | ✅ done |
+| 2 | `sim_method = IRK`, `collocation_type = RADAU`, stages 2/3/4 | `RadauIia{2,3,4}Tag` | P5 |
+| 3 | `sim_method = ERK` (K1–K4), `sim_num_stages` | `ExplicitRkIntegrator` K1–K4 | P5 |
+| 4 | `sim_method = DISCRETE` | no discrete-Problem base yet | deferred |
+| 5 | `sim_method = GENERIC` (external sim) | no external sim hook | deferred |
+| 6 | `num_stages` per-stage list (variable stages over horizon) | single-stage IRK config only | deferred |
+| 7 | `cost_type / cost_type_t = LINEAR_LS` | emitted `stage_cost_*` | ✅ done |
+| 8 | `cost_type_0 = LINEAR_LS_0` (stage-0 cost) | `stage_cost_*(k)` already takes k | P5 |
+| 9 | `cost_type = EXTERNAL / NONLINEAR_LS / CONVEX_OVER_NONLINEAR` | cost C files (fun/jac/hess) via capi | P5 |
+| 10 | box constraints (`idxbx/lbx/ubx`, `idxbu`, `idxbx_e`) | `BoxSpec` | ✅ done |
+| 11 | linear path/terminal constr (`Cx,Cu,lb,ub`, `Cxe,Cue,lbe,ube`) | `LinearSpec` / `TerminalLinearSpec` | P5 |
+| 12 | nonlinear path/terminal constr (`constr_ext_fun_type=casadi`) | constraint C files via capi | P5 |
+| 13 | soft/slack constraints (`ns, nsbx, nsg, ...`, soft-penalty `Zl/Zu`) | `*_soft_idx` arrays + `soft_penalty` in `BoxSpec` | P5 |
+| 14 | fixed initial state (`lbx_0 == ubx_0`) | `fixed_initial_state=true` | ✅ done |
+| 15 | free initial state (`lbx_0 != ubx_0`) | `fixed_initial_state=false` + stage-0 box | P5 |
+| 16 | DAE with algebraic vars (`nz > 0`) | solver must handle z in KKT — not yet | deferred |
+| 17 | time-varying model (`t` in model signature) | Ode contract has `t` | P5 (check) |
+| 18 | non-uniform `time_steps` | `ContinuousProblem` assumes uniform dt | deferred |
+| 19 | `hessian_approx = GAUSS_NEWTON` | `has_dynamics_hess_prod=false` | ✅ done |
+| 20 | `hessian_approx = EXACT / ROSEN / NONE` | exact/ROSEN HVP for DAE residual | deferred |
+| 21 | `globalization = SQP_STEP / FILTER / TRUST_REGION` | fixed-step SQP only | deferred |
+| 22 | `qp_solver = FULL_CONDENSING_HPIPM / SQR_METHOD / QPOASES` | `PartialCondensingHpipm` only | deferred |
