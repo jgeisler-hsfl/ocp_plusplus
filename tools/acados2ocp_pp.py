@@ -811,8 +811,8 @@ struct {name}Dims
     static constexpr int nl_t = {nl_t};
 
     static constexpr bool fixed_initial_state = {str(fixed).lower()};
-    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
+    static constexpr bool has_constr_hess = false;
 
     static constexpr std::array<int, {len(spec['state_box_union'])}> state_box_idx =
         {{ {carr(spec['state_box_union'])} }};
@@ -1334,20 +1334,32 @@ using {name}Integ =
         return cp_value(x, u, {dt_expr} * k);
     }}
 
-    stage_grad_t stage_cost_gradient(int k, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int k, const state_t& x,
+                               const control_t& u, double& value,
+                               stage_grad_t& grad) const
     {{
         if (k == 0)
-            return c0_grad(x, u, 0.0);
-        return cp_grad(x, u, {dt_expr} * k);
+        {{
+            value = c0_value(x, u, 0.0);
+            grad = c0_grad(x, u, 0.0);
+        }}
+        else
+        {{
+            value = cp_value(x, u, {dt_expr} * k);
+            grad = cp_grad(x, u, {dt_expr} * k);
+        }}
     }}
 
-    stage_hess_t stage_cost_hessian(int k, const state_t& x,
-                                    const control_t& u) const
+    void stage_cost_value_grad_hess(int k, const state_t& x,
+                                    const control_t& u, double& value,
+                                    stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {{
+        stage_cost_value_grad(k, x, u, value, grad);
         if (k == 0)
-            return c0_hess(x, u, 0.0);
-        return cp_hess(x, u, {dt_expr} * k);
+            hess = c0_hess(x, u, 0.0);
+        else
+            hess = cp_hess(x, u, {dt_expr} * k);
     }}"""
     else:
         stage_dispatch = f"""    double stage_cost_value(int k, const state_t& x,
@@ -1356,16 +1368,21 @@ using {name}Integ =
         return cp_value(x, u, {dt_expr} * k);
     }}
 
-    stage_grad_t stage_cost_gradient(int k, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int k, const state_t& x,
+                               const control_t& u, double& value,
+                               stage_grad_t& grad) const
     {{
-        return cp_grad(x, u, {dt_expr} * k);
+        value = cp_value(x, u, {dt_expr} * k);
+        grad = cp_grad(x, u, {dt_expr} * k);
     }}
 
-    stage_hess_t stage_cost_hessian(int k, const state_t& x,
-                                    const control_t& u) const
+    void stage_cost_value_grad_hess(int k, const state_t& x,
+                                    const control_t& u, double& value,
+                                    stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {{
-        return cp_hess(x, u, {dt_expr} * k);
+        stage_cost_value_grad(k, x, u, value, grad);
+        hess = cp_hess(x, u, {dt_expr} * k);
     }}"""
 
     term_dispatch = f"""    double terminal_cost_value(const state_t& x) const
@@ -1373,14 +1390,19 @@ using {name}Integ =
         return ct_value(x, {t_end});
     }}
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& grad) const
     {{
-        return ct_grad(x, {t_end});
+        value = ct_value(x, {t_end});
+        grad = ct_grad(x, {t_end});
     }}
 
-    term_hess_t terminal_cost_hessian(const state_t& x) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& grad,
+                                       term_hess_t& hess) const
     {{
-        return ct_hess(x, {t_end});
+        terminal_cost_value_grad(x, value, grad);
+        hess = ct_hess(x, {t_end});
     }}"""
 
     path = spec["cost_stage"]
@@ -1451,7 +1473,7 @@ using {name}Integ =
                 f"{'-' if side == 'lo' else ''}"
                 f"Jh.row({i}).rightCols<{nu}>();"
                 for r, (i, side) in enumerate(h["ineq"]))
-            constr.append(f"""    ineq_t stage_inequality_constr(int k, const state_t& x,
+            constr.append(f"""    ineq_t stage_inequality_value(int k, const state_t& x,
                                    const control_t& u) const
     {{
         ineq_t g;
@@ -1460,11 +1482,13 @@ using {name}Integ =
         return g;
     }}
 
-    void stage_inequality_constr_jacobian(int k, const state_t& x,
-                                          const control_t& u,
+    void stage_inequality_value_jac(int k, const state_t& x,
+                                          const control_t& u, ineq_t& g,
                                           ineq_dg_dx_t& g_dx,
                                           ineq_dg_du_t& g_du) const
     {{
+        const auto h = hval(x, u, {dt_expr} * k);
+{val_lines}
         const auto Jh = hjac(x, u, {dt_expr} * k);
 {jac_lines}
     }}""")
@@ -1485,7 +1509,7 @@ using {name}Integ =
                 f"        e_dx.row({r}) = Jh.row({i}).leftCols<{nx}>();\n"
                 f"        e_du.row({r}) = Jh.row({i}).rightCols<{nu}>();"
                 for r, i in enumerate(h["eq"]))
-            constr.append(f"""    eq_t stage_equality_constr(int k, const state_t& x,
+            constr.append(f"""    eq_t stage_equality_value(int k, const state_t& x,
                                const control_t& u) const
     {{
         eq_t e;
@@ -1494,11 +1518,13 @@ using {name}Integ =
         return e;
     }}
 
-    void stage_equality_constr_jacobian(int k, const state_t& x,
-                                        const control_t& u,
+    void stage_equality_value_jac(int k, const state_t& x,
+                                        const control_t& u, eq_t& e,
                                         eq_de_dx_t& e_dx,
                                         eq_de_du_t& e_du) const
     {{
+        const auto h = hval(x, u, {dt_expr} * k);
+{val_lines}
         const auto Jh = hjac(x, u, {dt_expr} * k);
 {jac_lines}
     }}""")
@@ -1580,7 +1606,7 @@ using {name}Integ =
                 f"{'-' if side == 'lo' else ''}"
                 f"Jh.row({i}).leftCols<{nx}>();"
                 for r, (i, side) in enumerate(h_t["ineq"]))
-            constr.append(f"""    ineq_term_t terminal_inequality_constr(
+            constr.append(f"""    ineq_term_t terminal_inequality_value(
         const state_t& x) const
     {{
         ineq_term_t g;
@@ -1589,9 +1615,12 @@ using {name}Integ =
         return g;
     }}
 
-    void terminal_inequality_constr_jacobian(const state_t& x,
+    void terminal_inequality_value_jac(const state_t& x,
+                                             ineq_term_t& g,
                                              ineq_term_dg_dx_t& g_dx) const
     {{
+        const auto h = htval(x);
+{val_lines}
         const auto Jh = htjac(x);
 {jac_lines}
     }}""")
@@ -1611,7 +1640,7 @@ using {name}Integ =
             jac_lines = "\n".join(
                 f"        e_dx.row({r}) = Jh.row({i}).leftCols<{nx}>().eval();"
                 for r, i in enumerate(h_t["eq"]))
-            constr.append(f"""    eq_term_t terminal_equality_constr(
+            constr.append(f"""    eq_term_t terminal_equality_value(
         const state_t& x) const
     {{
         eq_term_t e;
@@ -1620,9 +1649,12 @@ using {name}Integ =
         return e;
     }}
 
-    void terminal_equality_constr_jacobian(const state_t& x,
+    void terminal_equality_value_jac(const state_t& x,
+                                           eq_term_t& e,
                                            eq_term_de_dx_t& e_dx) const
     {{
+        const auto h = htval(x);
+{val_lines}
         const auto Jh = htjac(x);
 {jac_lines}
     }}""")
@@ -1802,7 +1834,7 @@ private:
 //   state  nx = {nx}, control nu = {nu}, horizon N = {spec['N']}, dt = {spec['dt']}
 //   integrator: {spec['integ_kind']} {spec['gl_tag']} ({nst} stages x {nstep} sub-steps)
 //   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
-//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  via the linearized BA matrix, see has_dynamics_hess);
 //                  acados uses hessian_approx = {spec['hessian_approx']}.
 
 #pragma once

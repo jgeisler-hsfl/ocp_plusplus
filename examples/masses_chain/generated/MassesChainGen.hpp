@@ -6,7 +6,7 @@
 //   state  nx = 24, control nu = 3, horizon N = 40, dt = 0.2
 //   integrator: IRK GaussLegendre4Tag (4 stages x 2 sub-steps)
 //   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
-//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  via the linearized BA matrix, see has_dynamics_hess);
 //                  acados uses hessian_approx = GAUSS_NEWTON.
 
 #pragma once
@@ -34,8 +34,8 @@ struct MassesChainGenDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = true;
-    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
+    static constexpr bool has_constr_hess = false;
 
     static constexpr std::array<int, 24> state_box_idx =
         { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23 };
@@ -172,20 +172,32 @@ public:
         return cp_value(x, u, 0.2 * k);
     }
 
-    stage_grad_t stage_cost_gradient(int k, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int k, const state_t& x,
+                               const control_t& u, double& value,
+                               stage_grad_t& grad) const
     {
         if (k == 0)
-            return c0_grad(x, u, 0.0);
-        return cp_grad(x, u, 0.2 * k);
+        {
+            value = c0_value(x, u, 0.0);
+            grad = c0_grad(x, u, 0.0);
+        }
+        else
+        {
+            value = cp_value(x, u, 0.2 * k);
+            grad = cp_grad(x, u, 0.2 * k);
+        }
     }
 
-    stage_hess_t stage_cost_hessian(int k, const state_t& x,
-                                    const control_t& u) const
+    void stage_cost_value_grad_hess(int k, const state_t& x,
+                                    const control_t& u, double& value,
+                                    stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {
+        stage_cost_value_grad(k, x, u, value, grad);
         if (k == 0)
-            return c0_hess(x, u, 0.0);
-        return cp_hess(x, u, 0.2 * k);
+            hess = c0_hess(x, u, 0.0);
+        else
+            hess = cp_hess(x, u, 0.2 * k);
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -193,14 +205,19 @@ public:
         return ct_value(x, 8.0);
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& grad) const
     {
-        return ct_grad(x, 8.0);
+        value = ct_value(x, 8.0);
+        grad = ct_grad(x, 8.0);
     }
 
-    term_hess_t terminal_cost_hessian(const state_t& x) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& grad,
+                                       term_hess_t& hess) const
     {
-        return ct_hess(x, 8.0);
+        terminal_cost_value_grad(x, value, grad);
+        hess = ct_hess(x, 8.0);
     }
 
     state_box_t stage_state_box_constr(int /*k*/) const

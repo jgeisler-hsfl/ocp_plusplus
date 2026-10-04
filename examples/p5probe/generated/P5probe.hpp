@@ -6,7 +6,7 @@
 //   state  nx = 2, control nu = 2, horizon N = 3, dt = 0.09999999999999999
 //   integrator: ERK K4Tag (4 stages x 1 sub-steps)
 //   Hessian model: Gauss-Newton (cost Hessian only; dynamics enter the QP
-//                  via the linearized BA matrix, see has_dynamics_hess_prod);
+//                  via the linearized BA matrix, see has_dynamics_hess);
 //                  acados uses hessian_approx = GAUSS_NEWTON.
 
 #pragma once
@@ -34,8 +34,8 @@ struct P5probeDims
     static constexpr int nl_t = 0;
 
     static constexpr bool fixed_initial_state = false;
-    static constexpr bool has_dynamics_hess_prod = false;  // Gauss-Newton QP Hessian
-    static constexpr bool has_constr_hess_prod = false;
+    static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
+    static constexpr bool has_constr_hess = false;
 
     static constexpr std::array<int, 2> state_box_idx =
         { 0, 1 };
@@ -139,20 +139,32 @@ public:
         return cp_value(x, u, 0.09999999999999999 * k);
     }
 
-    stage_grad_t stage_cost_gradient(int k, const state_t& x,
-                                     const control_t& u) const
+    void stage_cost_value_grad(int k, const state_t& x,
+                               const control_t& u, double& value,
+                               stage_grad_t& grad) const
     {
         if (k == 0)
-            return c0_grad(x, u, 0.0);
-        return cp_grad(x, u, 0.09999999999999999 * k);
+        {
+            value = c0_value(x, u, 0.0);
+            grad = c0_grad(x, u, 0.0);
+        }
+        else
+        {
+            value = cp_value(x, u, 0.09999999999999999 * k);
+            grad = cp_grad(x, u, 0.09999999999999999 * k);
+        }
     }
 
-    stage_hess_t stage_cost_hessian(int k, const state_t& x,
-                                    const control_t& u) const
+    void stage_cost_value_grad_hess(int k, const state_t& x,
+                                    const control_t& u, double& value,
+                                    stage_grad_t& grad,
+                                    stage_hess_t& hess) const
     {
+        stage_cost_value_grad(k, x, u, value, grad);
         if (k == 0)
-            return c0_hess(x, u, 0.0);
-        return cp_hess(x, u, 0.09999999999999999 * k);
+            hess = c0_hess(x, u, 0.0);
+        else
+            hess = cp_hess(x, u, 0.09999999999999999 * k);
     }
 
     double terminal_cost_value(const state_t& x) const
@@ -160,17 +172,22 @@ public:
         return ct_value(x, 0.3);
     }
 
-    term_grad_t terminal_cost_gradient(const state_t& x) const
+    void terminal_cost_value_grad(const state_t& x, double& value,
+                                  term_grad_t& grad) const
     {
-        return ct_grad(x, 0.3);
+        value = ct_value(x, 0.3);
+        grad = ct_grad(x, 0.3);
     }
 
-    term_hess_t terminal_cost_hessian(const state_t& x) const
+    void terminal_cost_value_grad_hess(const state_t& x, double& value,
+                                       term_grad_t& grad,
+                                       term_hess_t& hess) const
     {
-        return ct_hess(x, 0.3);
+        terminal_cost_value_grad(x, value, grad);
+        hess = ct_hess(x, 0.3);
     }
 
-    ineq_t stage_inequality_constr(int k, const state_t& x,
+    ineq_t stage_inequality_value(int k, const state_t& x,
                                    const control_t& u) const
     {
         ineq_t g;
@@ -180,11 +197,14 @@ public:
         return g;
     }
 
-    void stage_inequality_constr_jacobian(int k, const state_t& x,
-                                          const control_t& u,
+    void stage_inequality_value_jac(int k, const state_t& x,
+                                          const control_t& u, ineq_t& g,
                                           ineq_dg_dx_t& g_dx,
                                           ineq_dg_du_t& g_du) const
     {
+        const auto h = hval(x, u, 0.09999999999999999 * k);
+        g(0) = 0.0 - h(0);
+        g(1) = h(0) - 1.0;
         const auto Jh = hjac(x, u, 0.09999999999999999 * k);
         g_dx.row(0) = -Jh.row(0).leftCols<2>();
         g_du.row(0) = -Jh.row(0).rightCols<2>();
@@ -208,7 +228,7 @@ public:
         spec.bounds.soft_penalty << 0.0;
         return spec;
     }
-    ineq_term_t terminal_inequality_constr(
+    ineq_term_t terminal_inequality_value(
         const state_t& x) const
     {
         ineq_term_t g;
@@ -218,9 +238,13 @@ public:
         return g;
     }
 
-    void terminal_inequality_constr_jacobian(const state_t& x,
+    void terminal_inequality_value_jac(const state_t& x,
+                                             ineq_term_t& g,
                                              ineq_term_dg_dx_t& g_dx) const
     {
+        const auto h = htval(x);
+        g(0) = 0.0 - h(0);
+        g(1) = h(0) - 2.0;
         const auto Jh = htjac(x);
         g_dx.row(0) = -Jh.row(0).leftCols<2>();
         g_dx.row(1) = Jh.row(0).leftCols<2>();
