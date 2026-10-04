@@ -35,6 +35,9 @@ if(NOT EIGEN3_INCLUDE_DIR)
   message(FATAL_ERROR "Eigen3 not found")
 endif()
 
+# cppduals (header-only, vendored; needed by the AD integrator paths)
+include_directories(${CMAKE_SOURCE_DIR}/thirdparty/cppduals)
+
 add_executable(double_integrator examples/double_integrator/main.cpp)
 target_include_directories(double_integrator PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(double_integrator PRIVATE ${OCP_WARN_FLAGS})
