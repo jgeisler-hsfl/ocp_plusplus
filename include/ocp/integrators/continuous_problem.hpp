@@ -16,12 +16,20 @@
 // methods const, so the dynamics_* methods are const as required by the
 // Problem interface.
 //
+// dynamics_value_jac delegates to the integrator's fused value_jac entry
+// (value + Jacobian in one pass). dynamics_value_jac_hess assembles the
+// contracted (multiplier-weighted) Hessian from nIn = nx + nu unit-vector
+// HVP columns: when Integ::supports_value_jac_hess_prod (AD ODE on the
+// explicit integrator), each column is one nested-dual forward pass that
+// carries the value and the Jacobian for free; otherwise the integrator's
+// value_jac populates its forward cache and the per-column hess_prod calls
+// hit that cache.
+//
 // has_dynamics_hess: when true (nonlinear ODE), the solver calls
-// dynamics_value_jac_hess; the contracted (multiplier-weighted) Hessian is
-// assembled from unit-vector HVP calls via the integrator's hess_prod (the
-// integrator static_asserts that the ODE provides hess_prod). When false
-// (linear ODE), the solver never calls dynamics_value_jac_hess and the method
-// is never instantiated — the ODE may omit hess_prod entirely.
+// dynamics_value_jac_hess (the integrator requires the ODE to provide
+// hess_prod on the non-AD path). When false (linear ODE), the solver never
+// calls dynamics_value_jac_hess and the method is never instantiated — the
+// ODE may omit hess_prod entirely.
 
 #pragma once
 
@@ -66,32 +74,64 @@ public:
                             state_t& x_next, dyn_df_dx_t& df_dx,
                             dyn_df_du_t& df_du) const
     {
-        integ_.value(x, u, k * h_, x_next);
-        integ_.jacobian(x, u, k * h_, df_dx, df_du);
+        integ_.value_jac(x, u, k * h_, x_next, df_dx, df_du);
     }
 
     void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
                                  const state_t& w, state_t& x_next,
-                                 dyn_df_dx_t& df_dx,                                  dyn_df_du_t& df_du,
+                                 dyn_df_dx_t& df_dx, dyn_df_du_t& df_du,
                                  typename P::dyn_hess_t& hess) const
     {
-        dynamics_value_jac(k, x, u, x_next, df_dx, df_du);
-        // contracted Hessian (w^T D2 f): assembled from unit-vector HVP
-        // calls, [x;u]-layout
-        hess.setZero();
-        for (int i = 0; i < P::nx + P::nu; ++i)
+        // Contracted Hessian (w^T D2 Phi): nIn unit-vector HVP columns in
+        // [x; u]-layout.
+        if constexpr (Integ::supports_value_jac_hess_prod)
         {
-            state_t v_x = state_t::Zero();
-            control_t v_u = control_t::Zero();
-            if (i < P::nx)
-                v_x(i) = 1;
-            else
-                v_u(i - P::nx) = 1;
-            state_t hv_x;
-            control_t hv_u;
-            integ_.hess_prod(x, u, k * h_, w, v_x, v_u, hv_x, hv_u);
-            hess.col(i).head(P::nx) = hv_x;
-            hess.col(i).tail(P::nu) = hv_u;
+            // AD ODE: each column is one nested-dual forward pass; the value
+            // and the Jacobian come out of the same pass and are identical
+            // for every column.
+            for (int j = 0; j < P::nx + P::nu; ++j)
+            {
+                state_t v_x = state_t::Zero();
+                control_t v_u = control_t::Zero();
+                if (j < P::nx)
+                {
+                    v_x(j) = 1.0;
+                }
+                else
+                {
+                    v_u(j - P::nx) = 1.0;
+                }
+                state_t hv_x;
+                control_t hv_u;
+                integ_.value_jac_hess_prod(x, u, k * h_, x_next, df_dx,
+                                           df_du, w, v_x, v_u, hv_x, hv_u);
+                hess.col(j).head(P::nx) = hv_x;
+                hess.col(j).tail(P::nu) = hv_u;
+            }
+        }
+        else
+        {
+            // value_jac populates the integrator's (x, u, t_k)-keyed forward
+            // cache; the per-column hess_prod calls below hit it.
+            integ_.value_jac(x, u, k * h_, x_next, df_dx, df_du);
+            for (int j = 0; j < P::nx + P::nu; ++j)
+            {
+                state_t v_x = state_t::Zero();
+                control_t v_u = control_t::Zero();
+                if (j < P::nx)
+                {
+                    v_x(j) = 1.0;
+                }
+                else
+                {
+                    v_u(j - P::nx) = 1.0;
+                }
+                state_t hv_x;
+                control_t hv_u;
+                integ_.hess_prod(x, u, k * h_, w, v_x, v_u, hv_x, hv_u);
+                hess.col(j).head(P::nx) = hv_x;
+                hess.col(j).tail(P::nu) = hv_u;
+            }
         }
     }
 
