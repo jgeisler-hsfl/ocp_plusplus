@@ -1,29 +1,41 @@
-// Phase 4j: verify the AutoDiffOde CRTP base and the integrators' fused
-// value / Jacobian / HVP entries.
+// Phase 4j: verify the AutoDiffDae CRTP base (dae_autodiff.hpp) through
+// ImplicitRkIntegrator, the WithHess Hessian-model switch, and the explicit
+// integrator's AD path from a plain scalar-templated ODE `f`.
 //
-//   OdeXsqURef  hand-written f / jacobian / hess_prod for
-//               xdot = x.*x * u + x + [sin t; cos t] — exact reference and
-//               the finite-difference ground truth.
-//   OdeXsqUAd   AutoDiffOde-based model with the same f but no derivative
-//               methods — the AD-under-test.
+//   OdeXsqURef   hand-written f / jacobian / hess_prod for
+//                xdot = x.*x * u + x + [sin t; cos t] — exact reference and
+//                the finite-difference ground truth.
+//   OdeXsqUAd    plain ODE struct with ONLY the scalar-templated `f` —
+//                drives the explicit integrator's dual-evaluability path.
+//   DaeXsqUAd    AutoDiffDae (WithHess = true) with the residual
+//                F = xdot - f — the AD-under-test (full-Newton Hessian).
+//   DaeXsqUGn    AutoDiffDae (WithHess = false) — same residual, F_hess_prod
+//                suppressed, so the integrator (and the SQP) fall back to
+//                the Gauss-Newton Hessian model.
 //
 // Checks:
-//   * trait detection: the AD ODE is dual-evaluable and exposes the fused
-//     entries; the hand-written ODE is not dual-evaluable (guards the
-//     return-type probe against Eigen's converting constructor);
-//   * ODE level: legacy jacobian / hess_prod and the fused value_jac /
-//     value_jac_hess_prod vs the hand-derived reference and central FD;
-//   * integrator level (ExplicitRk K4, K4 x2, ImplicitRk Radau IIA 2):
-//     value_jac / hess_prod / value_jac_hess_prod of the composed map vs
-//     central FD; forward-cache behavior (cold == warm, value_jac primes);
-//     cross-backend: the hand-written ODE through the same integrator
-//     matches the AD ODE (guards the AD glue end-to-end).
+//   * trait detection: the AD DAE exposes F_hess_prod iff WithHess; the
+//     templated ODE f is dual-evaluable while the hand-written one is not
+//     (guards the return-type probe against Eigen's converting constructor);
+//   * DAE level: F_jac / F_hess_prod of AutoDiffDae vs the hand-derived
+//     reference and central FD over z = [x; xdot; u];
+//   * integrator level (ImplicitRk Radau IIA 2): value_jac / hess_prod of
+//     the composed map vs central FD; the GN variant returns zero HVPs with
+//     an unchanged Jacobian; cross-backend: the hand-written ODE through
+//     OdeToDae matches the AD DAE (guards the AD glue end-to-end);
+//   * problem level (ContinuousProblem): the dynamics Hessian assembly is
+//     FD-correct for WithHess = true and identically zero for WithHess =
+//     false (the SQP's Gauss-Newton fallback);
+//   * explicit integrator (K4, K4 x2) over the templated-f ODE: fused
+//     value_jac / hess_prod / value_jac_hess_prod vs central FD and the
+//     forward-cache behavior.
 
 #include <cmath>
 #include <cstdio>
 #include <string>
 
-#include "ocp/integrators/ode_autodiff.hpp"
+#include "ocp/integrators/dae_autodiff.hpp"
+#include "ocp/integrators/continuous_problem.hpp"
 #include "ocp/integrators/rk_explicit.hpp"
 #include "ocp/integrators/rk_implicit.hpp"
 
@@ -42,10 +54,13 @@ using df_du_t = P::dyn_df_du_t;
 constexpr int nx = Dims::nx;
 constexpr int nu = Dims::nu;
 constexpr int nIn = nx + nu;
+constexpr int nInDae = 2 * nx + nu;  // z = [x; xdot; u]
 constexpr double t_k = 0.37;  // OCP-interval start used by all checks
 
 using z_t = Eigen::Matrix<double, nIn, 1>;
+using zdae_t = Eigen::Matrix<double, nInDae, 1>;
 using H_t = Eigen::Matrix<double, nIn, nIn>;
+using Hdae_t = Eigen::Matrix<double, nInDae, nInDae>;
 using Dual1 = duals::dual<double, nIn>;
 using Dual2 = duals::dual<Dual1, 1>;
 
@@ -103,9 +118,9 @@ struct OdeXsqURef
     }
 };
 
-/// The AD-under-test: only f is written; the legacy and fused derivative
-/// entries come from the AutoDiffOde base (forward-mode multidual AD).
-struct OdeXsqUAd : ocp::AutoDiffOde<OdeXsqUAd, Dims>
+/// The explicit integrator's AD-under-test: ONLY `f` is written; the AD path
+/// is selected by the dual-evaluability probe (no adapter, no derivatives).
+struct OdeXsqUAd
 {
     template <class D>
     Eigen::Matrix<D, nx, 1> f(const Eigen::Matrix<D, nx, 1>& x,
@@ -116,20 +131,49 @@ struct OdeXsqUAd : ocp::AutoDiffOde<OdeXsqUAd, Dims>
     }
 };
 
+/// The DAE AD-under-test (WithHess = true): ONLY the scalar-templated
+/// residual is written; F_jac / F_hess_prod come from the AutoDiffDae base.
+struct DaeXsqUAd : ocp::AutoDiffDae<DaeXsqUAd, Dims>
+{
+    template <class D>
+    Eigen::Matrix<D, nx, 1> F(const Eigen::Matrix<D, nx, 1>& x,
+                              const Eigen::Matrix<D, nx, 1>& xdot,
+                              const Eigen::Matrix<D, nu, 1>& u,
+                              double t) const
+    {
+        OdeXsqUAd ode;
+        return xdot - ode.f(x, u, t);
+    }
+};
+
+/// Gauss-Newton variant (WithHess = false): F_hess_prod is suppressed, so
+/// dae_supports_hess_prod is false and the integrator / SQP run the
+/// Gauss-Newton Hessian model.
+struct DaeXsqUGn : ocp::AutoDiffDae<DaeXsqUGn, Dims, false>
+{
+    template <class D>
+    Eigen::Matrix<D, nx, 1> F(const Eigen::Matrix<D, nx, 1>& x,
+                              const Eigen::Matrix<D, nx, 1>& xdot,
+                              const Eigen::Matrix<D, nu, 1>& u,
+                              double t) const
+    {
+        OdeXsqUAd ode;
+        return xdot - ode.f(x, u, t);
+    }
+};
+
 // ---------------------------------------------------------------------------
 //  Traits
 // ---------------------------------------------------------------------------
 
-static_assert(ocp::ode_supports_hess_prod<OdeXsqUAd, Dims>,
-              "AutoDiffOde must expose hess_prod");
-static_assert(ocp::ode_supports_value_jac<OdeXsqUAd, Dims>,
-              "AutoDiffOde must expose value_jac");
-static_assert(ocp::ode_supports_value_jac_hess_prod<OdeXsqUAd, Dims>,
-              "AutoDiffOde must expose value_jac_hess_prod");
+static_assert(ocp::dae_supports_hess_prod<DaeXsqUAd, Dims>,
+              "AutoDiffDae WithHess=true must expose F_hess_prod");
+static_assert(!ocp::dae_supports_hess_prod<DaeXsqUGn, Dims>,
+              "AutoDiffDae WithHess=false must suppress F_hess_prod");
 static_assert(ocp::ode_f_evaluable_at<OdeXsqUAd, Dims, Dual1>,
-              "the AD f must be evaluable at Dual1");
+              "the templated f must be evaluable at Dual1");
 static_assert(ocp::ode_f_evaluable_at<OdeXsqUAd, Dims, Dual2>,
-              "the AD f must be evaluable at Dual2");
+              "the templated f must be evaluable at Dual2");
 static_assert(!ocp::ode_f_evaluable_at<OdeXsqURef, Dims, Dual1>,
               "hand-written double-f must not appear dual-evaluable");
 static_assert(!ocp::ode_f_evaluable_at<OdeXsqURef, Dims, Dual2>,
@@ -140,18 +184,17 @@ static_assert(ocp::ode_supports_hess_prod<OdeXsqURef, Dims>,
 static_assert(
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag>::
         supports_value_jac_hess_prod,
-    "explicit integrator over an AD ODE must flag the fused HVP entry");
+    "explicit integrator over a dual-evaluable f must flag the fused HVP");
 static_assert(
     !ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, 4, ocp::K4Tag>::
         supports_value_jac_hess_prod,
     "explicit integrator over a hand-written ODE must not");
 static_assert(
-    !ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqUAd, Dims>, 2, ocp::RadauIia2Tag>::
+    !ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2, ocp::RadauIia2Tag>::
         supports_value_jac_hess_prod,
     "implicit integrator has no dual-Newton fused entry");
-
 // ---------------------------------------------------------------------------
-//  Finite-difference reference: HVP of g(z) = w^T map(z), z = [x; u]
+//  Finite-difference reference: HVP of g(z) = w^T map(z)
 // ---------------------------------------------------------------------------
 
 template <class Map>  // Map: (const state_t&, const control_t&) -> state_t
@@ -208,41 +251,107 @@ z_t fd_hvp(const state_t& x0, const control_t& u0, const state_t& w,
     return H * v;
 }
 
+/// HVP of g(z) = w^T F(z) over the DAE argument z = [x; xdot; u].
+template <class Map>  // Map: (const state_t&, const state_t&,
+                      //       const control_t&) -> state_t
+zdae_t fd_dae_hvp(const state_t& x0, const state_t& xdot0, const control_t& u0,
+                  const state_t& w, const state_t& v_x, const state_t& v_xdot,
+                  const control_t& v_u, Map&& map)
+{
+    zdae_t z0;
+    z0.segment(0, nx) = x0;
+    z0.segment(nx, nx) = xdot0;
+    z0.tail(nu) = u0;
+    Hdae_t H;
+    const double d = 1e-4;
+    for (int a = 0; a < nInDae; ++a)
+    {
+        for (int b = a; b < nInDae; ++b)
+        {
+            auto eval = [&](const zdae_t& z)
+            {
+                return w.dot(map(z.segment(0, nx), z.segment(nx, nx),
+                                 z.tail(nu)));
+            };
+            if (a == b)
+            {
+                zdae_t zp = z0;
+                zdae_t zm = z0;
+                zp(a) += d;
+                zm(a) -= d;
+                H(a, a) = (eval(zp) - 2.0 * eval(z0) + eval(zm)) / (d * d);
+            }
+            else
+            {
+                zdae_t p11 = z0;
+                zdae_t p1m = z0;
+                zdae_t pm1 = z0;
+                zdae_t pMM = z0;
+                p11(a) += d;
+                p11(b) += d;
+                p1m(a) += d;
+                p1m(b) -= d;
+                pm1(a) -= d;
+                pm1(b) += d;
+                pMM(a) -= d;
+                pMM(b) -= d;
+                H(a, b) = (eval(p11) - eval(p1m) - eval(pm1) + eval(pMM))
+                          / (4.0 * d * d);
+            }
+            H(b, a) = H(a, b);
+        }
+    }
+    zdae_t v;
+    v.segment(0, nx) = v_x;
+    v.segment(nx, nx) = v_xdot;
+    v.tail(nu) = v_u;
+    return H * v;
+}
+
 struct Case
 {
     state_t   w;
     state_t   v_x;
+    state_t   v_xdot;
     control_t v_u;
 };
 const Case cases[] = {
-    {state_t(0.7, -0.3), state_t(0.4, 0.9), control_t(-0.5)},
-    {state_t(1.0, 0.4), state_t(0.1, -0.6), control_t(0.8)},
-    {state_t(0.2, 0.9), state_t(-0.3, 0.5), control_t(0.2)},
+    {state_t(0.7, -0.3), state_t(0.4, 0.9), state_t(0.2, 0.1),
+     control_t(-0.5)},
+    {state_t(1.0, 0.4), state_t(0.1, -0.6), state_t(-0.4, 0.8),
+     control_t(0.8)},
+    {state_t(0.2, 0.9), state_t(-0.3, 0.5), state_t(0.6, -0.2),
+     control_t(0.2)},
 };
 
 // ---------------------------------------------------------------------------
-//  ODE level: AD entries vs the hand-derived reference and FD
+//  DAE level: AutoDiffDae entries vs the hand-derived reference and FD
 // ---------------------------------------------------------------------------
 
-void check_ode_jacobian()
+void check_dae_jacobian()
 {
-    OdeXsqUAd ad;
+    DaeXsqUAd dae;
     OdeXsqURef ref;
     const state_t x(0.3, -0.7);
+    const state_t xdot(1.1, 0.2);
     const control_t u(0.4);
 
-    df_dx_t Jx_ad;
-    df_du_t Ju_ad;
-    ad.jacobian(x, u, t_k, Jx_ad, Ju_ad);
-    df_dx_t Jx_ref;
-    df_du_t Ju_ref;
-    ref.jacobian(x, u, t_k, Jx_ref, Ju_ref);
+    df_dx_t dFdx_ad, dFxdot_ad;
+    df_du_t dFdu_ad;
+    dae.F_jac(x, xdot, u, t_k, dFdx_ad, dFxdot_ad, dFdu_ad);
 
-    check((Jx_ad - Jx_ref).cwiseAbs().maxCoeff() < 1e-13,
-          "ODE jacobian AD vs hand-derived (df/dx)");
-    check((Ju_ad - Ju_ref).cwiseAbs().maxCoeff() < 1e-13,
-          "ODE jacobian AD vs hand-derived (df/du)");
+    // F = xdot - f:  dFdx = -dfdx,  dFxdot = I,  dFdu = -dfdu.
+    df_dx_t dfdx_ref;
+    df_du_t dfdu_ref;
+    ref.jacobian(x, u, t_k, dfdx_ref, dfdu_ref);
+    check(((dFdx_ad + dfdx_ref)).cwiseAbs().maxCoeff() < 1e-13,
+          "DAE F_jac AD vs hand-derived (dFdx)");
+    check((dFxdot_ad - df_dx_t::Identity()).cwiseAbs().maxCoeff() < 1e-13,
+          "DAE F_jac AD vs hand-derived (dFxdot)");
+    check((dFdu_ad + dfdu_ref).cwiseAbs().maxCoeff() < 1e-13,
+          "DAE F_jac AD vs hand-derived (dFdu)");
 
+    // Central FD against the residual value pass.
     const double d = 1e-6;
     for (int j = 0; j < nx; ++j)
     {
@@ -250,11 +359,24 @@ void check_ode_jacobian()
         e(j) = d;
         const state_t xp = x + e;
         const state_t xm = x - e;
-        const state_t fp = ad.f(xp, u, t_k);
-        const state_t fm = ad.f(xm, u, t_k);
+        const state_t fp = dae.F(xp, xdot, u, t_k);
+        const state_t fm = dae.F(xm, xdot, u, t_k);
         for (int i = 0; i < nx; ++i)
-            check(std::abs(Jx_ad(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
-                  "ODE jacobian AD vs FD (df/dx)");
+            check(std::abs(dFdx_ad(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
+                  "DAE F_jac AD vs FD (dFdx)");
+    }
+    for (int j = 0; j < nx; ++j)
+    {
+        state_t e = state_t::Zero();
+        e(j) = d;
+        const state_t xdotp = xdot + e;
+        const state_t xdotm = xdot - e;
+        const state_t fp = dae.F(x, xdotp, u, t_k);
+        const state_t fm = dae.F(x, xdotm, u, t_k);
+        for (int i = 0; i < nx; ++i)
+            check(
+                std::abs(dFxdot_ad(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
+                "DAE F_jac AD vs FD (dFxdot)");
     }
     for (int j = 0; j < nu; ++j)
     {
@@ -262,107 +384,56 @@ void check_ode_jacobian()
         e(j) = d;
         const control_t up = u + e;
         const control_t um = u - e;
-        const state_t fp = ad.f(x, up, t_k);
-        const state_t fm = ad.f(x, um, t_k);
+        const state_t fp = dae.F(x, xdot, up, t_k);
+        const state_t fm = dae.F(x, xdot, um, t_k);
         for (int i = 0; i < nx; ++i)
-            check(std::abs(Ju_ad(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
-                  "ODE jacobian AD vs FD (df/du)");
+            check(std::abs(dFdu_ad(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
+                  "DAE F_jac AD vs FD (dFdu)");
     }
-    std::printf(
-        "  4j ode jac   OdeXsqUAd  OK  (exact vs hand-derived, FD<1e-6)\n");
+    std::printf("  4j dae jac    DaeXsqUAd  OK  (exact vs hand-derived, "
+                "FD<1e-6)\n");
 }
 
-void check_ode_hess_prod()
+void check_dae_hess_prod()
 {
-    OdeXsqUAd ad;
+    DaeXsqUAd dae;
     OdeXsqURef ref;
     const state_t x(0.3, -0.7);
+    const state_t xdot(1.1, 0.2);
     const control_t u(0.4);
 
     for (const auto& c : cases)
     {
-        state_t hvx_ad;
+        state_t hvx_ad, hvxd_ad;
         control_t hvu_ad;
-        ad.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx_ad, hvu_ad);
-        state_t hvx_ref;
+        dae.F_hess_prod(x, xdot, u, t_k, c.w, c.v_x, c.v_xdot, c.v_u, hvx_ad,
+                        hvxd_ad, hvu_ad);
+
+        // D2F = -D2f in the (x, u) blocks; F is affine in xdot (hv_xdot = 0).
+        state_t hvx_ref, hvxd_ref;
         control_t hvu_ref;
         ref.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx_ref, hvu_ref);
+        check((hvx_ad + hvx_ref).cwiseAbs().maxCoeff() < 1e-12,
+              "DAE F_hess_prod AD vs hand-derived (hv_x)");
+        check(hvxd_ad.cwiseAbs().maxCoeff() < 1e-12,
+              "DAE F_hess_prod AD vs hand-derived (hv_xdot)");
+        check((hvu_ad + hvu_ref).cwiseAbs().maxCoeff() < 1e-12,
+              "DAE F_hess_prod AD vs hand-derived (hv_u)");
 
-        check((hvx_ad - hvx_ref).cwiseAbs().maxCoeff() < 1e-12,
-              "ODE hess_prod AD vs hand-derived (hv_x)");
-        check((hvu_ad - hvu_ref).cwiseAbs().maxCoeff() < 1e-12,
-              "ODE hess_prod AD vs hand-derived (hv_u)");
-
-        const z_t fd = fd_hvp(x, u, c.w, c.v_x, c.v_u,
-                              [&](const state_t& xx, const control_t& uu)
-                              { return ad.f(xx, uu, t_k); });
-        z_t actual;
-        actual.head(nx) = hvx_ad;
+        const zdae_t fd =
+            fd_dae_hvp(x, xdot, u, c.w, c.v_x, c.v_xdot, c.v_u,
+                       [&](const state_t& xx, const state_t& xxd,
+                           const control_t& uu)
+                       { return dae.F(xx, xxd, uu, t_k); });
+        zdae_t actual;
+        actual.segment(0, nx) = hvx_ad;
+        actual.segment(nx, nx) = hvxd_ad;
         actual.tail(nu) = hvu_ad;
         const double err = (actual - fd).cwiseAbs().maxCoeff();
-        check(err < 1e-5, "ODE hess_prod AD vs FD Hessian");
+        check(err < 1e-5, "DAE F_hess_prod AD vs FD Hessian");
     }
-    std::printf("  4j ode hess  OdeXsqUAd  OK  (exact vs hand-derived, "
+    std::printf("  4j dae hess   DaeXsqUAd  OK  (exact vs hand-derived, "
                 "FD<1e-5, 3 cases)\n");
-}
-
-void check_ode_value_jac()
-{
-    OdeXsqUAd ad;
-    OdeXsqURef ref;
-    const state_t x(0.3, -0.7);
-    const control_t u(0.4);
-
-    state_t f_val;
-    df_dx_t Jx;
-    df_du_t Ju;
-    ad.value_jac(x, u, t_k, f_val, Jx, Ju);
-    check((f_val - ref.f(x, u, t_k)).cwiseAbs().maxCoeff() < 1e-13,
-          "ODE value_jac value vs hand f");
-    df_dx_t Jx_ref;
-    df_du_t Ju_ref;
-    ref.jacobian(x, u, t_k, Jx_ref, Ju_ref);
-    check((Jx - Jx_ref).cwiseAbs().maxCoeff() < 1e-13,
-          "ODE value_jac df/dx vs hand-derived");
-    check((Ju - Ju_ref).cwiseAbs().maxCoeff() < 1e-13,
-          "ODE value_jac df/du vs hand-derived");
-    std::printf("  4j ode vjac  OdeXsqUAd  OK  (value + Jacobian fused)\n");
-}
-
-void check_ode_value_jac_hess_prod()
-{
-    OdeXsqUAd ad;
-    OdeXsqURef ref;
-    const state_t x(0.3, -0.7);
-    const control_t u(0.4);
-
-    for (const auto& c : cases)
-    {
-        state_t f_val;
-        df_dx_t Jx;
-        df_du_t Ju;
-        state_t hvx;
-        control_t hvu;
-        ad.value_jac_hess_prod(x, u, t_k, f_val, Jx, Ju, c.w, c.v_x, c.v_u,
-                               hvx, hvu);
-        check((f_val - ref.f(x, u, t_k)).cwiseAbs().maxCoeff() < 1e-13,
-              "ODE value_jac_hess_prod value vs hand f");
-        df_dx_t Jx_ref;
-        df_du_t Ju_ref;
-        ref.jacobian(x, u, t_k, Jx_ref, Ju_ref);
-        check((Jx - Jx_ref).cwiseAbs().maxCoeff() < 1e-13,
-              "ODE value_jac_hess_prod df/dx vs hand-derived");
-        check((Ju - Ju_ref).cwiseAbs().maxCoeff() < 1e-13,
-              "ODE value_jac_hess_prod df/du vs hand-derived");
-        state_t hvx_ref;
-        control_t hvu_ref;
-        ref.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx_ref, hvu_ref);
-        check((hvx - hvx_ref).cwiseAbs().maxCoeff() < 1e-12,
-              "ODE value_jac_hess_prod hv_x vs hand-derived");
-        check((hvu - hvu_ref).cwiseAbs().maxCoeff() < 1e-12,
-              "ODE value_jac_hess_prod hv_u vs hand-derived");
-    }
-    std::printf("  4j ode vjh   OdeXsqUAd  OK  (fused triplet, 3 cases)\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +548,47 @@ void check_integ_value_jac_hess_prod(Integ& integ, const char* name)
     std::printf("  4j integ vjh   %s  OK  (fused triplet, 3 cases)\n", name);
 }
 
+/// Gauss-Newton switch: WithHess = false gives zero HVPs with an unchanged
+/// Jacobian (the SQP's GN Hessian model).
+void check_gn_switch()
+{
+    DaeXsqUGn dae_gn;
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2, ocp::RadauIia2Tag> irk_gn(
+        dae_gn, 0.1, 8);
+
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+
+    // value_jac must still be exact (the Newton path is unaffected).
+    const double d = 1e-6;
+    state_t x_next;
+    df_dx_t Jx;
+    df_du_t Ju;
+    irk_gn.value_jac(x, u, t_k, x_next, Jx, Ju);
+    for (int j = 0; j < nx; ++j)
+    {
+        state_t e = state_t::Zero();
+        e(j) = d;
+        state_t fp, fm;
+        irk_gn.value(x + e, u, t_k, fp);
+        irk_gn.value(x - e, u, t_k, fm);
+        for (int i = 0; i < nx; ++i)
+            check(std::abs(Jx(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
+                  "GN switch value_jac df/dx vs FD");
+    }
+
+    // Every HVP is zero: the composed dynamics Hessian is dropped.
+    for (const auto& c : cases)
+    {
+        state_t hvx;
+        control_t hvu;
+        irk_gn.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx, hvu);
+        check(hvx.cwiseAbs().maxCoeff() == 0.0 && hvu.cwiseAbs().maxCoeff() == 0.0,
+              "GN switch: hess_prod returns zeros");
+    }
+    std::printf("  4j gn switch   Rad2-GN   OK  (zero HVPs, jac FD-correct)\n");
+}
+
 // ---------------------------------------------------------------------------
 //  Forward cache: cold == warm, value_jac primes the cache
 // ---------------------------------------------------------------------------
@@ -546,7 +658,7 @@ void check_cache(Integ& integ, const char* name)
 }
 
 // ---------------------------------------------------------------------------
-//  Cross-backend: hand-written ODE == AD ODE through the same integrator
+//  Cross-backend: hand-written ODE (via OdeToDae) == AD DAE, same integrator
 // ---------------------------------------------------------------------------
 
 template <class IntegAd, class IntegRef>
@@ -586,38 +698,110 @@ void check_cross_backend(IntegAd& ig_ad, IntegRef& ig_ref, const char* name)
                 name);
 }
 
+// ---------------------------------------------------------------------------
+//  Problem level: ContinuousProblem dynamics Hessian assembly vs the switch
+// ---------------------------------------------------------------------------
+
+void check_problem_hess()
+{
+    DaeXsqUAd dae;
+    using Irk = ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2,
+                                          ocp::RadauIia2Tag>;
+    ocp::ContinuousProblem<Dims, DaeXsqUAd, Irk> prob(dae, 0.1, 8);
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+    const auto& c = cases[0];
+
+    state_t x_next;
+    df_dx_t Jx;
+    df_du_t Ju;
+    P::dyn_hess_t hess;
+    prob.dynamics_value_jac_hess(0, x, u, c.w, x_next, Jx, Ju, hess);
+
+    // Each column j of the assembled Hessian is the composed-map HVP along
+    // the unit direction e_j (z = [x; u] layout).
+    for (int j = 0; j < nIn; ++j)
+    {
+        state_t v_x = state_t::Zero();
+        control_t v_u = control_t::Zero();
+        if (j < nx)
+        {
+            v_x(j) = 1.0;
+        }
+        else
+        {
+            v_u(j - nx) = 1.0;
+        }
+        const z_t fd = fd_hvp(
+            x, u, c.w, v_x, v_u,
+            [&](const state_t& xx, const control_t& uu)
+            { return prob.dynamics_next_state(0, xx, uu); });
+        check((hess.col(j) - fd).cwiseAbs().maxCoeff() < 1e-5,
+              "problem dynamics Hessian column vs FD");
+    }
+    std::printf("  4j prob hess   Rad2-AD   OK  (columns FD<1e-5)\n");
+
+    // GN variant: WithHess = false assembles an identically zero dynamics
+    // Hessian with an unchanged Jacobian (the SQP then runs the GN model).
+    DaeXsqUGn dae_gn;
+    using IrkGn = ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2,
+                                            ocp::RadauIia2Tag>;
+    ocp::ContinuousProblem<Dims, DaeXsqUGn, IrkGn> prob_gn(dae_gn, 0.1, 8);
+    state_t xn_gn;
+    df_dx_t Jx_gn;
+    df_du_t Ju_gn;
+    P::dyn_hess_t hess_gn;
+    prob_gn.dynamics_value_jac_hess(0, x, u, c.w, xn_gn, Jx_gn, Ju_gn,
+                                    hess_gn);
+    check(hess_gn.cwiseAbs().maxCoeff() == 0.0,
+          "GN switch: dynamics Hessian identically zero");
+    check((Jx_gn - Jx).cwiseAbs().maxCoeff() < 1e-12,
+          "GN switch: Jacobian unchanged");
+    check((xn_gn - x_next).cwiseAbs().maxCoeff() < 1e-12,
+          "GN switch: value unchanged");
+    std::printf("  4j prob gn     Rad2-GN   OK  (zero Hessian, jac==value)\n");
+}
+
 }  // namespace
 
 int run_autodiff_4j_tests()
 {
-    check_ode_jacobian();
-    check_ode_hess_prod();
-    check_ode_value_jac();
-    check_ode_value_jac_hess_prod();
+    check_dae_jacobian();
+    check_dae_hess_prod();
 
     OdeXsqUAd ad;
     OdeXsqURef ref;
+    DaeXsqUAd dae;
+    DaeXsqUGn dae_gn;
 
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag> erk(ad, 0.1);
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag, 2> erk2(ad, 0.1);
     ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, 4, ocp::K4Tag> erk_ref(ref, 0.1);
-    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqUAd, Dims>, 2, ocp::RadauIia2Tag> irk(
-        ad, 0.1, 8);
-    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>, 2, ocp::RadauIia2Tag> irk_ref(
-        ref, 0.1, 8);
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2, ocp::RadauIia2Tag> irk(
+        dae, 0.1, 8);
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2, ocp::RadauIia2Tag> irk_gn(
+        dae_gn, 0.1, 8);
+    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>, 2,
+                              ocp::RadauIia2Tag>
+        irk_ref(ref, 0.1, 8);
 
     check_integ_value_jac(erk, "K4-AD");
     check_integ_value_jac(erk2, "K4x2-AD");
     check_integ_hess(erk, "K4-AD");
-    check_integ_hess(irk, "Rad2-AD");
     check_integ_value_jac_hess_prod(erk, "K4-AD");
+
+    check_integ_value_jac(irk, "Rad2-AD");
+    check_integ_hess(irk, "Rad2-AD");
     check_integ_value_jac_hess_prod(irk, "Rad2-AD");
+    check_gn_switch();
 
     check_cache(erk_ref, "K4-ref");
     check_cache(irk_ref, "Rad2-ref");
 
     check_cross_backend(erk, erk_ref, "K4");
     check_cross_backend(irk, irk_ref, "Rad2");
+
+    check_problem_hess();
 
     if (failures != 0)
     {
