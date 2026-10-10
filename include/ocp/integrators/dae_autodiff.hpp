@@ -57,7 +57,7 @@
 // the formulation is exact for any (regular) dFxdot, so implicit DAEs work
 // unchanged.  A purely linear ODE needs no AD at all: hand-write the
 // residual with has_dynamics_hess = false (OdeToDae over a hand-written ODE,
-// or the linear-DAE pattern in the 4k tests).
+// or a hand-written linear DAE).
 
 #pragma once
 

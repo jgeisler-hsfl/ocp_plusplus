@@ -1,8 +1,7 @@
 // ocp/integrators/rk_implicit.hpp
 //
-// Allocation-free implicit Runge-Kutta / collocation integrator in DAE
-// (implicit) form (phases 4d, 4g, 4h, 4i; DAE-native since 4k,
-// CLEAN_UP_TODO item 3).
+// Allocation-free implicit Runge-Kutta / collocation integrator for
+// (possibly time-varying) DAEs.
 //
 // ImplicitRkIntegrator turns the DAE residual
 //
@@ -23,10 +22,9 @@
 // matrix A is full (not strictly lower triangular), the stage equations
 // form a coupled nonlinear system in the NS*nx unknowns K_0..K_NS-1.  Each
 // sub-step solves it by Newton iteration with a single block LU
-// factorization of the NS*nx-by-NS*nx Jacobian (matches acados
-// sim_irk_integrator.c: the block matrix is factored in place and reused
-// for the correction and, on the sensitivity path, for the first-order
-// solves):
+// factorization of the NS*nx-by-NS*nx Jacobian, factored in place and
+// reused for the correction and, on the sensitivity path, for the
+// first-order solves:
 //
 //     G[s][j] = delta_{s,j} F_xdot_s + h_ss A[s][j] F_x_s
 //
@@ -53,10 +51,9 @@
 // Warm start: the first sub-step initializes each stage from the small
 // per-stage linear solve  F_xdot(x, 0, u, t_s) K0_s = -F(x, 0, u, t_s)
 // (for an ODE residual this is exactly K0_s = f(x, u, t_s)); later
-// sub-steps warm-start from the previous sub-step's converged K (acados
-// `mem->xdot` pattern).
+// sub-steps warm-start from the previous sub-step's converged K.
 //
-// Forward cache (phase 4i): the v-independent forward state is keyed on
+// Forward cache: the v-independent forward state is keyed on
 // (x, u, t_k).  NumSteps == 1: the converged Newton state (K, stage
 // Jacobians, factored G) is reused by a second value / jacobian / value_jac /
 // hess_prod call with the same key, and the first-order sensitivity
@@ -77,9 +74,9 @@
 // std::array, sized once on NS and Dims::nx/nu.  Methods are const; the DAE
 // model is stored by value; the per-call scratch is `mutable`.
 //
-// Newton options mirror acados: newton_max (opts->newton_iter, default 3)
-// and newton_tol (opts->newton_tol, default 0.0 = fixed-iteration count, no
-// early termination).
+// Newton options: newton_max (max Newton iterations per sub-step, default
+// 3) and newton_tol (early-termination residual tolerance, default 0.0 =
+// fixed-iteration count, no early termination).
 
 #pragma once
 
@@ -100,7 +97,7 @@ namespace detail
 /// The first block is the single-sub-step Newton scratch (the "current"
 /// sub-step); the remaining arrays hold the per-sub-step trajectory (needed
 /// to warm-start the next sub-step's Newton and to run the multi-step
-/// hess_prod reverse sweep) and the reverse-mode duals (phase 4g).
+/// hess_prod reverse sweep) and the reverse-mode duals.
 template <class P, int NS, int NumSteps>
 struct IrkWorkspace
 {
@@ -151,7 +148,7 @@ struct IrkWorkspace
 
     double last_residual_ = 0.0;  // ‖F‖∞ at the converged iterate (diagnostic)
 
-    // --- multi-step (4g) trajectory: one entry per sub-step ---------------
+    // --- multi-step trajectory: one entry per sub-step ---------------------
     // The multi-step hess_prod reuses the single-sub-step HVP as a building
     // block: the forward pass stores each sub-step's Newton state (stage
     // states, K, Jacobians, factored G) plus the per-sub-step Jacobians and
@@ -170,12 +167,12 @@ struct IrkWorkspace
     // S_traj[ss] = D_u x_{ss}: total u-Jacobian of the composition of
     // sub-steps 0..ss-1 (forward-threaded: S_{ss+1} = A_ss S_ss + B_ss).
     std::array<df_du_t, NumSteps> S_traj{};
-    // Phase 4i: per-sub-step first-order sensitivity G^{-1} Q (v-independent,
-    // cached by the multi-step forward, consumed by the backward sweep).
+    // Per-sub-step first-order sensitivity G^{-1} Q (v-independent, cached
+    // by the multi-step forward, consumed by the backward sweep).
     std::array<Eigen::Matrix<scalar_t, NK, nIn>, NumSteps> sens_traj{};
 
-    // --- forward cache (phase 4i): the v-independent forward state above is
-    //     valid for the (x, u, t_k) recorded here.
+    // --- forward cache: the v-independent forward state above is valid for
+    //     the (x, u, t_k) recorded here.
     state_t   last_x{};
     control_t last_u{};
     double    last_t = 0.0;
@@ -192,13 +189,13 @@ struct IrkWorkspace
 /// `NS` is the number of RK stages (2..4 for the Radau IIA / Gauss-
 /// Legendre tags).  `Tag` selects the Butcher scheme (RadauIia2Tag..
 /// RadauIia4Tag, GaussLegendre2Tag..GaussLegendre4Tag).  `h` is the fixed
-/// step size for the full OCP interval; `NumSteps` (phase 4g) is the number
+/// step size for the full OCP interval; `NumSteps` is the number
 /// of sub-intervals one OCP step of size `h` is divided into (h/NumSteps per
 /// sub-step), the default of 1 being the plain single-step scheme.  The DAE
 /// model must provide `F` and `F_jac` (dae_model.hpp); a nonlinear DAE
 /// must also provide `F_hess_prod` (used by the nonlinear HVP path).
 ///
-/// Time-varying (phase 4h): each method receives `t_k` (the physical time at
+/// Time-varying: each method receives `t_k` (the physical time at
 /// the start of the OCP interval); the per-stage time
 ///   t_s = t_k + h_ss * (ss + c[s])
 /// is forwarded to every DAE evaluation (F, F_jac, F_hess_prod).
@@ -237,9 +234,9 @@ public:
     ///                   OdeToDae wrappers).
     /// @param h          fixed step size for the full OCP interval
     ///                   (h/NumSteps per sub-step).
-    /// @param newton_max max Newton iterations per sub-step (acados default 3).
+    /// @param newton_max max Newton iterations per sub-step (default 3).
     /// @param newton_tol early-termination residual tolerance; 0 disables
-    ///                   (fixed-iteration count, the acados default).
+    ///                   early termination (fixed-iteration count, default).
     explicit ImplicitRkIntegrator(const Dae& dae, double h, int newton_max = 3,
                                   double newton_tol = 0.0)
         : dae_(dae), h_(h), h_ss_(h / (double)NumSteps),
@@ -247,10 +244,13 @@ public:
     {
     }
 
-    /// Discrete map x_next = Phi(x, u) for the full OCP interval, advanced in
-    /// NumSteps sub-steps of size h/NumSteps.  Each sub-step is a Newton
-    /// solve, warm-started from the previous sub-step's converged K (acados
-    /// `mem->xdot` pattern).
+    /// Discrete map x_next = Phi(x, u, t_k) for the full OCP interval,
+    /// advanced in NumSteps sub-steps of size h/NumSteps.  Each sub-step is
+    /// a Newton solve, warm-started from the previous sub-step's converged K.
+    /// @param  x  state at the interval start (nx)
+    /// @param  u  control (nu)
+    /// @param  t_k physical time at the start of the OCP interval
+    /// @param[out] x_next state at the interval end (nx)
     void value(const state_t& x, const control_t& u, double t_k,
                state_t& x_next) const
     {
@@ -273,6 +273,9 @@ public:
     /// x_next + composed-map Jacobian (df_dx, df_du) from a single sweep:
     /// NumSteps == 1 reuses the forward cache when present, NumSteps > 1
     /// extracts both from one multi-step sweep.
+    /// @param[out] x_next state at the interval end (nx)
+    /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
+    /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
     void value_jac(const state_t& x, const control_t& u, double t_k,
                    state_t& x_next, df_dx_t& df_dx, df_du_t& df_du) const
     {
@@ -304,6 +307,8 @@ public:
     /// Jacobian (Jx_ss, Ju_ss); the composed Jacobian threads
     /// Sx = Jx_ss*Sx, Su = Jx_ss*Su + Ju_ss across the sub-steps.
     /// (Same single sweep as value_jac; x_next is discarded.)
+    /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
+    /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
     void jacobian(const state_t& x, const control_t& u, double t_k,
                   df_dx_t& df_dx, df_du_t& df_du) const
     {
@@ -315,6 +320,10 @@ public:
     /// dual-Newton stage solve, so this is not a single fused pass; the
     /// forward cache lets hess_prod reuse value_jac's Newton state).  Provided
     /// so both integrators expose a uniform public API.
+    /// @param  w    state multiplier, e.g. the dynamics multiplier (nx)
+    /// @param  v_x, v_u  HVP direction v = (v_x, v_u)
+    /// @param[out] x_next (nx), df_dx (nx x nx), df_du (nx x nu)
+    /// @param[out] hv_x, hv_u  HVP of the composed Hessian along v
     void value_jac_hess_prod(const state_t& x, const control_t& u, double t_k,
                              state_t& x_next, df_dx_t& df_dx, df_du_t& df_du,
                              const state_t& w, const state_t& v_x,
@@ -326,7 +335,10 @@ public:
     }
 
     /// Bilinear Hessian-vector product of the composed map,
-    /// `hv = w^T d2Phi . v` (see SQP_PHASE4_PLAN.md, 4f/4g).
+    /// `hv = w^T d2Phi . v`.
+    /// @param  w    state multiplier (nx)
+    /// @param  v_x, v_u  HVP direction v = (v_x, v_u)
+    /// @param[out] hv_x (nx), hv_u (nu)
     ///
     /// NumSteps == 1: the single-sub-step algorithm; the Newton forward and
     /// the v-independent sensitivity sens = G^{-1} Q are taken from the
@@ -393,7 +405,7 @@ public:
     }
 
 private:
-    // ---- forward cache (phase 4i) -----------------------------------------
+    // ---- forward cache ----------------------------------------------------
 
     /// True when the cached forward state was produced for exactly this
     /// (x, u, t_k) (bit-identical inputs).
@@ -555,7 +567,7 @@ private:
         }
     }
 
-    // ---- multi-step (NumSteps > 1) hess_prod decomposition (phase 4g/4i) ----
+    // ---- multi-step (NumSteps > 1) hess_prod decomposition ----------------
 
     // v-independent multi-step forward: Newton-solve each sub-step, store the
     // per-sub-step Newton state, per-sub-step Jacobians, R/S threading and

@@ -1,6 +1,4 @@
-// Problem matching the acados mass_spring QP example exactly
-// (acados/examples/c/no_interface_examples/mass_spring_model/mass_spring_qp.c),
-// used as the 2i reference-diff target.
+// Concrete problems matching the acados mass_spring QP example:
 //
 //   x = [q; v]  (q: 4 positions, v: 4 velocities),  u: 3 forces
 //
@@ -19,9 +17,13 @@
 //   box:  -0.5 <= u_i <= 0.5,  -4 <= x_i <= 4  (stages 1..N),  x_0 fixed
 //   terminal equality (Term variant):  x_N(0:3) = 0
 //
-// Two concrete problems share the MassSpringRefData system matrices / costs:
+// Two concrete problems share the MassSpringRefData system matrices / costs;
+// the only difference is ne_t (terminal equality):
 //   MassSpringRefBox  : ne_t = 0 (box-only reference)
 //   MassSpringRefTerm : ne_t = 4 (terminal-equality reference)
+//
+// Supplementary - reference:
+//   acados/examples/c/no_interface_examples/mass_spring_model/mass_spring_qp.c
 
 #pragma once
 
@@ -29,33 +31,7 @@
 
 #include <unsupported/Eigen/MatrixFunctions>
 
-// Shared (D
-//   x = [q; v]  (q: 4 positions, v: 4 velocities),  u: 3 forces
-//
-//   continuous time (Ts = 0.5):
-//        q_dot = v
-//        v_dot = T q + Bc u,   T = tridiag(1, -2, 1),  Bc = [0; I3]
-//
-//   discrete time:  x_{k+1} = A x_k + B u_k + b,
-//        A = expm(Ts Ac),  B = (A - I) Ac^{-1} Bc,  Ac = [0  I; T  0],
-//        b = 0.1 * ones(8)
-//
-//   stage cost:     0.5 * x'Q x + 0.5 * u'R u + q' x + r' u
-//                   Q = I_8, R = 2 I_3, q = 0.1 * ones(8), r = 0.2 * ones(3)
-//   terminal cost:  0.5 * x'Q x + q' x
-//
-//   box:  -0.5 <= u_i <= 0.5,  -4 <= x_i <= 4  (stages 1..N),  x_0 fixed
-//   terminal equality (Term variant):  x_N(0:3) = 0
-//
-// Two concrete problems share the shared MassSpringRefData (system matrices,
-// costs); the only difference between them is ne_t (terminal equality).
-
-#pragma once
-
-#include "ocp/problem.hpp"
-
-#include <unsupported/Eigen/MatrixFunctions>
-
+/// Dims tag for MassSpringRefBox: box-only reference (ne_t = 0).
 struct MassSpringRefBoxDims
 {
     static constexpr int nx = 8;
@@ -83,6 +59,7 @@ struct MassSpringRefBoxDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
 };
 
+/// Dims tag for MassSpringRefTerm: terminal-equality reference (ne_t = 4).
 struct MassSpringRefTermDims
 {
     static constexpr int nx = 8;
@@ -110,8 +87,8 @@ struct MassSpringRefTermDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
 };
 
-// Dims-independent system data and cost kernels shared by both problems.
-// All matrices are fixed 8-state / 3-control (the acados mass-spring dims).
+/// Dims-independent system data and cost kernels shared by both problems.
+/// All matrices are fixed 8-state / 3-control (the mass-spring dimensions).
 struct MassSpringRefData
 {
     static constexpr int nx = 8;
@@ -128,6 +105,7 @@ struct MassSpringRefData
     Mat83 B{};
     Vec8 b{};
 
+    /// Build the discrete dynamics (A, B, b) from the continuous system.
     MassSpringRefData()
     {
         // continuous-time system  Ac = [0  I; T  0],  Bc = [0; I_nu]
@@ -275,6 +253,7 @@ public:
         H = term_hess_t::Identity();
     }
 
+    /// State box: -4 <= x_i <= 4.
     state_box_t stage_state_box_constr(int) const
     {
         state_box_t spec;
@@ -284,6 +263,7 @@ public:
         return spec;
     }
 
+    /// Control box: -0.5 <= u_i <= 0.5.
     control_box_t stage_control_box_constr(int) const
     {
         control_box_t spec;
@@ -293,6 +273,7 @@ public:
         return spec;
     }
 
+    /// Terminal state box: -4 <= x_N,i <= 4.
     term_state_box_t terminal_state_box_constr() const
     {
         term_state_box_t spec;
@@ -383,6 +364,7 @@ public:
         H = term_hess_t::Identity();
     }
 
+    /// State box: -4 <= x_i <= 4.
     state_box_t stage_state_box_constr(int) const
     {
         state_box_t spec;
@@ -392,6 +374,7 @@ public:
         return spec;
     }
 
+    /// Control box: -0.5 <= u_i <= 0.5.
     control_box_t stage_control_box_constr(int) const
     {
         control_box_t spec;
@@ -401,6 +384,7 @@ public:
         return spec;
     }
 
+    /// Terminal state box: -4 <= x_N,i <= 4.
     term_state_box_t terminal_state_box_constr() const
     {
         term_state_box_t spec;
@@ -410,6 +394,7 @@ public:
         return spec;
     }
 
+    /// Terminal equality constraint: x_N(0:3) = 0.
     eq_term_t terminal_equality_value(const state_t& x) const
     {
         return x.head<ne_t>();

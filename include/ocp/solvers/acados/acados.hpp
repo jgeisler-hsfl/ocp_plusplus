@@ -1,27 +1,44 @@
 // ocp/solvers/acados/acados.hpp
 //
-// SQP driver components (phase 2).
+// SQP driver for ocp::Problem instances: an outer SQP iteration that, at
+// each step, linearizes the NLP at the current iterate and solves a
+// staged quadratic subproblem in step form. The per-stage QP variables
+// are z_k = (du_k, dx_k, s_k) (control step, state step, constraint
+// slacks); dynamics are enforced as BA z = b with
+// b = f(x_k, u_k) - x_{k+1}, and general constraints as DC z with bounds
+// offset from the current row values. The assembled QP is scaled
+// (QpScaler), regularized (Regularizer), solved (QpSolver), and the
+// resulting step is accepted by a globalization line search (Globalizer).
 //
-// This file is built up incrementally across sub-steps 2c-2g of
-// SQP_PHASE2_PLAN.md.
+// Contents:
+//   NlpResiduals / compute_nlp_residuals   KKT residual norms
+//   AcadosOptions                          driver options
+//   SqpIteration / AcadosStatistics        per-iteration statistics
+//   print_sqp_iteration                    stdout printing
+//   AcadosSolver                           QP assembly, Levenberg-
+//       Marquardt damping (fixed or adaptive), termination test,
+//       slack bookkeeping, second-order correction, main loop
 //
-// 2c: NlpResiduals, compute_nlp_residuals
-//     Port of acados ocp_nlp_res_compute (ocp_nlp_common.c:3743-3846).
-// 2e: AcadosOptions, SqpIteration, AcadosStatistics, print_sqp_iteration
-//     Driver options (defaults per ocp_nlp_common.c:1215-1287,
-//     ocp_nlp_sqp.c:103-119), per-iteration statistics (acados `stat`
-//     matrix, ocp_nlp_sqp.c:266-271) and the stdout printing
-//     (ocp_nlp_sqp.c:449-466).
-// 2f: AcadosSolver::assemble_qp / add_lm_term / resize (QP assembly).
-// 2g: AcadosSolver::solve / check_termination / compute_cost (driver).
+// Supplementary - correspondence with the acados implementation:
+//   compute_nlp_residuals       ocp_nlp_res_compute (ocp_nlp_common.c)
+//   AcadosOptions               option defaults (ocp_nlp_common.c,
+//                               ocp_nlp_sqp.c)
+//   SqpIteration                the acados `stat` matrix columns
+//   print_sqp_iteration         print_iteration (ocp_nlp_sqp.c)
+//   AcadosSolver::assemble_qp   staged QP assembly from the NLP
+//                               linearization
+//   AcadosSolver::add_lm_term   ocp_nlp_add_levenberg_marquardt_term
+//   AcadosSolver::check_termination  check_termination (ocp_nlp_sqp.c)
+//   AcadosSolver::solve         main SQP loop (ocp_nlp_sqp.c)
+//   update_qp_tolerances        per-iteration QP tolerance update
+//                               (ocp_nlp_common.c)
+//   QP warm start / scaling     ocp_qp_hpipm.c, ocp_nlp_qpscaling.c
 //
-// References (re-read at implementation time):
-//   acados/ocp_nlp/ocp_nlp_common.c:3743-3846  (ocp_nlp_res_compute)
-//   acados/ocp_nlp/ocp_nlp_sqp.c:351-430        (check_termination)
-//   acados/ocp_nlp/ocp_nlp_sqp.c:449-466        (print_iteration)
-//   acados/ocp_nlp/ocp_nlp_sqp.c:538-800        (main loop, 2g)
-//   acados/ocp_nlp/ocp_nlp_constraints_bgp.c    (fun layout, dmask)
-//   acados/ocp_qp/ocp_qp_common.c:263-279       (primal step norm, 2g)
+// HPIPM reference:
+//   ../acados/acados/ocp_nlp/ocp_nlp_sqp.c
+//   ../acados/acados/ocp_nlp/ocp_nlp_common.c
+//   ../acados/acados/ocp_qp/ocp_qp_common.c
+//   ../acados/acados/ocp_qp/ocp_qp_hpipm.c
 
 #pragma once
 
@@ -46,10 +63,10 @@ namespace ocp
 {
 
 // =========================================================================
-//  NLP residuals (sub-step 2c)
+//  NLP residuals
 // =========================================================================
 
-/// Four NLP residual norms (acados ocp_nlp_res analogue).
+/// Four KKT residual norms.
 ///
 /// res_stat  - stationarity: max over stages of the inf-norm of the
 ///             Lagrangian gradient w.r.t. (u_k, x_k).  When x_0 is fixed
@@ -60,7 +77,7 @@ namespace ocp
 ///             fully feasible).
 /// res_comp  - complementarity: max over stages of the inf-norm of
 ///             lambda * violation + tau_min per active side; equality and
-///             pin rows are zeroed (acados idxe masking).
+///             pin rows are zeroed.
 struct NlpResiduals
 {
     double res_stat = 0.0;
@@ -69,9 +86,9 @@ struct NlpResiduals
     double res_comp = 0.0;
 };
 
-/// Compute the four NLP residual norms at the iterate `sol`.
+/// Compute the four KKT residual norms at the iterate `sol`.
 ///
-/// The Lagrangian used for res_stat (sec. 1.3 of SQP_PHASE2_PLAN.md):
+/// The Lagrangian used for res_stat:
 ///   L = sum_k L_k(x_k, u_k) + L_N(x_N)
 ///     + sum_k pi_k^T (x_{k+1} - f_k(x_k, u_k))
 ///     + sum_k lam_g^T g_k + sum_k mu^T e_k
@@ -80,10 +97,11 @@ struct NlpResiduals
 /// @param problem  the concrete problem (provides model functions).
 /// @param sol      the current NLP iterate (primal + multipliers).
 /// @param sl       the solver-internal slacks (null for the raw residual;
-///                 non-null soft rows are measured at their slack-relaxed
-///                 values, acados counts the slacks as NLP variables).
-/// @param tau_min  complementarity floor added to every active non-equality
-///                 side (acados quirk: added, not subtracted; sec. 1.4).
+///                 non-null: soft rows are measured at their slack-relaxed
+///                 values, since the slacks are NLP variables).
+/// @param tau_min  complementarity floor added to every active
+///                 non-equality side (added to the product, not
+///                 subtracted).
 template <class P, int NH = Eigen::Dynamic>
 NlpResiduals compute_nlp_residuals(const P& problem,
                                    const Solution<P, NH>& sol,
@@ -456,10 +474,10 @@ NlpResiduals compute_nlp_residuals(const P& problem,
     }
 
     // -----------------------------------------------------------------
-    // res_comp: complementarity  (acados ocp_nlp_res_compute, res_comp)
+    // res_comp: complementarity
     //
     // Per active side: entry = lam * max(0, violation) + tau_min
-    // Equality rows and pin rows are zeroed (acados idxe masking).
+    // Equality rows and pin rows are zeroed.
     // For linear rows with a signed net multiplier, the active side is
     // determined by the sign of the net (standard KKT decomposition).
     // -----------------------------------------------------------------
@@ -573,7 +591,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             }
         }
 
-        // eq rows: zeroed (acados idxe masking, sec. 1.4)
+        // eq rows: zeroed
 
         // linear (two-sided, signed net multiplier)
         if constexpr (D::nl > 0)
@@ -606,7 +624,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
             }
         }
 
-        // pin rows: zeroed (acados idxe masking)
+        // pin rows: zeroed
 
         res_comp_max = std::max(res_comp_max, stage_max);
     }
@@ -707,18 +725,13 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 }
 
 // =========================================================================
-//  Options, statistics, printing (sub-step 2e)
+//  Options, statistics, printing
 // =========================================================================
 
 /// SQP driver options.
 ///
-/// Defaults verified against acados:
-///   ocp_nlp_common.c:1215,1276,1282-1287  (max_iter, eval_residual, tolerances)
-///   ocp_nlp_sqp.c:114-117                  (max_iter override, timeout)
-///   ocp_nlp_sqp.c:103-119                  (ocp_nlp_sqp_opts_initialize_default)
-///
-/// `tau_min` follows HPIPM's IPM convention (x_ocp_qp_ipm.c:95); the acados
-/// NLP-level default is 0 (zero-initialized struct).
+/// `tau_min` is the complementarity floor added to every active
+/// non-equality side of res_comp.
 struct AcadosOptions
 {
     int max_iter = 20;
@@ -726,34 +739,31 @@ struct AcadosOptions
     double tol_min_step_norm = 1e-12;
     double tol_unbounded = -1e10;
     // Per-source runtime gates for the multiplier-weighted Hessian terms
-    // in the QP Hessian; mirror acados' `exact_hess_dyn` /
-    // `exact_hess_constr`. Each is additionally gated by the Dims
+    // in the QP Hessian. Each is additionally gated by the Dims
     // capability flag (has_dynamics_hess / has_constr_hess). When a gate
     // is false the corresponding term is dropped from the QP Hessian
     // (Gauss-Newton for that source), regardless of the Dims flag.
     bool compute_hess_dyn = true;
     bool compute_hess_constr = true;
     double levenberg_marquardt = 0.0;
-    bool with_adaptive_lm = false;        // 3g: adaptive LM (gates the mu schedule)
-    double adaptive_lm_mu0 = 1e-3;        // 3g: mu / mu_bar init (ocp_nlp_common.c:1265)
-    double adaptive_lm_lam = 5.0;         // 3g: growth/shrink factor
-    double adaptive_lm_mu_min = 1e-16;    // 3g: floor for the full-step decay
-    double adaptive_lm_obj_scalar = 2.0;  // 3g: mu_eff = obj_scalar * raw_cost * mu
+    bool with_adaptive_lm = false;        // adaptive LM (gates the mu schedule)
+    double adaptive_lm_mu0 = 1e-3;        // mu / mu_bar init
+    double adaptive_lm_lam = 5.0;         // growth/shrink factor
+    double adaptive_lm_mu_min = 1e-16;    // floor for the full-step decay
+    double adaptive_lm_obj_scalar = 2.0;  // mu_eff = obj_scalar * raw_cost * mu
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
-    int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
+    int qp_warm_start = 0;                // 0 = cold, 2 = primal+dual, 3 = hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
     bool eval_residual_at_max_iter = false;
-    int timeout_heuristic = 0;            // 3f: 0 = ZERO, 1 = LAST, 2 = MAX,
-                                          // 3 = AVERAGE (acados
-                                          // ocp_nlp_timeout_heuristic_t)
-    double timeout_max_time = 0.0;        // 3f: wall-clock budget; 0 = none
-    bool scale_qp_objective = false;      // 3h: Gershgorin objective scaling
-    bool scale_qp_constraints = false;    // 3h: inf-norm constraint scaling
-    double ub_max_abs_eig = 1e5;          // 3h: objective-scaling upper bound
-    double lb_norm_inf_grad_obj = 1e-4;   // 3h: objective-scaling grad floor
-    // 3h: per-iteration QP tolerance strategy
-    // (ocp_nlp_common.c:4522-4574; acados types.h:102-107).
-    //   0 = kFixedQpTol              (HPIPM defaults, no per-iter update)
+    int timeout_heuristic = 0;            // 0 = ZERO, 1 = LAST, 2 = MAX,
+                                          // 3 = AVERAGE
+    double timeout_max_time = 0.0;        // wall-clock budget; 0 = none
+    bool scale_qp_objective = false;      // Gershgorin objective scaling
+    bool scale_qp_constraints = false;    // inf-norm constraint scaling
+    double ub_max_abs_eig = 1e5;          // objective-scaling upper bound
+    double lb_norm_inf_grad_obj = 1e-4;   // objective-scaling grad floor
+    // Per-iteration QP tolerance strategy:
+    //   0 = kFixedQpTol              (QP solver defaults, no per-iter update)
     //   1 = kAdaptiveCurrentResJoint (from the NLP residuals)
     //   2 = kAdaptiveQpScaling       (from the scaling factors)
     int nlp_qp_tol_strategy = 0;
@@ -763,29 +773,27 @@ struct AcadosOptions
     double nlp_qp_tol_min_eq = 1e-10;
     double nlp_qp_tol_min_ineq = 1e-10;
     double nlp_qp_tol_min_comp = 1e-11;
-    double tau_min = 1e-16;               // res_comp floor (plan sec. 1.4)
+    double tau_min = 1e-16;               // res_comp floor
     GlobOptions glob;
 };
 
 /// One row of the SQP statistics.
 ///
-/// Mirrors the acados `stat` matrix columns (ocp_nlp_sqp.c:266-271):
-/// res_stat / res_eq / res_ineq / res_comp (NLP residuals at the
-/// iteration start), then qp_status / qp_iter (QP solver result),
-/// step_norm (max inf-norm of the primal step including slacks,
-/// ocp_qp_common.c:263), alpha (accepted step size).
+/// The four NLP residual norms at the iteration start, then the QP
+/// solver result (status / iterations), the step norm (max inf-norm of
+/// the primal step including slacks), and the accepted step size alpha.
 struct SqpIteration
 {
     double res_stat = 0.0, res_eq = 0.0, res_ineq = 0.0, res_comp = 0.0;
     int qp_status = 0, qp_iter = 0;
     double step_norm = 0.0, alpha = 0.0;
     // Funnel accept type (0='-', 1='f', 2='h', 3='b', 4='p'); -1 when the
-    // active globalizer is not a funnel (SQP_PHASE3_PLAN sec. 3i).
+    // active globalizer is not a funnel.
     int funnel_iter_type = -1;
     double funnel_width = 0.0;
 };
 
-/// Per-iteration records of a SQP solve (acados `stat` matrix analogue).
+/// Per-iteration records of a SQP solve.
 ///
 /// `iter` is the number of recorded iterations.  `status` is the final
 /// exit status, set by the driver before returning.
@@ -822,8 +830,11 @@ struct AcadosStatistics
     }
 };
 
-/// Print one iteration to stdout (acados `print_iteration` analogue,
-/// ocp_nlp_sqp.c:449-466).  The header is re-emitted every 10 iterations.
+/// Print one iteration to stdout; the header is re-emitted every
+/// 10 iterations.
+///
+/// @param iter  the iteration index.
+/// @param row   the statistics row to print.
 inline void print_sqp_iteration(int iter, const SqpIteration& row)
 {
     if (iter % 10 == 0)
@@ -840,12 +851,12 @@ inline void print_sqp_iteration(int iter, const SqpIteration& row)
 }
 
 // =========================================================================
-//  AcadosSolver (sub-step 2f: QP assembly + LM term)
+//  AcadosSolver
 // =========================================================================
 
 namespace detail
 {
-/// Detects a `last_iter_type()` accessor (funnel accept-type logging, 3i).
+/// Detects a `last_iter_type()` accessor (funnel accept-type logging).
 template <class G, class = void>
 struct has_iter_type : std::false_type
 {
@@ -858,13 +869,12 @@ struct has_iter_type<
 };
 }  // namespace detail
 
-/// SQP driver (phase 2).
+/// SQP driver.
 ///
-/// Template parameter order: P (problem), NH (horizon), then the pluggable
-/// components with defaults. NH precedes the component parameters so the
-/// defaults can reference it (a default template argument may only
-/// reference preceding parameters; the plan sketch's order <P, QpSolver,
-/// Regularizer, Globalizer, NH> was not compilable).
+/// Template parameter order: P (problem), NH (horizon), then the
+/// pluggable components with defaults. NH precedes the component
+/// parameters so the defaults can reference it (a default template
+/// argument may only reference preceding parameters).
 template <class P, int NH = Eigen::Dynamic,
           class QpSolver = HpipmQpSolver<P, NH>,
           class Regularizer = GlmRegularizer<P, NH>,
@@ -883,15 +893,17 @@ public:
 
     /// Assemble the staged QP at the current NLP iterate into qp_in_.
     ///
-    /// Fills all stage data (hess, grad, BA, b, DC, d, d_mask; m stays 0
-    /// in v1). The QP is in the step formulation (SQP_PHASE2_PLAN sec. 1.1):
-    /// variables z_k = (du_k; dx_k; s_k), row values v = DC z, b =
-    /// f(x, u) - x_{k+1}; d holds the bound OFFSETS d_lo = lo - w_cur,
-    /// d_hi = w_cur - hi (w_cur = the row value at the current iterate).
+    /// Fills all stage data (hess, grad, BA, b, DC, d, d_mask; m stays 0).
+    /// The QP is in the step formulation: variables
+    /// z_k = (du_k; dx_k; s_k), row values v = DC z, b = f(x, u) - x_{k+1};
+    /// d holds the bound OFFSETS d_lo = lo - w_cur, d_hi = w_cur - hi
+    /// (w_cur = the row value at the current iterate).
     ///
-    /// Returns kSolved on success, kInfeasible if a first-stage ineq/lin
-    /// row with zero Jacobian w.r.t. (u_0; s_0) is violated (degenerate
-    /// fixed-x_0 case, plan sec. 2f.6).
+    /// @param problem  the concrete problem.
+    /// @param sol      the current NLP iterate.
+    /// @return kSolved on success, kInfeasible if a first-stage ineq/lin
+    ///         row with zero Jacobian w.r.t. (u_0; s_0) is violated
+    ///         (degenerate fixed-x_0 case).
     Status assemble_qp(const P& problem, const Solution<P, NH>& sol)
     {
         const int N = sol.N;
@@ -921,9 +933,9 @@ public:
     /// every stage (first/path: leading (nu+nx) diagonal; term: full nx
     /// diagonal). No-op when both compute_hess_dyn and compute_hess_constr
     /// are false or mu <= 0.
-    /// (acados ocp_nlp_add_levenberg_marquardt_term, ocp_nlp_common.c:3034;
-    /// deviation: the acados cost-module `scaling` factor has no
-    /// counterpart in our interface, the examples use scaling = 1.)
+    ///
+    /// @param[out] qp  the staged QP to damp (modified in place).
+    /// @param mu       the damping factor.
     void add_lm_term(Qp<P, NH>& qp, double mu) const
     {
         if ((!opts_.compute_hess_dyn && !opts_.compute_hess_constr) || mu <= 0.0)
@@ -948,16 +960,18 @@ public:
         }
     }
 
-    /// Update the adaptive Levenberg-Marquardt parameters (3g).
+    /// Update the adaptive Levenberg-Marquardt parameters.
     ///
-    /// Port of acados `adaptive_levenberg_marquardt_update_mu`
-    /// (ocp_nlp_common.c:3011-3032). `alpha` is the accepted step size of the
-    /// *previous* iteration (the driver's `alpha_` at the top of the loop; 0.0
-    /// at iter 0, where it is ignored). A full step (alpha == 1) shrinks mu
-    /// by 1/lam toward mu_min, carrying mu_bar = the old mu; a truncated step
-    /// grows mu by lam, capped at 1. Exposed (with `adaptive_lm_mu()` /
-    /// `adaptive_lm_mu_bar()`) so the schedule can be unit-tested, mirroring
-    /// `check_termination`.
+    /// `alpha` is the accepted step size of the *previous* iteration
+    /// (the driver's `alpha_` at the top of the loop; 0.0 at iter 0,
+    /// where it is ignored). A full step (alpha == 1) shrinks mu by
+    /// 1/lam toward mu_min, carrying mu_bar = the old mu; a truncated
+    /// step grows mu by lam, capped at 1. Exposed (with
+    /// `adaptive_lm_mu()` / `adaptive_lm_mu_bar()`) so the schedule can
+    /// be unit-tested.
+    ///
+    /// @param iter   the current iteration index.
+    /// @param alpha  the previous iteration's accepted step size.
     void update_adaptive_lm_mu(int iter, double alpha)
     {
         if (iter == 0)
@@ -999,36 +1013,25 @@ public:
 
     /// NLP objective at the iterate: the problem's stage + terminal costs
     /// plus the slack penalty 0.5 * quad * s^2 + lin * s per soft side
-    /// (sec. 1.6; the problem cost functions exclude the solver-internal
-    /// slacks).
+    /// (the problem cost functions exclude the solver-internal slacks).
+    ///
+    /// @param problem  the concrete problem.
+    /// @param sol      the current NLP iterate.
+    /// @param sl       the solver-internal slacks.
+    /// @return the objective value including the slack penalty.
     double compute_cost(const P& problem, const Solution<P, NH>& sol,
                         const SqpSlacks<P, NH>& sl) const
     {
         return raw_cost(problem, sol) + slack_penalty(problem, sl);
     }
 
-    /// Number of second-order-correction re-solves performed (3j).
+    /// Number of second-order-correction re-solves performed.
     int soc_count() const { return soc_count_; }
 
-    /// Run the SQP iteration on `sol` (warm start in, solution out).
-    ///
-    /// Mirrors acados ocp_nlp_sqp.c:538-800 (sec. 2g): each iteration
-    /// assembles the step-formulation QP at the current iterate,
-    /// regularizes it (before the termination check, as in acados),
-    /// checks termination, solves the QP, and runs the globalizer's line
-    /// search (which advances `sol` in place on acceptance or kMinStep).
-    /// The solver-internal slacks are warm-started across repeated
-    /// solves on the same object when the horizon matches (acados
-    /// nlp_out slack analogue). `sol.status` / `sol.cost_value` are set
-    /// on all exit paths (the cost includes the 0.5*w*s^2 slack penalty,
-    /// plan sec. 1.6).
     /// Termination decision at the current iterate (public so the branch
-    /// order can be unit-tested; see tests/sqp/driver_2g.cpp). Pure
-    /// function of `opts_`, the four residual norms, the last step norm
-    /// and cost.
-    ///
-    /// Mirrors acados `check_termination` (ocp_nlp_sqp.c:351-430), in
-    /// exactly this order:
+    /// order can be unit-tested). Pure function of `opts_`, the four
+    /// residual norms, the last step norm and cost. Branches in this
+    /// order:
     ///   1. any residual NaN            -> kNanDetected
     ///   2. iter >= max_iter and
     ///      !eval_residual_at_max_iter  -> kMaxIterations
@@ -1040,12 +1043,16 @@ public:
     ///   6. iter >= max_iter            -> kMaxIterations
     ///   7. timeout_max_time > 0 and
     ///      timeout_max_time <=
-    ///      elapsed + estimate           -> kTimeout (3f)
+    ///      elapsed + estimate          -> kTimeout
     ///   otherwise                      -> kUnset (keep iterating)
     ///
-    /// `elapsed` is the wall-clock seconds since `solve()` entry (0 unless a
-    /// timeout budget is active); the estimate is the last per-iteration
-    /// duration tracked by the driver (3f).
+    /// @param iter       the current iteration index.
+    /// @param res        the NLP residual norms.
+    /// @param step_norm  the previous iteration's primal step norm.
+    /// @param cost       the current objective value.
+    /// @param elapsed    wall-clock seconds since solve() entry (0 unless
+    ///                    a timeout budget is active).
+    /// @return the termination status, or kUnset to keep iterating.
     Status check_termination(int iter, const NlpResiduals& res,
                              double step_norm, double cost,
                              double elapsed = 0.0) const
@@ -1077,11 +1084,10 @@ public:
         {
             return Status::kMaxIterations;
         }
-        // Timeout (acados ocp_nlp_sqp.c:434-440): the budget is exceeded when
-        // the wall-clock elapsed so far plus the predicted per-iteration
-        // duration would pass timeout_max_time. Reached only if none of the
-        // earlier branches fired (in particular a converged iterate returns
-        // kSolved above, as in acados).
+        // Timeout: the budget is exceeded when the wall-clock elapsed so
+        // far plus the predicted per-iteration duration would pass
+        // timeout_max_time. Reached only if none of the earlier branches
+        // fired (in particular a converged iterate returns kSolved above).
         if (opts_.timeout_max_time > 0.0 &&
             opts_.timeout_max_time <=
                 elapsed + timeout_estimated_per_iter_)
@@ -1105,7 +1111,7 @@ public:
         lm_mu_bar_ = 0.0;
         soc_count_ = 0;
 
-        // 3j: hand the globalization options to the active globalizer.
+        // Hand the globalization options to the active globalizer.
         glob_.opts = opts_.glob;
 
         resize(N);
@@ -1131,10 +1137,9 @@ public:
                 stat_.status = st;
                 return st;
             }
-            // 3g: the adaptive LM update (ocp_nlp_common.c:3011-3059) uses
-            // the *previous* iteration's accepted step size (alpha_), which
-            // is exactly what alpha_ holds at the top of the loop (0.0 at
-            // iter 0).
+            // The adaptive LM update uses the *previous* iteration's
+            // accepted step size (alpha_), which is exactly what alpha_
+            // holds at the top of the loop (0.0 at iter 0).
             double lm = opts_.levenberg_marquardt;
             if (opts_.with_adaptive_lm)
             {
@@ -1144,9 +1149,8 @@ public:
             }
             add_lm_term(qp_in_, lm);
 
-            // 3h: scale the assembled QP into the solver's working copy
-            // (acados ocp_nlp_sqp.c:594-597); the regularizer and the QP
-            // solver then act on the scaled copy.
+            // Scale the assembled QP into the solver's working copy; the
+            // regularizer and the QP solver then act on the scaled copy.
             scaler_.scale_qp(qp_in_);
 
             const NlpResiduals res =
@@ -1158,13 +1162,12 @@ public:
                 glob_.initialize(problem, sol);
             }
 
-            // Before the termination check (acados ocp_nlp_sqp.c:599-600):
-            // the regularized (scaled-space) QP is the one that would be
-            // solved at a stationary iterate.
+            // Before the termination check: the regularized (scaled-space)
+            // QP is the one that would be solved at a stationary iterate.
             reg_.regularize(scaler_.scaled_in());
 
-            // Phase 3f: update the per-iteration time estimate before the
-            // termination check (acados ocp_nlp_sqp.c:606-644).
+            // Update the per-iteration time estimate before the
+            // termination check.
             double elapsed = 0.0;
             if (opts_.timeout_max_time > 0.0)
             {
@@ -1213,17 +1216,15 @@ public:
                 return term;
             }
 
-            // 3h: per-iteration QP tolerance strategy (acados
-            // ocp_nlp_common.c:4522-4574), applied right before the QP solve.
-            // No-op when nlp_qp_tol_strategy == 0 (kFixedQpTol).
+            // Per-iteration QP tolerance strategy, applied right before
+            // the QP solve. No-op when nlp_qp_tol_strategy == 0
+            // (kFixedQpTol).
             update_qp_tolerances(res);
 
-            // QP warm start (phase 3c, acados ocp_qp_hpipm.c:327-336 +
-            // ocp_nlp_sqp.c:660-691): the primal step is always cold; only
-            // the duals (pi / lam / t) carried in the scaled-space output
-            // from the previous QP are reused (acados warm-starts the scaled
-            // QP with the previous scaled_qp_out). The first QP is cold
-            // unless warm_start_first_qp is set.
+            // QP warm start: the primal step is always cold; only the
+            // duals carried in the scaled-space output from the previous
+            // QP are reused. The first QP is cold unless
+            // warm_start_first_qp is set.
             {
                 scaler_.scaled_out().ux_first.setZero();
                 for (int k = 1; k < N; ++k)
@@ -1246,8 +1247,8 @@ public:
             if (qp_st != Status::kSolved &&
                 qp_st != Status::kMaxIterations)
             {
-                // acados: a QP MAXITER is acceptable, any other failure is
-                // a hard stop (ocp_nlp_sqp.c:725-749)
+                // A QP MAXITER is acceptable; any other failure is a
+                // hard stop.
                 sol.status = Status::kQpFailure;
                 sol.cost_value = cost_value_;
                 stat_.status = Status::kQpFailure;
@@ -1260,19 +1261,17 @@ public:
                 return Status::kQpFailure;
             }
 
-            // 3h: map the scaled-space solution back to original space
-            // (acados ocp_nlp_qpscaling_rescale_solution, :327-375 /
-            // :668-686). qp_out_ then carries the original-space step and
-            // duals, as in v1.
+            // Map the scaled-space solution back to original space;
+            // qp_out_ then carries the original-space step and duals.
             scaler_.rescale_solution(qp_out_);
 
             step_norm_ = primal_step_norm_inf(qp_out_);
 
-            // Advances sol in place on kSolved / kMinStep (2d); leaves it
-            // untouched on kNanDetected. 3j: the globalizer may re-solve the
-            // QP (second-order correction) through this callable; it runs in
-            // original space and rewrites qp_out_ in place (alpha = 1 step
-            // is what it sees).
+            // Advances sol in place on kSolved / kMinStep; leaves it
+            // untouched on kNanDetected. The globalizer may re-solve the QP
+            // (second-order correction) through this callable; it runs in
+            // original space and rewrites qp_out_ in place (an alpha = 1
+            // step is what it sees).
             const Status gstatus = glob_.find_acceptable_iterate(
                 problem, sol, qp_in_, qp_out_, slacks_, trial_, alpha_,
                 [this, &problem, &sol]() -> Status {
@@ -1305,7 +1304,7 @@ public:
         }
 
         // Unreachable: check_termination returns kMaxIterations at
-        // iter == max_iter (ocp_nlp_sqp.c:419-430).
+        // iter == max_iter.
         sol.status = Status::kMaxIterations;
         sol.cost_value = cost_value_;
         stat_.status = Status::kMaxIterations;
@@ -1327,7 +1326,7 @@ private:
     }
 
     // ---------------------------------------------------------------
-    //  Driver helpers (sub-step 2g)
+    //  Driver helpers
     // ---------------------------------------------------------------
 
     /// One statistics row: the NLP residuals at this iteration plus the
@@ -1353,10 +1352,10 @@ private:
         return row;
     }
 
-    /// Per-iteration QP tolerance update (acados
-    /// ocp_nlp_common.c:4522-4574, called inside
-    /// ocp_nlp_solve_qp_and_correct_dual). No-op when strategy is 0
-    /// (kFixedQpTol).
+    /// Per-iteration QP tolerance update, applied right before each QP
+    /// solve. No-op when strategy is 0 (kFixedQpTol).
+    ///
+    /// @param res  the current NLP residual norms.
     void update_qp_tolerances(const NlpResiduals& res)
     {
         if (opts_.nlp_qp_tol_strategy == 0)
@@ -1399,9 +1398,11 @@ private:
         qp_.set_residual_tolerances(ts, te, ti, tc);
     }
 
-    /// Inf-norm of the primal step, max over stages (acados
-    /// ocp_qp_out_compute_primal_nrm_inf, ocp_qp_common.c:263-279;
-    /// includes the slack variables: the whole stage variable vector).
+    /// Inf-norm of the primal step, max over stages (includes the slack
+    /// variables: the whole stage variable vector).
+    ///
+    /// @param step  the QP solution whose primal step is measured.
+    /// @return the max-inf-norm step size.
     double primal_step_norm_inf(const QpSol<P, NH>& step) const
     {
         double m = static_cast<double>(step.ux_first.cwiseAbs().maxCoeff());
@@ -1444,9 +1445,12 @@ private:
     }
 
     /// Raw NLP objective: the problem's stage + terminal costs only,
-    /// excluding the solver-internal slack penalty. Acados' adaptive LM
-    /// uses this value as the `cost_value` scaling factor (ocp_nlp_common.c:
-    /// 3042).
+    /// excluding the solver-internal slack penalty. Used as the cost
+    /// scaling factor of the adaptive LM schedule.
+    ///
+    /// @param problem  the concrete problem.
+    /// @param sol      the current NLP iterate.
+    /// @return the objective value without slack penalties.
     double raw_cost(const P& problem, const Solution<P, NH>& sol) const
     {
         double m = 0.0;
@@ -1636,15 +1640,18 @@ private:
     }
 
     // ---------------------------------------------------------------
-    //  3j: second-order-correction (SOC) pre-pass
+    //  Second-order-correction (SOC) pre-pass
     // ---------------------------------------------------------------
 
-    /// Second-order-correction re-solve (acados
-    /// ocp_nlp_common.c:4290-4442). Rewrites the QP RHS at the full step
-    /// (dynamics `b`, general-row `d`), re-solves the regularized QP in
-    /// place, and corrects the duals. `sol` is the current iterate (the
-    /// step has NOT been applied yet); `qp_out_` holds the full step
-    /// (alpha = 1). Returns kQpFailure if the re-solve fails.
+    /// Second-order-correction re-solve. Rewrites the QP right-hand sides
+    /// at the full step (dynamics `b`, general-row `d`), re-solves the
+    /// regularized QP in place, and corrects the duals. `sol` is the
+    /// current iterate (the step has NOT been applied yet); `qp_out_`
+    /// holds the full step (alpha = 1).
+    ///
+    /// @param problem  the concrete problem.
+    /// @param sol      the current NLP iterate (pre-step).
+    /// @return kQpFailure if the re-solve fails, kSolved otherwise.
     Status perform_second_order_correction(const P& problem,
                                            const Solution<P, NH>& sol)
     {
@@ -1660,16 +1667,18 @@ private:
         return Status::kSolved;
     }
 
-    /// Rewrite the QP right-hand sides at the full step. The corrected QP
-    /// keeps the current-point Jacobians (BA, DC) and Hessian; only the
-    /// right-hand sides are re-evaluated at the trial iterate (x + dx,
-    /// u + du) (Nocedal & Wright 18.51, the acados second-order
-    /// correction):
+    /// Rewrite the QP right-hand sides at the full step (Nocedal & Wright
+    /// 18.51). The corrected QP keeps the current-point Jacobians (BA,
+    /// DC) and Hessian; only the right-hand sides are re-evaluated at the
+    /// trial iterate (x + dx, u + du):
     ///
     ///   b_k  <- f_k(x_k + dx_k, u_k + du_k) - x_{k+1} - dx_{k+1}
     ///   d_lo <- lo - c_t,  d_hi <- c_t - hi   (general rows)
     ///
     /// Box / pin rows are linear and need no second-order correction.
+    ///
+    /// @param problem  the concrete problem.
+    /// @param sol      the current NLP iterate (pre-step).
     void soc_rewrite_rhs(const P& problem, const Solution<P, NH>& sol)
     {
         const int N = qp_in_.N;
@@ -1734,8 +1743,8 @@ private:
     /// SOC d-rewrite for one path / first stage (ineq / eq / lin rows).
     ///
     /// The assembly convention is d_lo = lo - w_cur, d_hi = w_cur - hi
-    /// (offset from the row value at the current iterate). The HPIPM row
-    /// value v already carries DC_ux . dz and the slack columns, so the
+    /// (offset from the row value at the current iterate). The row value
+    /// v already carries DC z and the slack contributions, so the
     /// second-order correction only re-bases the offset to the nonlinear
     /// row value at the trial iterate:
     ///
@@ -2026,7 +2035,7 @@ private:
         fill_d_mask_first(problem, sol, st, c);
         mask_trivial_zero_rows(D::lay_first, D::nu + D::nx, st);
 
-        // degenerate first-stage check (plan sec. 2f.6)
+        // degenerate first-stage check
         if constexpr (P::fixed_initial_state)
         {
             Status deg = check_first_degeneracy(problem, sol);
@@ -2303,7 +2312,7 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_first[j]) = 1;
-                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                // soft box row: +1 (lo) / -1 (hi) slack columns
                 const int cl = D::idxs_lo_first[r];
                 if (cl >= 0)
                 {
@@ -2324,7 +2333,7 @@ private:
             {
                 const int r = lay.row_off(detail::g_bu) + j;
                 st.DC(r, D::idxb_first[D::nbx_first + j]) = 1;
-                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                // soft box row: +1 (lo) / -1 (hi) slack columns
                 const int cl = D::idxs_lo_first[r];
                 if (cl >= 0)
                 {
@@ -2432,7 +2441,7 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_path[j]) = 1;
-                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                // soft box row: +1 (lo) / -1 (hi) slack columns
                 const int cl = D::idxs_lo_path[r];
                 if (cl >= 0)
                 {
@@ -2451,7 +2460,7 @@ private:
             {
                 const int r = lay.row_off(detail::g_bu) + j;
                 st.DC(r, D::idxb_path[D::nbx + j]) = 1;
-                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                // soft box row: +1 (lo) / -1 (hi) slack columns
                 const int cl = D::idxs_lo_path[r];
                 if (cl >= 0)
                 {
@@ -2553,7 +2562,7 @@ private:
             {
                 const int r = lay.row_off(detail::g_bx) + j;
                 st.DC(r, D::idxb_term[j]) = 1;
-                // soft box row: +1 (lo) / -1 (hi) slack columns (3a)
+                // soft box row: +1 (lo) / -1 (hi) slack columns
                 const int cl = D::idxs_lo_term[r];
                 if (cl >= 0)
                 {
@@ -2630,7 +2639,7 @@ private:
     }
 
     // ---------------------------------------------------------------
-    //  d / d_mask fill (offset form, plan sec. 1.1-1.2, 2f.5)
+    //  d / d_mask fill (offset form)
     // ---------------------------------------------------------------
 
     template <class StageT>
@@ -3188,7 +3197,7 @@ private:
     }
 
     // ---------------------------------------------------------------
-    //  First-stage degeneracy check (plan sec. 2f.6)
+    //  First-stage degeneracy check
     // ---------------------------------------------------------------
 
     /// A first-stage ineq/lin row that is violated at the iterate and whose
@@ -3296,10 +3305,10 @@ private:
     double cost_value_ = 0.0;
     int qp_status_ = 0;  // last QP status (0 = none yet)
     int qp_iter_ = 0;    // last QP iteration count
-    double timeout_estimated_per_iter_ = 0.0;  // 3f: per-iter time estimate
-    double lm_mu_ = 0.0;     // 3g: adaptive LM mu
-    double lm_mu_bar_ = 0.0; // 3g: adaptive LM mu_bar (previous mu)
-    int soc_count_ = 0;      // 3j: number of SOC re-solves performed
+    double timeout_estimated_per_iter_ = 0.0;  // per-iter time estimate
+    double lm_mu_ = 0.0;     // adaptive LM mu
+    double lm_mu_bar_ = 0.0; // adaptive LM mu_bar (previous mu)
+    int soc_count_ = 0;      // number of SOC re-solves performed
 };
 
 }  // namespace ocp

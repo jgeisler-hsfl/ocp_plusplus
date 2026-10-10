@@ -1,69 +1,57 @@
 // ocp/problem.hpp
 //
-// Problem interface of the ocp++ framework (first draft).
+// Problem interface of the ocp++ framework.
 //
 // A *problem* is the mathematical definition of a discrete-time optimal
-// control problem (OCP)
+// control problem (OCP), decoupled from any solver algorithm:
 //
-//     min_{x, u}   sum_{k=0}^{N-1} L_k(x_k, u_k)  +  L_N(x_N)
-//     subject to   x_{k+1} = f_k(x_k, u_k),       k = 0..N-1
-//                  box, linear and general (in)equality constraints,
+//     min_{x, u}   sum_{k=0}^{N-1} L_k(x_k, u_k) + L_N(x_N)
+//     subject to   x_{k+1} = f_k(x_k, u_k),      k = 0..N-1
+//                  box, linear and general (in)equality constraints
 //
-// decoupled from any particular solver algorithm.
-//
-// Usage
-// -----
-// 1. Declare the structural dimensions as a small tag struct:
+// A concrete problem inherits from ocp::Problem<Dims>, where Dims is a
+// tag struct carrying the structural dimensions and index sets:
 //
 //        struct MyDims {
 //            static constexpr int nx = 2, nu = 1;
 //            static constexpr int ng = 1, ne = 0, nl = 1;
 //            static constexpr int ng_t = 0, ne_t = 1, nl_t = 0;
-//            static constexpr bool fixed_initial_state = true;  // false: x_0 is a
-//                                                               // decision variable
-//                                                               // (e.g. MHE)
-//            static constexpr bool has_dynamics_hess = true;      // true: exact
-//                                                                // Lagrangian Hessian
-//                                                                // (acados EXACT);
-//                                                                // false: Gauss-Newton
-//                                                                // QP Hessian, dynamics
-//                                                                // only via the
-//                                                                // linearized BA (acados
-//                                                                // GAUSS_NEWTON)
-//            static constexpr bool has_constr_hess   = true;      // true: constraint
-//                                                                // Hessian terms
-//                                                                // included;
-//                                                                // false: omitted
-//                                                                // (valid if the maps
-//                                                                // are linear)
+//            static constexpr bool fixed_initial_state = true;
+//            static constexpr bool has_dynamics_hess = true;
+//            static constexpr bool has_constr_hess   = true;
 //            static constexpr std::array<int, 1> state_box_idx   = {0};
 //            static constexpr std::array<int, 1> control_box_idx = {0};
 //            static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
-//            static constexpr std::array<int, 1> ineq_soft_idx   = {0};  // g row 0 is soft;
-//            static constexpr std::array<int, 0> eq_soft_idx     = {};   // likewise for lin_soft_idx,
-//            //                                                           // state_box_soft_idx, control_box_soft_idx,
-//            //                                                           // terminal_{ineq,eq,lin}_soft_idx,
-//            //                                                           // terminal_state_box_soft_idx
+//            static constexpr std::array<int, 1> ineq_soft_idx = {0};
+//            static constexpr std::array<int, 0> eq_soft_idx   = {};
+//            // ... plus lin_soft_idx, state_box_soft_idx,
+//            //     control_box_soft_idx, terminal_{ineq,eq,lin}_soft_idx,
+//            //     terminal_state_box_soft_idx
 //        };
 //
-//    The box index arrays select which states/controls each box-constraint
-//    row bounds (const, stage-invariant); their size *is* the number of
-//    active box rows (nbx/nbu/nbx_t, derived by ocp::Problem). Box bounds
-//    are stored per active row only. The `*_soft_idx` arrays mark which
-//    constraint rows of each group are *soft* (may be violated by a solver
-//    slack); their size *is* the number of soft rows in the group (an
-//    empty set means the whole group is hard).
+// The box index arrays select which state/control components each box row
+// bounds; their size is the number of active box rows (nbx, nbu, nbx_t),
+// which ocp::Problem derives. The `*_soft_idx` arrays mark which rows of
+// each constraint group are soft (relaxable by a solver slack); their
+// size is the number of soft rows in the group (empty = hard).
 //
-// 2. Implement the concrete problem by inheriting from
-//    ocp::Problem<MyDims> and providing the model functions
-//    (signatures in the "Interface contract" section below).
+// Dims flags:
+//  - fixed_initial_state: true - x_0 is a fixed given supplied by
+//    initial_state(); false - x_0 is a decision variable (e.g. MHE).
+//  - has_dynamics_hess: true - the solver assembles the exact Lagrangian
+//    QP Hessian (cost plus multiplier-contracted dynamics Hessian);
+//    false - Gauss-Newton Hessian, where the dynamics enter the QP only
+//    through the linearized BA matrix.
+//  - has_constr_hess: true - the multiplier-contracted constraint
+//    Hessians are added to the QP Hessian; false - omitted (valid when
+//    the constraint maps are linear).
 //
-// The dimensions live at compile time (fixed-size Eigen objects, static
-// allocation, no virtual dispatch). The horizon N is owned by the
-// Solution: a runtime quantity by default, optionally fixed at compile
-// time via the Solution's horizon template parameter. All model calls are
-// made on the *concrete* problem type, so the derived implementations hide
-// the base-class stubs and dispatch statically.
+// All model calls dispatch statically on the concrete problem type. The
+// base class re-exposes the dimensions, derives all fixed-size Eigen
+// types, and carries one stub per interface function (see the interface
+// contract on ocp::Problem): a missing or missigned override fails at
+// the call site via static_assert. The horizon N is a per-solve quantity
+// owned by ocp::Solution, not by the problem.
 
 #pragma once
 
@@ -186,16 +174,14 @@ public:
 /// Per-row slack penalty weights for soft constraint rows.
 ///
 /// Each soft row i contributes a slack s[i] >= 0 that relaxes the row from
-/// the outside. The solver adds to the objective
+/// the outside. For each soft side of row i the solver adds
 ///
 ///     0.5 * quad[i] * s[i]^2  +  lin[i] * s[i]
 ///
-/// for each soft side of row i. `quad` is the Hessian (second-order) weight
-/// and `lin` the gradient (first-order) weight. This mirrors acados'
-/// per-slack `Z` (diagonal Hessian weight) and `z` (gradient weight) in
-/// `ocp_nlp_cost_common`; the standard soft constraint uses `quad = w`,
-/// `lin = 0`. A full (non-diagonal) Hessian weight is not supported, in
-/// line with the dense HPIPM QP which carries a diagonal slack Hessian.
+/// to the objective, where `quad` is the Hessian (second-order) weight and
+/// `lin` the gradient (first-order) weight. The standard soft constraint
+/// uses `quad = w`, `lin = 0`. Only a diagonal (per-side) Hessian weight
+/// is supported, since the QP solver assumes a diagonal slack Hessian.
 template <class Scalar, int N>
 struct SoftPenalty
 {
@@ -229,14 +215,10 @@ struct SoftPenalty
 /// corresponding control / terminal index set), a compile-time constant
 /// from the problem's `Dims` tag.
 ///
-/// Which rows are *soft* is a compile-time decision made by the problem's
-/// `Dims`: a row is soft iff its index appears in the group's `*_soft_idx`
-/// set. A soft row may be violated by a non-negative slack that relaxes
-/// the row from the outside; `penalty.quad[i]` and `penalty.lin[i]` are
-/// the second- and first-order weights of the slack penalty the solver
-/// adds to the stage cost for that row (per side, see `SoftPenalty`). The
-/// numerical treatment of soft rows is the solver's business; the problem
-/// only declares them.
+/// `penalty` carries one {quad, lin} weight pair per row in the order of
+/// the group's `*_soft_idx` set; it is only meaningful for rows that the
+/// problem marks soft (see `SoftPenalty`). The numerical treatment of
+/// soft rows is the solver's business; the problem only declares them.
 template <class Scalar, int Dim>
 struct BoxSpec
 {
@@ -271,37 +253,38 @@ struct TerminalLinearSpec
 /// Template interface of a discrete-time OCP.
 ///
 /// The concrete problem supplies its structural dimensions via the
-/// `Dims` tag and implements the model functions listed below. The base
-/// class re-exposes the dimensions as `static constexpr` members, derives
-/// all fixed-size Eigen types from them, and provides one stub per
-/// interface function: if a function is missing or
-/// missigned in the derived class, the inherited stub is instantiated and
-/// compilation fails with a descriptive message.
+/// `Dims` tag and implements the model functions listed in the interface
+/// contract below. The base class re-exposes the dimensions as
+/// `static constexpr` members, derives all fixed-size Eigen types from
+/// them, and provides one stub per interface function; if a function is
+/// missing or missigned in the derived class, the inherited stub is
+/// instantiated and compilation fails with a descriptive message.
 ///
-/// Design rules
-/// ------------
-/// - Structural dimensions (nx, nu, constraint rows) are compile-time
-///   quantities; the horizon N is a runtime quantity owned by the
-///   Solution (see `ocp::Solution` below), not by the problem.
-/// - All model functions are `const` and pure: they read the user-managed
-///   parameter state of the concrete problem but take no parameter
-///   argument (parameters are not part of the interface, see
-///   ARCHITECTURE.md sec. 2 "Separation of parameters").
-/// - Stage index k: 0..N-1 for dynamics, stage cost and stage constraints;
-///   the terminal stage k = N is served by the dedicated terminal_*
-///   functions, which depend on the state only (there is no u_N).
-/// - In combined (x, u) vectors and matrices the state is listed first:
-///   gradients have layout [g_x; g_u], Hessians the block layout
-///   [H_xx H_xu; H_ux H_uu].
-/// - All evaluation/derivative calls are made on the *concrete* problem
-///   type (static dispatch, no virtual machinery).
+/// Conventions
+/// -----------
+///  - Stage index k is 0..N-1 for dynamics, stage cost and stage
+///    constraints; the terminal stage k = N is served by the dedicated
+///    `terminal_*` functions, which depend on the state only (there is
+///    no u_N).
+///  - In combined (x, u) vectors and matrices the state is listed first:
+///    gradients have layout [g_x; g_u], Hessians the block layout
+///    [H_xx H_xu; H_ux H_uu].
+///  - All model functions are `const` and take no parameter argument;
+///    parameters are user-managed state of the concrete class.
+///  - The `*_value_jac_hess` entries return the multiplier-contracted
+///    Hessian in one call: `hess * v = sum_i lam_i * D^2(·)_i * v`,
+///    where `lam` is the net KKT multiplier of the corresponding group
+///    (e.g. `lambda_dyn[k]` for dynamics).
+///  - Second-order information is user-supplied (exact, Gauss-Newton or
+///    any valid approximation); `Dims::has_dynamics_hess` and
+///    `Dims::has_constr_hess` tell the solver which `*_value_jac_hess`
+///    entries exist and which QP Hessian model to assemble.
 ///
-/// Interface contract (each function below must be implemented by the
-/// concrete problem unless the corresponding dimension is zero, in which
-/// case solvers never call it and the stub may stay unimplemented):
+/// Interface contract (implement each function below unless the
+/// corresponding dimension is zero, in which case solvers never call it
+/// and the stub may stay unimplemented):
 ///
-///   initial state (fixed x_0, not a decision variable; required only
-///   when Dims::fixed_initial_state is true)
+///   initial state (fixed x_0; required only when Dims::fixed_initial_state)
 ///     state_t initial_state() const;
 ///
 ///   dynamics (k = 0..N-1); fused evaluation entries
@@ -315,7 +298,6 @@ struct TerminalLinearSpec
 ///                                  state_t& x_next, dyn_df_dx_t& df_dx,
 ///                                  dyn_df_du_t& df_du,
 ///                                  dyn_hess_t& hess) const;
-///       // hess v = sum_i lam_i D^2 f_i v, [x; u] layout
 ///
 ///   stage cost (k = 0..N-1); fused evaluation entries
 ///     Scalar stage_cost_value(int k, const state_t& x,
@@ -328,7 +310,7 @@ struct TerminalLinearSpec
 ///                                     Scalar& value, stage_grad_t& grad,
 ///                                     stage_hess_t& hess) const;
 ///
-///   terminal cost (stage N)
+///   terminal cost (stage N, state only); fused evaluation entries
 ///     Scalar terminal_cost_value(const state_t& x) const;
 ///     void terminal_cost_value_grad(const state_t& x, Scalar& value,
 ///                                   term_grad_t& grad) const;
@@ -362,13 +344,13 @@ struct TerminalLinearSpec
 ///                                        eq_de_du_t& e_du,
 ///                                        constr_hess_t& hess) const;
 ///     stage_linear_t stage_linear_constr(int k) const;
-///     state_box_t stage_state_box_constr(int k) const;        // rows: state_box_idx
-///     control_box_t stage_control_box_constr(int k) const;    // rows: control_box_idx
-///     ineq_pen_t stage_inequality_constr_soft_penalty(int k) const;  // rows: ineq_soft_idx
-///     eq_pen_t   stage_equality_constr_soft_penalty(int k) const;    // rows: eq_soft_idx
+///     state_box_t stage_state_box_constr(int k) const;
+///     control_box_t stage_control_box_constr(int k) const;
+///     ineq_pen_t stage_inequality_constr_soft_penalty(int k) const;
+///     eq_pen_t   stage_equality_constr_soft_penalty(int k) const;
 ///
 ///   terminal constraints (stage N, state only); fused evaluation entries
-///     term_state_box_t terminal_state_box_constr() const;  // rows: terminal_state_box_idx
+///     term_state_box_t terminal_state_box_constr() const;
 ///     ineq_term_t terminal_inequality_value(const state_t& x) const;  // g <= 0
 ///     void terminal_inequality_value_jac(const state_t& x, ineq_term_t& g,
 ///                                        ineq_term_dg_dx_t& g_dx) const;
@@ -377,7 +359,7 @@ struct TerminalLinearSpec
 ///                                             ineq_term_t& g,
 ///                                             ineq_term_dg_dx_t& g_dx,
 ///                                             term_constr_hess_t& hess) const;
-///     eq_term_t terminal_equality_value(const state_t& x) const;      // e == 0
+///     eq_term_t terminal_equality_value(const state_t& x) const;       // e == 0
 ///     void terminal_equality_value_jac(const state_t& x, eq_term_t& e,
 ///                                      eq_term_de_dx_t& e_dx) const;
 ///     void terminal_equality_value_jac_hess(const state_t& x,
@@ -386,55 +368,15 @@ struct TerminalLinearSpec
 ///                                           eq_term_de_dx_t& e_dx,
 ///                                           term_constr_hess_t& hess) const;
 ///     term_linear_t terminal_linear_constr() const;
-///     ineq_term_pen_t terminal_inequality_constr_soft_penalty() const; // rows: terminal_ineq_soft_idx
-///     eq_term_pen_t   terminal_equality_constr_soft_penalty() const;   // rows: terminal_eq_soft_idx
+///     ineq_term_pen_t terminal_inequality_constr_soft_penalty() const;
+///     eq_term_pen_t   terminal_equality_constr_soft_penalty() const;
 ///
-/// Notes
-/// -----
-/// - Second-order information is user-supplied: the stage/terminal
-///   Hessian may be the exact Hessian of the cost, a Gauss-Newton
-///   approximation (residual Jacobian transposed times itself) or any
-///   other valid approximation; the interface does not distinguish
-///   (ARCHITECTURE.md sec. 6).
-/// - When `Dims::fixed_initial_state` is true, the initial state x_0 is a
-///   fixed given, provided by `initial_state()`, and is not a decision
-///   variable (the stage-0 state box need not pin it). When it is false
-///   (e.g. moving-horizon estimation), x_0 is a decision variable and
-///   `initial_state()` is not part of the interface.
-/// - Soft constraint rows are selected per group at compile time by the
-///   `*_soft_idx` index sets in `Dims` (their size is the number of soft
-///   rows in that group). Each soft row i carries a `SoftPenalty` with a
-///   quadratic (Hessian) weight `quad[i]` and a linear (gradient) weight
-///   `lin[i]`; the solver adds 0.5*quad*s^2 + lin*s per soft side (acados
-///   `Zl/Zu` + `zl/zu`; the standard soft constraint is quad = w, lin = 0).
-///   Nonlinear (in)equality groups report their penalties via the
-///   `*_constr_soft_penalty` methods (returning a `SoftPenalty`); box and
-///   linear groups carry them in the returned spec's `penalty` field. The
-///   slack variables themselves are solver-internal.
-/// - The `*_value_jac_hess` entries return the multiplier-contracted
-///   Hessian in one call: `hess v = sum_i lam_i D^2(·)_i v`, where `lam`
-///   is the net KKT multiplier of the corresponding group (e.g.
-///   `lambda_dyn[k]` for dynamics). Model-side Hessians use the `[x; u]`
-///   layout; the solver permutes into its internal `(u; x)` layout.
-/// - Two independent flags, `Dims::has_dynamics_hess` and
-///   `Dims::has_constr_hess`, tell the solver whether the
-///   `dynamics_value_jac_hess` / constraint `*_value_jac_hess` entries
-///   exist. `has_dynamics_hess` selects the QP Hessian model: `true`
-///   assembles the exact Lagrangian Hessian (cost + dynamics Hessian,
-///   acados `hessian_approx = EXACT`); `false` assembles the
-///   Gauss-Newton Hessian, where the dynamics enter the QP only through
-///   the linearized BA matrix (acados `hessian_approx = GAUSS_NEWTON` /
-///   historical `ROSEN`). The two models coincide when the dynamics map is
-///   linear (zero dynamics Hessian). `has_constr_hess` = false omits the
-///   constraint Hessian terms (valid exactly when the constraint maps are
-///   linear, i.e. their Hessians are identically zero). The solver exposes
-///   two independent runtime gates, `AcadosOptions::compute_hess_dyn` /
-///   `compute_hess_constr` (mirroring acados' `exact_hess_dyn` /
-///   `exact_hess_constr`), that drop the multiplier-weighted dynamics /
-///   constraint Hessian terms at runtime without recompiling.
-/// - Extensions anticipated beyond this draft (not yet part of the
-///   contract): parameter sensitivities, and algebraic (eliminated)
-///   variables.
+/// See also:
+///  - ARCHITECTURE.md: problem/solver separation, parameter handling.
+///  - acados correspondence: `has_dynamics_hess` / `has_constr_hess`
+///    mirror acados `hessian_approx` EXACT / GAUSS_NEWTON and the runtime
+///    gates `exact_hess_dyn` / `exact_hess_constr`; `SoftPenalty` mirrors
+///    the per-slack `Z` (Hessian) and `z` (gradient) weights.
 
 template <class Dims, class Scalar = double>
 class Problem
@@ -458,21 +400,20 @@ public:
 
     // true: dynamics_value_jac_hess is implemented; the solver assembles
     // the exact Lagrangian QP Hessian (cost Hessian + multiplier-contracted
-    // dynamics Hessian; acados hessian_approx = EXACT). false: the Hessian
-    // is not provided; the solver assembles the Gauss-Newton QP Hessian,
-    // where the dynamics enter only through the linearized BA matrix
-    // (acados hessian_approx = GAUSS_NEWTON; the two models coincide for a
+    // dynamics Hessian). false: the Hessian is not provided; the solver
+    // assembles the Gauss-Newton QP Hessian, where the dynamics enter only
+    // through the linearized BA matrix (the two models coincide for a
     // linear dynamics map, where the dynamics Hessian term is zero anyway).
     // The term may additionally be dropped at runtime via
-    // AcadosOptions::compute_hess_dyn (acados exact_hess_dyn).
+    // AcadosOptions::compute_hess_dyn.
     static constexpr bool has_dynamics_hess = Dims::has_dynamics_hess;
 
     // true: the constraint *_value_jac_hess methods are implemented; the
     // solver adds the multiplier-contracted constraint Hessians to the QP
-    // Hessian (EXACT). false: no constraint Hessians; the constraint
-    // Hessian terms are omitted (identically zero when the constraint maps
-    // are linear). The terms may additionally be dropped at runtime via
-    // AcadosOptions::compute_hess_constr (acados exact_hess_constr).
+    // Hessian. false: no constraint Hessians; the constraint Hessian terms
+    // are omitted (identically zero when the constraint maps are linear).
+    // The terms may additionally be dropped at runtime via
+    // AcadosOptions::compute_hess_constr.
     static constexpr bool has_constr_hess = Dims::has_constr_hess;
 
     // active box-constraint rows: the const index sets select which
@@ -583,7 +524,10 @@ public:
     // compilation fails at the call site.
     // ---------------------------------------------------------------
 
-    // initial state (fixed x_0; absent when !fixed_initial_state)
+    /// Fixed initial state (required only when Dims::fixed_initial_state
+    /// is true; absent from the interface when it is false).
+    ///
+    /// @return x_0, the fixed initial state (nx)
     state_t initial_state() const
     {
         if constexpr (fixed_initial_state)
@@ -604,6 +548,12 @@ public:
     }
 
     // dynamics (k = 0..N-1)
+    /// Discrete dynamics x_{k+1} = f_k(x, u).
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @return x_next, state at stage k+1 (nx)
     state_t dynamics_next_state(int /*k*/, const state_t& /*x*/,
                                 const control_t& /*u*/) const
     {
@@ -614,6 +564,14 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the dynamics value and Jacobian.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param[out] x_next state at stage k+1 (nx)
+    /// @param[out] df_dx  Jacobian df/dx (nx x nx)
+    /// @param[out] df_du  Jacobian df/du (nx x nu)
     void dynamics_value_jac(int /*k*/, const state_t& /*x*/,
                             const control_t& /*u*/,
                             state_t& /*x_next*/,
@@ -626,6 +584,17 @@ public:
             "state_t& x_next, dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const' "
             "in the concrete problem.");
     }
+    /// Fused evaluation of the dynamics value, Jacobian and
+    /// multiplier-contracted Hessian (`hess * v = sum_i lam_i D^2 f_i v`).
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param  lam dynamics multiplier at stage k (nx)
+    /// @param[out] x_next state at stage k+1 (nx)
+    /// @param[out] df_dx  Jacobian df/dx (nx x nx)
+    /// @param[out] df_du  Jacobian df/du (nx x nu)
+    /// @param[out] hess   contracted Hessian (nx+nu x nx+nu), [x; u] layout
     void dynamics_value_jac_hess(int /*k*/, const state_t& /*x*/,
                                  const control_t& /*u*/,
                                  const state_t& /*lam*/,
@@ -644,6 +613,12 @@ public:
     }
 
     // stage cost (k = 0..N-1)
+    /// Stage cost L_k(x, u).
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @return L_k(x, u)
     Scalar stage_cost_value(int /*k*/, const state_t& /*x*/,
                             const control_t& /*u*/) const
     {
@@ -654,6 +629,13 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the stage cost value and gradient.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param[out] value L_k(x, u)
+    /// @param[out] grad  gradient, layout [g_x; g_u] (nx + nu)
     void stage_cost_value_grad(int /*k*/, const state_t& /*x*/,
                                const control_t& /*u*/,
                                Scalar& /*value*/,
@@ -665,6 +647,15 @@ public:
             "Scalar& value, stage_grad_t& grad) const' in the concrete problem "
             "(layout [g_x; g_u]).");
     }
+    /// Fused evaluation of the stage cost value, gradient and Hessian.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param[out] value L_k(x, u)
+    /// @param[out] grad  gradient, layout [g_x; g_u] (nx + nu)
+    /// @param[out] hess  Hessian, block layout [H_xx H_xu; H_ux H_uu]
+    ///                   (nx+nu x nx+nu); exact or Gauss-Newton (user's choice)
     void stage_cost_value_grad_hess(int /*k*/, const state_t& /*x*/,
                                     const control_t& /*u*/,
                                     Scalar& /*value*/,
@@ -681,6 +672,10 @@ public:
     }
 
     // terminal cost (stage N, state only)
+    /// Terminal cost L_N(x).
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @return L_N(x)
     Scalar terminal_cost_value(const state_t& /*x*/) const
     {
         static_assert(false,
@@ -689,6 +684,11 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the terminal cost value and gradient.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param[out] value L_N(x)
+    /// @param[out] grad  gradient dL_N/dx (nx)
     void terminal_cost_value_grad(const state_t& /*x*/,
                                   Scalar& /*value*/,
                                   term_grad_t& /*grad*/) const
@@ -698,6 +698,12 @@ public:
             "'void terminal_cost_value_grad(const state_t&, Scalar& value, "
             "term_grad_t& grad) const' in the concrete problem.");
     }
+    /// Fused evaluation of the terminal cost value, gradient and Hessian.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param[out] value L_N(x)
+    /// @param[out] grad  gradient dL_N/dx (nx)
+    /// @param[out] hess  Hessian D^2 L_N (nx x nx); exact or Gauss-Newton
     void terminal_cost_value_grad_hess(const state_t& /*x*/,
                                        Scalar& /*value*/,
                                        term_grad_t& /*grad*/,
@@ -712,6 +718,12 @@ public:
     }
 
     // stage constraints (k = 0..N-1)
+    /// Stage inequality constraint g_k(x, u) <= 0.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @return g, inequality values (ng)
     ineq_t stage_inequality_value(int /*k*/, const state_t& /*x*/,
                                   const control_t& /*u*/) const
     {
@@ -723,6 +735,14 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the inequality value and Jacobian.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param[out] g    inequality values (ng)
+    /// @param[out] g_dx Jacobian dg/dx (ng x nx)
+    /// @param[out] g_du Jacobian dg/du (ng x nu)
     void stage_inequality_value_jac(int /*k*/, const state_t& /*x*/,
                                     const control_t& /*u*/,
                                     ineq_t& /*g*/,
@@ -735,6 +755,17 @@ public:
             "const control_t&, ineq_t& g, ineq_dg_dx_t& g_dx, "
             "ineq_dg_du_t& g_du) const' in the concrete problem.");
     }
+    /// Fused evaluation of the inequality value, Jacobian and
+    /// multiplier-contracted Hessian (`hess * v = sum_i lam_i D^2 g_i v`).
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param  lam inequality multipliers at stage k (ng)
+    /// @param[out] g    inequality values (ng)
+    /// @param[out] g_dx Jacobian dg/dx (ng x nx)
+    /// @param[out] g_du Jacobian dg/du (ng x nu)
+    /// @param[out] hess contracted Hessian (nx+nu x nx+nu), [x; u] layout
     void stage_inequality_value_jac_hess(int /*k*/, const state_t& /*x*/,
                                          const control_t& /*u*/,
                                          const ineq_t& /*lam*/,
@@ -751,6 +782,12 @@ public:
             "constr_hess_t& hess) const' in the concrete problem "
             "(multiplier-contracted Hessian, [x; u] layout), or set ng to 0.");
     }
+    /// Stage equality constraint e_k(x, u) == 0.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @return e, equality values (ne)
     eq_t stage_equality_value(int /*k*/, const state_t& /*x*/,
                               const control_t& /*u*/) const
     {
@@ -762,6 +799,14 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the equality value and Jacobian.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param[out] e    equality values (ne)
+    /// @param[out] e_dx Jacobian de/dx (ne x nx)
+    /// @param[out] e_du Jacobian de/du (ne x nu)
     void stage_equality_value_jac(int /*k*/, const state_t& /*x*/,
                                   const control_t& /*u*/,
                                   eq_t& /*e*/,
@@ -774,6 +819,17 @@ public:
             "const control_t&, eq_t& e, eq_de_dx_t& e_dx, "
             "eq_de_du_t& e_du) const' in the concrete problem.");
     }
+    /// Fused evaluation of the equality value, Jacobian and
+    /// multiplier-contracted Hessian (`hess * v = sum_i lam_i D^2 e_i v`).
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @param  x state at stage k (nx)
+    /// @param  u control at stage k (nu)
+    /// @param  lam equality multipliers at stage k (ne)
+    /// @param[out] e    equality values (ne)
+    /// @param[out] e_dx Jacobian de/dx (ne x nx)
+    /// @param[out] e_du Jacobian de/du (ne x nu)
+    /// @param[out] hess contracted Hessian (nx+nu x nx+nu), [x; u] layout
     void stage_equality_value_jac_hess(int /*k*/, const state_t& /*x*/,
                                        const control_t& /*u*/,
                                        const eq_t& /*lam*/,
@@ -790,6 +846,11 @@ public:
             "concrete problem (multiplier-contracted Hessian, "
             "[x; u] layout), or set ne to 0.");
     }
+    /// Linear two-sided constraint lo <= A_k x + B_k u <= hi at stage k.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @return spec: A (nl x nx), B (nl x nu), two-sided bounds and
+    ///         per-row soft-penalty weights
     stage_linear_t stage_linear_constr(int /*k*/) const
     {
         static_assert(false,
@@ -799,6 +860,11 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// State box constraint at stage k: lo <= x[state_box_idx] <= hi.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @return spec: lo/hi (one entry per active row, state_box_idx order)
+    ///         and per-row soft-penalty weights
     state_box_t stage_state_box_constr(int /*k*/) const
     {
         static_assert(false,
@@ -807,6 +873,11 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Control box constraint at stage k: lo <= u[control_box_idx] <= hi.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @return spec: lo/hi (one entry per active row, control_box_idx
+    ///         order) and per-row soft-penalty weights
     control_box_t stage_control_box_constr(int /*k*/) const
     {
         static_assert(false,
@@ -815,6 +886,10 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Per-row slack-penalty weights of the soft inequality rows.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @return one {quad, lin} pair per soft row, in ineq_soft_idx order
     ineq_pen_t stage_inequality_constr_soft_penalty(int /*k*/) const
     {
         static_assert(false,
@@ -825,6 +900,10 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Per-row slack-penalty weights of the soft equality rows.
+    ///
+    /// @param  k stage index, 0..N-1
+    /// @return one {quad, lin} pair per soft row, in eq_soft_idx order
     eq_pen_t stage_equality_constr_soft_penalty(int /*k*/) const
     {
         static_assert(false,
@@ -837,6 +916,11 @@ public:
     }
 
     // terminal constraints (stage N, state only)
+    /// Terminal state box constraint: lo <= x[terminal_state_box_idx] <= hi.
+    ///
+    /// @return spec: lo/hi (one entry per active row,
+    ///         terminal_state_box_idx order) and per-row soft-penalty
+    ///         weights
     term_state_box_t terminal_state_box_constr() const
     {
         static_assert(false,
@@ -845,6 +929,10 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Terminal inequality constraint g(x) <= 0.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @return g, inequality values (ng_t)
     ineq_term_t terminal_inequality_value(const state_t& /*x*/) const
     {
         static_assert(false,
@@ -854,6 +942,11 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the terminal inequality value and Jacobian.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param[out] g    inequality values (ng_t)
+    /// @param[out] g_dx Jacobian dg/dx (ng_t x nx)
     void terminal_inequality_value_jac(const state_t& /*x*/,
                                        ineq_term_t& /*g*/,
                                        ineq_term_dg_dx_t& /*g_dx*/) const
@@ -864,11 +957,19 @@ public:
             "ineq_term_t& g, ineq_term_dg_dx_t& g_dx) const' in the "
             "concrete problem.");
     }
+    /// Fused evaluation of the terminal inequality value, Jacobian and
+    /// multiplier-contracted Hessian (`hess * v = sum_i lam_i D^2 g_i v`).
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param  lam terminal inequality multipliers (ng_t)
+    /// @param[out] g    inequality values (ng_t)
+    /// @param[out] g_dx Jacobian dg/dx (ng_t x nx)
+    /// @param[out] hess contracted Hessian (nx x nx)
     void terminal_inequality_value_jac_hess(const state_t& /*x*/,
-                                           const ineq_term_t& /*lam*/,
-                                           ineq_term_t& /*g*/,
-                                           ineq_term_dg_dx_t& /*g_dx*/,
-                                           term_constr_hess_t& /*hess*/) const
+                                            const ineq_term_t& /*lam*/,
+                                            ineq_term_t& /*g*/,
+                                            ineq_term_dg_dx_t& /*g_dx*/,
+                                            term_constr_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
@@ -877,6 +978,10 @@ public:
             "term_constr_hess_t& hess) const' in the concrete problem "
             "(multiplier-contracted Hessian, state only), or set ng_t to 0.");
     }
+    /// Terminal equality constraint e(x) == 0.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @return e, equality values (ne_t)
     eq_term_t terminal_equality_value(const state_t& /*x*/) const
     {
         static_assert(false,
@@ -886,6 +991,11 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Fused evaluation of the terminal equality value and Jacobian.
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param[out] e    equality values (ne_t)
+    /// @param[out] e_dx Jacobian de/dx (ne_t x nx)
     void terminal_equality_value_jac(const state_t& /*x*/,
                                      eq_term_t& /*e*/,
                                      eq_term_de_dx_t& /*e_dx*/) const
@@ -896,11 +1006,19 @@ public:
             "eq_term_t& e, eq_term_de_dx_t& e_dx) const' in the "
             "concrete problem.");
     }
+    /// Fused evaluation of the terminal equality value, Jacobian and
+    /// multiplier-contracted Hessian (`hess * v = sum_i lam_i D^2 e_i v`).
+    ///
+    /// @param  x state at the terminal stage (nx)
+    /// @param  lam terminal equality multipliers (ne_t)
+    /// @param[out] e    equality values (ne_t)
+    /// @param[out] e_dx Jacobian de/dx (ne_t x nx)
+    /// @param[out] hess contracted Hessian (nx x nx)
     void terminal_equality_value_jac_hess(const state_t& /*x*/,
-                                         const eq_term_t& /*lam*/,
-                                         eq_term_t& /*e*/,
-                                         eq_term_de_dx_t& /*e_dx*/,
-                                         term_constr_hess_t& /*hess*/) const
+                                          const eq_term_t& /*lam*/,
+                                          eq_term_t& /*e*/,
+                                          eq_term_de_dx_t& /*e_dx*/,
+                                          term_constr_hess_t& /*hess*/) const
     {
         static_assert(false,
             "ocp::Problem interface: implement "
@@ -909,6 +1027,10 @@ public:
             "term_constr_hess_t& hess) const' in the concrete problem "
             "(multiplier-contracted Hessian, state only), or set ne_t to 0.");
     }
+    /// Linear two-sided terminal constraint lo <= A x <= hi.
+    ///
+    /// @return spec: A (nl_t x nx), two-sided bounds and per-row
+    ///         soft-penalty weights
     term_linear_t terminal_linear_constr() const
     {
         static_assert(false,
@@ -918,6 +1040,10 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Per-row slack-penalty weights of the soft terminal inequality rows.
+    ///
+    /// @return one {quad, lin} pair per soft row, in
+    ///         terminal_ineq_soft_idx order
     ineq_term_pen_t terminal_inequality_constr_soft_penalty() const
     {
         static_assert(false,
@@ -928,6 +1054,10 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+    /// Per-row slack-penalty weights of the soft terminal equality rows.
+    ///
+    /// @return one {quad, lin} pair per soft row, in terminal_eq_soft_idx
+    ///         order
     eq_term_pen_t terminal_equality_constr_soft_penalty() const
     {
         static_assert(false,

@@ -1,6 +1,6 @@
 // ocp/integrators/rk_explicit.hpp
 //
-// Allocation-free explicit Runge-Kutta integrator (phases 4b, 4g, 4h, 4i).
+// Allocation-free explicit Runge-Kutta integrator for (time-varying) ODEs.
 //
 // ExplicitRkIntegrator turns a (possibly time-varying) ODE
 //  xdot = f(x, u, t)  into the discrete dynamics
@@ -11,20 +11,19 @@
 // ContinuousProblem into an ocp::Problem. Nothing downstream of the problem
 // interface (QP, SQP, ...) changes.
 //
-// Multi-step (phase 4g): the OCP interval of size h is subdivided into
-// NumSteps sub-intervals of size h_ss = h/NumSteps. `value` chains the
-// single-step RK sweep over the sub-steps; `jacobian` threads the
-// first-order sensitivity forward across sub-steps; `hess_prod` (non-AD
-// path) runs one continuous backward adjoint sweep across all sub-steps.
-// NumSteps = 1 (the default) is the plain single-step integrator and is
-// bit-for-bit identical to 4b.
+// Multi-step: the OCP interval of size h is subdivided into NumSteps
+// sub-intervals of size h_ss = h/NumSteps. `value` chains the single-step
+// RK sweep over the sub-steps; `jacobian` threads the first-order
+// sensitivity forward across sub-steps; `hess_prod` (non-AD path) runs one
+// continuous backward adjoint sweep across all sub-steps. NumSteps = 1 (the
+// default) is the plain single-step integrator.
 //
-// Time-varying (phase 4h): each method receives `t_k` (the start of the OCP
+// Time-varying: each method receives `t_k` (the start of the OCP
 // interval). The per-stage physical time is
 //     t_s = t_k + h_ss * (ss + c[s])
 // and is forwarded to every ODE evaluation (f, jacobian, hess_prod).
 //
-// Automatic differentiation (phase 4i): when the ODE model's `f` is a
+// Automatic differentiation: when the ODE model's `f` is a
 // template method in the scalar type (dual-evaluable, see
 // ode_f_evaluable_at), the composed map's value and all its derivatives are
 // obtained by evaluating the RK stage recursion itself in dual scalars:
@@ -109,7 +108,7 @@ struct ErkWorkspace
     State2 dx{};         // first-order JVP of the stage state
     State2 dK{};         // first-order JVP of K_s (forward)
 
-    // Backward HVP duals (explicit-dual reverse mode, phase 4g)
+    // Backward HVP duals (explicit-dual reverse mode)
     State2 ddK_dual{};        // dual on the JVP node dK[ss][s]
     State2 dKval_dual{};      // dual on the value node K[ss][s]
     std::array<state_t, NumSteps + 1> dv_ss{};  // dual on v_ss (JVP boundary)
@@ -130,7 +129,7 @@ struct ErkWorkspace
 /// Explicit Runge-Kutta integrator for a (time-varying) ODE.
 ///
 /// `NS` is the number of RK stages (1..4 for the explicit tags). `Tag`
-/// selects the Butcher scheme (K1Tag..K4Tag). `NumSteps` (phase 4g) is the
+/// selects the Butcher scheme (K1Tag..K4Tag). `NumSteps` is the
 /// number of sub-intervals one OCP step of size `h` is divided into; the
 /// default of 1 is the plain single-step scheme. The ODE model must provide
 /// `f` and (unless it is AD-capable, i.e. `f` is a template method in the
@@ -177,7 +176,10 @@ public:
 
     /// Discrete map  x_next = Phi(x, u, t_k)  for the full OCP interval of
     /// size h, advanced in NumSteps sub-steps of size h/NumSteps.
-    /// `t_k` is the physical time at the start of the OCP interval.
+    /// @param  x  state at the interval start (nx)
+    /// @param  u  control (nu)
+    /// @param  t_k physical time at the start of the OCP interval
+    /// @param[out] x_next state at the interval end (nx)
     void value(const state_t& x, const control_t& u, double t_k,
                state_t& x_next) const
     {
@@ -209,8 +211,11 @@ public:
         x_next = x_cur;
     }
 
-    /// x_next and the Jacobian  (df_dx, df_du)  of the composed map
+    /// x_next and the Jacobian (df_dx, df_du) of the composed map
     ///  x_next = Phi(x, u, t_k)  in one call.
+    /// @param[out] x_next state at the interval end (nx)
+    /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
+    /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
     ///
     /// For an AD-capable ODE this is a single forward pass in
     /// dual<scalar_t, nIn> (the value and all nIn partials come out of the
@@ -234,11 +239,13 @@ public:
         }
     }
 
-    /// Jacobian  (df_dx, df_du)  of the composed map  x_next = Phi(x, u, t_k),
+    /// Jacobian (df_dx, df_du) of the composed map  x_next = Phi(x, u, t_k),
     /// computed by threading the first-order sensitivity forward across the
     /// sub-steps: start Sx = I, Su = 0; per sub-step form the per-sub-step
     /// Jacobian (Jx_ss, Ju_ss) and update Sx = Jx_ss*Sx, Su = Jx_ss*Su + Ju_ss.
     /// (Same path as `value_jac`; x_next is discarded.)
+    /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
+    /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
     void jacobian(const state_t& x, const control_t& u, double t_k,
                   df_dx_t& df_dx, df_du_t& df_du) const
     {
@@ -248,6 +255,10 @@ public:
 
     /// x_next, the Jacobian (df_dx, df_du) and the multiplier-contracted
     /// Hessian-vector product (hv_x, hv_u) of the composed map in one call.
+    /// @param  w    state multiplier, e.g. the dynamics multiplier (nx)
+    /// @param  v_x, v_u  HVP direction v = (v_x, v_u)
+    /// @param[out] x_next (nx), df_dx (nx x nx), df_du (nx x nu)
+    /// @param[out] hv_x, hv_u  HVP of the composed Hessian along v
     /// For a dual-evaluable ODE (with `ad_hess_prod` enabled) this is a
     /// single nested-dual forward pass (the value, Jacobian and the HVP all
     /// come out of the same pass, with `w` contracted only at extraction);
@@ -278,6 +289,9 @@ public:
     /// Bilinear Hessian-vector product of the composed map, output-contracted
     /// with `w` (state; e.g. the dynamics multiplier) and input direction
     /// `v = (v_x, v_u)`; returns (hv_x, hv_u).
+    /// @param  w    state multiplier (nx)
+    /// @param  v_x, v_u  HVP direction v = (v_x, v_u)
+    /// @param[out] hv_x (nx), hv_u (nu)
     ///
     /// For a dual-evaluable ODE (with `ad_hess_prod` enabled): a single
     /// forward pass in dual<dual<scalar_t, nIn>, 1>; the multiplier `w` is
@@ -563,7 +577,7 @@ private:
         hv_u = ws_.du;
     }
 
-    // ---- AD front paths (scalar-templated ODE f, phase 4i) ----
+    // ---- AD front paths (scalar-templated ODE f) --------------------------
 
     /// Seed the (x, u) input for the Dual1 pass: input k carries the unit
     /// vector e_k in its nIn-partial storage (z = [x; u]).

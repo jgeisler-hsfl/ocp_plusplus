@@ -1,6 +1,7 @@
 // ocp/integrators/ode_model.hpp
 //
-// Continuous-time ODE model contract for the integrators (phase 4).
+// Continuous-time ODE model contract for the Runge-Kutta integrators
+// (rk_explicit.hpp / rk_implicit.hpp via OdeToDae).
 //
 // The ODE model is a *duck-typed* contract: the user writes a plain struct
 // with the methods below; there is no `OdeModel` base class to inherit (the
@@ -8,11 +9,12 @@
 // (rk_explicit.hpp / rk_implicit.hpp) dispatches statically on the concrete
 // ODE type, exactly like `ocp::Problem` dispatches on the concrete problem.
 //
-// Contract (all methods `const` and pure; parameters are user-managed state
-// of the concrete ODE, not interface arguments). Phase 4h makes the ODE
-// *time-varying*: every method takes the physical time `t` at the evaluation
-// point. The solver (integrator) decides the time grid and hands `t` to the
-// model; a time-invariant ODE simply ignores `t`.
+// Contract (all methods `const`; parameters are user-managed state of the
+// concrete ODE, not interface arguments). The ODE is *time-varying*: every
+// method takes the physical time `t` at the evaluation point. The integrator
+// decides the time grid and hands `t` to the model (for stage k and step
+// size h the stage start is t_k = k * h); a time-invariant ODE simply
+// ignores `t`.
 //
 //   state_t f(const state_t& x, const control_t& u, double t) const;
 //
@@ -110,8 +112,8 @@ namespace detail
 // SFINAE probe: is `Ode::hess_prod(x, u, t, w, v_x, v_u, hv_x&, hv_u&)` a
 // valid expression with the Problem<Dims> vector types? The probe is only
 // instantiated when the trait is queried, so it never forces the ODE's other
-// methods to exist. Phase 4h: the probe matches the time-varying signature
-// (the `double t` after `u`).
+// methods to exist. The probe matches the time-varying signature (the
+// `double t` after `u`).
 template <class Ode, class Dims, class = std::void_t<>>
 struct ode_hess_prod_probe : std::false_type
 {

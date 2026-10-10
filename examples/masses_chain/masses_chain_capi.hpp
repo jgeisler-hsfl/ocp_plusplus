@@ -1,7 +1,7 @@
 // masses_chain_capi.hpp
 //
-// C ABI to the CasADi-generated masses_chain implicit-DAE residual
-// (codegen_ocp_masses_chain_21ef639b, phase-1 hand-written wrapper).
+// C ABI wrapper around the CasADi-generated masses_chain implicit-DAE
+// residual.
 //
 // The generated residual is
 //     F(x, xdot, u) = f_expl(x, u) - xdot
@@ -17,9 +17,9 @@
 //
 // Only the residual (masses_chain_impl_dae_fun.c) is compiled into the
 // ocp++ target. The generated derivative routines
-// (masses_chain_impl_dae_fun_jac_x_xdot_u.c, ...) are kept in the tree for
-// the phase-2 generator, which will call them directly instead of the
-// finite-difference Jacobian used by this wrapper.
+// (masses_chain_impl_dae_fun_jac_x_xdot_u.c, ...) are kept in the tree but
+// not used: this wrapper's consumer supplies central finite-difference
+// Jacobians instead.
 
 #pragma once
 
@@ -35,8 +35,13 @@ extern "C"
                                   int* iw, double* w, int mem);
 }
 
-/// Evaluate the implicit-DAE residual F(x, xdot, u). With xdot = 0 this is
+/// Evaluate the implicit-DAE residual F(x, xdot, u); with xdot = 0 this is
 /// the explicit ODE right-hand side f(x, u).
+/// @param  x     state (24)
+/// @param  xdot  state derivative (24)
+/// @param  u     control (3)
+/// @param  p     OCP step (unused by the generated residual)
+/// @param[out] F  residual (24)
 inline void masses_chain_residual(const double* x, const double* xdot,
                                   const double* u, double p,
                                   double* F) noexcept
