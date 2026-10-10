@@ -1,7 +1,6 @@
 // ocp/integrators/dae_model.hpp
 //
-// DAE model contract for the implicit (IRK) integrator (phase 4k,
-// CLEAN_UP_TODO item 3).
+// DAE model contract for the implicit (IRK) integrator (rk_implicit.hpp).
 //
 // Where the explicit integrator consumes the ODE right-hand side
 //  xdot = f(x, u, t)  (ode_model.hpp), the implicit integrator consumes the

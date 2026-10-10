@@ -28,6 +28,7 @@
 
 #include "ocp/problem.hpp"
 
+/// Dims tag for the double integrator: structural dimensions and box index sets.
 struct DoubleIntegratorDims
 {
     static constexpr int nx = 2;
@@ -206,6 +207,7 @@ public:
 
     // ne == 0: stage_equality_value / stage_equality_value_jac stay unimplemented.
 
+    /// Linear stage constraint: -3 <= 0.5*q + v <= 3.
     stage_linear_t stage_linear_constr(int) const
     {
         stage_linear_t spec;
@@ -219,6 +221,7 @@ public:
         return spec;
     }
 
+    /// State box: -10 <= q, v <= 10.
     state_box_t stage_state_box_constr(int) const
     {
         state_box_t spec;
@@ -228,6 +231,7 @@ public:
         return spec;
     }
 
+    /// Control box: -1 <= a <= 1.
     control_box_t stage_control_box_constr(int) const
     {
         control_box_t spec;
@@ -240,6 +244,7 @@ public:
     // ---------------------------------------------------------------
     // terminal constraints
     // ---------------------------------------------------------------
+    /// Terminal state box: -10 <= q, v <= 10.
     term_state_box_t terminal_state_box_constr() const
     {
         term_state_box_t spec;

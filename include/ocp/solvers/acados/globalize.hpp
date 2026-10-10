@@ -1,18 +1,34 @@
 // ocp/solvers/acados/globalize.hpp
 //
-// Globalization primitives for the SQP driver (phase 2, sub-steps 2b + 2d).
-// Ports of the acados globalization options, the SQP variable-update
-// routine (ocp_nlp_common.c: ocp_nlp_update_variables_sqp) and the merit
-// backtracking line search (ocp_nlp_globalization_merit_backtracking.c).
+// Globalization primitives for the SQP driver: the line-search strategies
+// that make the QP step globally convergent, plus the step-application and
+// dual-mapping helpers they build on.
+//
+// The driver owns one strategy (MeritBacktracking or Funnel) and one
+// SqpSlacks storage. Each iteration the strategy
+//   1. updates its merit/funnel state from the QP duals,
+//   2. damps the step (alpha) until its acceptance test holds,
+//   3. applies the accepted step to the iterate (primal and duals).
+// Trial iterates and trial slacks are formed with
+// detail::apply_sqp_step_primal and detail::shift_slacks.
 //
 // Contents:
-//   - GlobOptions                          (ocp_nlp_globalization_opts)
+//   - GlobOptions                          line-search / globalization knobs
 //   - SqpSlacks<P, NH>                    solver-internal slack storage
-//   - detail::map_qp_duals_to_solution    (NLP<->QP dual mapping, plan sec. 1.3)
-//   - detail::apply_sqp_step_primal       (primal part of the step update)
-//   - detail::shift_slacks                (trial slacks for the line search)
-//   - apply_sqp_step                      (ocp_nlp_update_variables_sqp)
-//   - MeritBacktracking<P, NH>            (merit function + line search)
+//   - detail::map_qp_duals_to_solution    QP -> NLP dual mapping
+//   - detail::apply_sqp_step_primal       primal part of the step update
+//   - detail::shift_slacks                trial slacks for the line search
+//   - apply_sqp_step                      full step application
+//   - MeritBacktracking<P, NH>            Leineweber merit + backtracking
+//   - Funnel<P, NH>                       funnel globalization
+//
+// Supplementary - correspondence with the acados implementation:
+//   GlobOptions               ocp_nlp_globalization_common.h/.c
+//   SqpSlacks                 NLP slack variables in nlp_out
+//   map_qp_duals_to_solution  QP -> NLP dual mapping in ocp_nlp_common.c
+//   apply_sqp_step            ocp_nlp_update_variables_sqp
+//   MeritBacktracking         ocp_nlp_globalization_merit_backtracking.c
+//   Funnel                    ocp_nlp_globalization_funnel.c
 
 #pragma once
 
@@ -32,26 +48,23 @@ namespace ocp
 //  Options
 // =========================================================================
 
-/// Globalization options (ocp_nlp_globalization_common.h:82-90; defaults
-/// verified against ocp_nlp_globalization_common.c:83-86). SOC and
-/// sufficient-descent are phase 3 (SQP_PLAN sec. 8).
+/// Globalization options shared by both line-search strategies.
 struct GlobOptions
 {
     double alpha_min = 0.05;             // minimum accepted step size
     double alpha_reduction = 0.7;        // backtracking shrink factor
-    double eps_sufficient_descent = 1e-4;  // (phase 3, Leineweber 1999)
+    double eps_sufficient_descent = 1e-4;  // Armijo sufficient-descent factor
     bool full_step_dual = false;        // full-step dual update vs. relaxed
-    bool use_soc = false;               // 3j: second-order-correction pre-pass
+    bool use_soc = false;               // second-order-correction pre-pass
 };
 
 // =========================================================================
 //  Slack storage
 // =========================================================================
 
-/// Solver-internal slack storage (not part of ocp::Solution per AGENTS.md).
-/// One vector per stage type; the SQP driver owns this and warm-starts it
-/// across repeated solves on the same solver object (acados nlp_out slack
-/// analogue).
+/// Solver-internal slack storage (not part of ocp::Solution per
+/// AGENTS.md). One vector per stage type; the SQP driver owns this and
+/// warm-starts it across repeated solves on the same solver object.
 template <class P, int NH = Eigen::Dynamic>
 struct SqpSlacks
 {
@@ -73,6 +86,7 @@ struct SqpSlacks
 
     /// Dynamic horizon: allocate path storage; fixed horizon: consistency
     /// check only (no allocation).
+    /// @param n_stages horizon N
     void resize(int n_stages)
     {
         if constexpr (NH == Eigen::Dynamic)
@@ -100,7 +114,7 @@ struct SqpSlacks
 };
 
 // =========================================================================
-//  QP -> NLP dual mapping (plan sec. 1.3)
+//  QP -> NLP dual mapping
 // =========================================================================
 
 namespace detail
@@ -121,6 +135,9 @@ namespace detail
 ///
 /// All target fields are zeroed first, so rows absent from the QP (e.g.
 /// the stage-0 state box when x_0 is fixed) map to zero.
+///
+/// @param  sol  QP solution (dynamics multipliers pi, per-side lam)
+/// @param[out] dest NLP Solution whose multiplier fields are filled
 template <class P, int NH = Eigen::Dynamic>
 void map_qp_duals_to_solution(const QpSol<P, NH>& sol, Solution<P, NH>& dest)
 {
@@ -142,7 +159,7 @@ void map_qp_duals_to_solution(const QpSol<P, NH>& sol, Solution<P, NH>& dest)
     dest.lambda_eq_term.setZero();
     dest.lambda_lin_term.setZero();
 
-    // dynamics multipliers (sign flip, sec. 1.3)
+    // dynamics multipliers (sign flip)
     for (int k = 0; k < N; ++k)
     {
         dest.lambda_dyn[k] = -sol.pi[k];
@@ -235,7 +252,12 @@ void map_qp_duals_to_solution(const QpSol<P, NH>& sol, Solution<P, NH>& dest)
 }
 
 /// Primal part only of apply_sqp_step (no dual mapping / update). The
-/// merit line search uses it for trial iterates, which need no duals.
+/// line searches use it for trial iterates, which need no duals.
+///
+/// @param  start current iterate
+/// @param  step  QP solution holding the per-stage steps (u;x;s)
+/// @param  alpha damping factor
+/// @param[out] dest trial iterate (primal variables only)
 template <class P, int NH = Eigen::Dynamic>
 void apply_sqp_step_primal(const Solution<P, NH>& start,
                            const QpSol<P, NH>& step,
@@ -282,13 +304,17 @@ void apply_sqp_step_primal(const Solution<P, NH>& start,
     }
 }
 
-/// Trial slacks for the line search.  The QP slack variable is the
-/// *absolute* new slack (2f convention: d offsets exclude s_cur, slack
-/// Hessian diagonal = w, grad = 0), so the damped trial is the
-/// interpolation  s_trial = s_old + alpha * (s_qp − s_old).
+/// Damped trial slacks for the line search. The QP slack variable is
+/// the *absolute* new slack (zero QP gradient, Hessian diagonal =
+/// penalty weight), so the damped trial is the interpolation
+/// s_trial = s_old + alpha * (s_qp − s_old).
 /// The slack part is the tail of each stage-type step vector (the
 /// last nslack_<type> entries of (u;x;s) / (x;s), qp.hpp layout).
-/// `dest` must already be sized to the step's horizon.
+///
+/// @param  s      current slacks
+/// @param  step   QP solution holding the absolute slack values
+/// @param  alpha  damping factor
+/// @param[out] dest trial slacks; must be sized to the step's horizon
 template <class P, int NH = Eigen::Dynamic>
 void shift_slacks(const SqpSlacks<P, NH>& s, const QpSol<P, NH>& step,
                   double alpha, SqpSlacks<P, NH>& dest)
@@ -310,27 +336,30 @@ void shift_slacks(const SqpSlacks<P, NH>& s, const QpSol<P, NH>& step,
 
 }  // namespace detail
 // =========================================================================
-//  SQP step application (ocp_nlp_update_variables_sqp)
+//  SQP step application
 // =========================================================================
 
-/// Update the NLP iterate with a QP step
-/// (ocp_nlp_common.c:3355-3414, ocp_nlp_update_variables_sqp).
+/// Update the NLP iterate with a damped QP step.
 ///
-/// Primal (acados daxpy over the whole per-stage (u;x;s) block; slacks are
-/// kept out of ocp::Solution, so only the (u;x) part is applied here):
+/// Primal (slacks are kept out of ocp::Solution, so only the (u;x) part
+/// of each per-stage step block is applied):
 ///   dest.u[k]   = start.u[k]   + alpha * (u part of step.ux_k)   k = 0..N-1
 ///   dest.x[k]   = start.x[k]   + alpha * (x part of step.ux_k)   k = 0..N
 ///   x_0 is untouched when x_0 is fixed: the pin rows force the x_0 step to
 ///   zero, so the formula leaves it exactly at start.x[0].
 ///
-/// Duals: full_step_dual -> dest.lambda_* = mapped(step) (absolute,
-/// acados dveccp); otherwise the relaxed update
-///   dest.lambda_* = (1 - alpha) * start.lambda_* + alpha * mapped(step)
-/// (acados daxpby 1.0-alpha / alpha).
+/// Duals: full_step_dual -> dest.lambda_* = mapped(step) (absolute);
+/// otherwise the relaxed update
+///   dest.lambda_* = (1 - alpha) * start.lambda_* + alpha * mapped(step).
 ///
 /// Slacks are NOT updated here; the driver does s <- s + alpha * ds
-/// (analogous to acados's algebraic-variable update, kept out of Solution
-/// per AGENTS.md).
+/// (slacks stay out of Solution per AGENTS.md).
+///
+/// @param  start current iterate
+/// @param  step  QP solution holding the per-stage steps (u;x;s)
+/// @param  alpha accepted damping factor
+/// @param  full_step_dual use absolute instead of relaxed dual update
+/// @param[out] dest updated iterate
 template <class P, int NH = Eigen::Dynamic>
 void apply_sqp_step(const Solution<P, NH>& start,
                     const QpSol<P, NH>& step,
@@ -398,33 +427,33 @@ void apply_sqp_step(const Solution<P, NH>& start,
 }
 
 // =========================================================================
-//  Merit backtracking line search (sub-step 2d)
+//  Merit backtracking line search
 // =========================================================================
 
 /// Backtracking line search on a Leineweber merit function.
 ///
 /// merit(x, u, s) = sum_k L_k(x_k, u_k) + L_N(x_N)
-///               + 0.5 * sum w_soft * s^2          (slack penalty, 1.6)
+///               + 0.5 * sum w_soft * s^2          (slack penalty)
 ///               + sum_k |pi_w| * |f_k - x_{k+1}|  (weighted L1 gap)
 ///               + sum_rows |lam_w| * viol^+       (weighted violations)
 ///
 /// Soft rows use slack-relaxed violations (e.g. ineq: max(0, g - s));
-/// hard equality rows enter as |e| (acados counts every two-sided row).
-/// Pin rows (fixed x_0) are a QP-internal device and stay satisfied by
-/// construction, so they are excluded.
+/// two-sided equality rows enter as |e|. Pin rows (fixed x_0) are a
+/// QP-internal device and stay satisfied by construction, so they are
+/// excluded.
 ///
-/// Weights (Leineweber M5.1, acados :705-755), updated from the QP duals
-/// at the start of every line search:
+/// Weights (Leineweber M5.1), updated from the QP duals at the start of
+/// every line search:
 ///   first call  :  w <- |dual|
 ///   later calls :  w <- max(|dual|, 0.5 (|dual| + w_old))
 ///
-/// Line search (ocp_nlp_line_search :290-408):
+/// Line search:
 ///   alpha = 1; while alpha * alpha_reduction > alpha_min:
 ///     trial = cur + alpha * step;  if merit1 < merit0 and finite:
 ///     accept and return kSolved;  else alpha *= alpha_reduction.
-///   Exhausted: apply the post-shrink step to cur (acados :894) and
-///   return kMinStep, or kNanDetected if the last merit was non-finite
-///   (cur left untouched, acados :886-890).
+///   Exhausted: apply the post-shrink step to cur and return kMinStep,
+///   or kNanDetected if the last merit was non-finite (cur left
+///   untouched).
 template <class P, int NH = Eigen::Dynamic>
 struct MeritBacktracking
 {
@@ -460,6 +489,7 @@ struct MeritBacktracking
     mutable typename P::lin_term_t w_lin_term{};
 
     /// Call once per solve() at iteration 0. Resets weight state.
+    /// @param  sol current iterate, provides the horizon N
     void initialize(const P& /*problem*/, const Solution<P, NH>& sol)
     {
         N_ = sol.N;
@@ -488,6 +518,7 @@ struct MeritBacktracking
     /// Update weights from the latest QP dual solution.
     /// First call after initialize(): w <- |dual|.
     /// Later calls: w <- max(|dual|, 0.5 (|dual| + w_old)).
+    /// @param  qp QP solution whose duals seed the weights
     void update_weights(const QpSol<P, NH>& qp) const
     {
         Solution<P, NH> mapped(N_);
@@ -570,6 +601,10 @@ struct MeritBacktracking
     }
 
     /// Merit value at the iterate (sol, sl) using current weights.
+    /// @param  problem problem model (costs, dynamics, constraint values)
+    /// @param  sol     primal iterate (x, u)
+    /// @param  sl      current slacks
+    /// @return merit value
     double merit(const P& problem, const Solution<P, NH>& sol,
                  const SqpSlacks<P, NH>& sl) const
     {
@@ -607,15 +642,24 @@ struct MeritBacktracking
     /// Backtracking line search. Advances `cur` in place on success
     /// or kMinStep. Leaves `cur` untouched on kNanDetected.
     ///
-    /// 3j: when `opts.use_soc`, a second-order-correction (SOC) pre-pass
-    /// runs before the backtracking loop (acados ocp_nlp_soc_line_search,
-    /// ocp_nlp_globalization_merit_backtracking.c:566-602). The full step
-    /// (alpha = 1) is accepted outright when it lowers both the merit and
-    /// the L-infinity constraint violation. Otherwise `soc_fn` re-solves
-    /// the QP in place with the second-order-corrected RHS; `step` aliases
-    /// the driver's qp_out_, so it then holds the corrected step, and the
-    /// line search runs on it (with the merit weights re-updated from the
-    /// corrected QP duals).
+    /// When `opts.use_soc`, a second-order-correction (SOC) pre-pass runs
+    /// before the backtracking loop. The full step (alpha = 1) is accepted
+    /// outright when it lowers both the merit and the L-infinity constraint
+    /// violation. Otherwise `soc_fn` re-solves the QP in place with the
+    /// second-order-corrected RHS; `step` aliases the driver's qp_out_, so
+    /// it then holds the corrected step, and the line search runs on it
+    /// (with the merit weights re-updated from the corrected QP duals).
+    ///
+    /// @param  problem problem model
+    /// @param[out] cur current iterate, advanced in place on acceptance
+    /// @param  qp unused (kept for the shared globalization contract)
+    /// @param  step QP step (u;x;s); may alias the driver's QP after an
+    ///              SOC re-solve
+    /// @param  slacks current slacks
+    /// @param[out] scratch trial iterate for merit evaluation
+    /// @param[out] alpha accepted damping factor
+    /// @param  soc_fn second-order-correction re-solve (used when use_soc)
+    /// @return kSolved on acceptance, kMinStep or kNanDetected otherwise
     Status find_acceptable_iterate(const P& problem,
                                    Solution<P, NH>& cur,
                                    const Qp<P, NH>& /*qp*/,
@@ -699,9 +743,7 @@ struct MeritBacktracking
     }
 
     /// L-infinity constraint violation: max over all stages of the
-    /// dynamics gap (absolute) and the positive-part constraint violation
-    /// (acados ocp_nlp_get_violation_inf_norm,
-    /// ocp_nlp_globalization_merit_backtracking.c:424-459).
+    /// dynamics gap (absolute) and the positive-part constraint violation.
     double inf_violation(const P& problem,
                          const Solution<P, NH>& sol,
                          const SqpSlacks<P, NH>& sl) const
@@ -1146,7 +1188,7 @@ private:
         return m;
     }
 
-    // -- L-infinity positive constraint violations (3j) --------------
+    // -- L-infinity positive constraint violations --------------------
     //
     // Unweighted max of the positive-part violation (feasible rows -> 0),
     // mirroring stage_violation_impl / term_violation but returning the
@@ -1346,10 +1388,10 @@ private:
 };
 
 // =========================================================================
-//  Funnel globalization line search (sub-step 3i)
+//  Funnel globalization line search
 // =========================================================================
 
-/// Funnel globalization (acados ocp_nlp_globalization_funnel.c).
+/// Funnel globalization line search.
 ///
 /// Merit:  rho * F + L1
 /// where F = raw stage + terminal cost (no slack penalty) and
@@ -1366,8 +1408,8 @@ private:
 ///       L1_trial <= c_sd * width
 ///   outside funnel (not merit-only): reject
 ///
-/// On kMinStep the iterate is NOT advanced (acados funnel.c:525-529),
-/// unlike merit backtracking which commits the post-shrink step.
+/// On kMinStep the iterate is NOT advanced, unlike merit backtracking
+/// which commits the post-shrink step.
 template <class P, int NH = Eigen::Dynamic>
 struct Funnel
 {
@@ -1376,7 +1418,7 @@ struct Funnel
 
     GlobOptions opts;
 
-    // acados ocp_nlp_globalization_funnel_opts defaults
+    // default funnel parameters
     double initialization_increase_factor = 15.0;
     double initialization_upper_bound = 1.0;
     double sufficient_decrease_factor = 0.9;
@@ -1402,6 +1444,7 @@ struct Funnel
     double funnel_width() const { return funnel_width_; }
 
     /// Call once per solve() at iteration 0.
+    /// @param  sol current iterate, provides the horizon N
     void initialize(const P& /*problem*/, const Solution<P, NH>& sol)
     {
         N_ = sol.N;
@@ -1417,7 +1460,17 @@ struct Funnel
     /// leaves `cur` untouched on kMinStep / kNanDetected.
     ///
     /// The trailing `soc_fn` is part of the shared globalization contract
-    /// (3j) but unused by the funnel.
+    /// but unused by the funnel.
+    ///
+    /// @param  problem problem model
+    /// @param[out] cur current iterate, advanced in place on acceptance
+    /// @param  qp current QP (provides the gradients for the prediction)
+    /// @param  step QP step (u;x;s)
+    /// @param  slacks current slacks
+    /// @param[out] scratch trial iterate for merit evaluation
+    /// @param[out] alpha accepted damping factor
+    /// @param  soc_fn unused (shared globalization contract)
+    /// @return kSolved on acceptance, kMinStep otherwise
     Status find_acceptable_iterate(const P& problem,
                                    Solution<P, NH>& cur,
                                    const Qp<P, NH>& qp,
