@@ -1,6 +1,6 @@
-// sqp_p5probe_b.cpp
+// sqp_p5probe_irk.cpp
 //
-// p5probe_b (Phase 5b): port of the acados "ocp_p5probe_b" OCP
+// p5probe_irk (Phase 5b, implicit RK): port of the acados "ocp_p5probe_b" OCP
 // (IRK Gauss-Legendre 2 stages, N = 3, EXTERNAL cost, no constraints,
 // all-zeros optimum). Verifies:
 //   (A) model fidelity at the acados reference (all zeros): cost ~ 0,
@@ -12,7 +12,7 @@
 #include <cstdio>
 
 #include "ocp/solvers/acados/acados.hpp"
-#include "P5probeB.hpp"
+#include "P5probeIrk.hpp"
 
 namespace
 {
@@ -32,7 +32,7 @@ void check(bool cond, const char* what)
 
 int main()
 {
-    using P5B = ocp::P5probeB;
+    using P5B = ocp::P5probeIrk;
     P5B p;
     constexpr int N = 3;
 
@@ -176,14 +176,14 @@ int main()
     for (int k = 0; k < N; ++k)
         check(sol.u[k].cwiseAbs().maxCoeff() < 1e-3, "u_k near zero");
 
-    std::printf("sqp_p5probe_b: cost=%.6f iters=%d status=%d\n",
+    std::printf("sqp_p5probe_irk: cost=%.6f iters=%d status=%d\n",
                 sol.cost_value, solver.statistics().iter,
                 static_cast<int>(st));
     if (failures > 0)
     {
-        std::fprintf(stderr, "sqp_p5probe_b: %d failure(s)\n", failures);
+        std::fprintf(stderr, "sqp_p5probe_irk: %d failure(s)\n", failures);
         return 1;
     }
-    std::printf("sqp_p5probe_b: OK\n");
+    std::printf("sqp_p5probe_irk: OK\n");
     return 0;
 }

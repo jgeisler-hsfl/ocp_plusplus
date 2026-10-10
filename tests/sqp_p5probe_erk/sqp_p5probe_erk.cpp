@@ -1,6 +1,6 @@
-// sqp_p5probe.cpp
+// sqp_p5probe_erk.cpp
 //
-// p5probe (Phase 5): port of the acados "ocp_p5probe_ecaceb6d" OCP
+// p5probe_erk (Phase 5, explicit RK): port of the acados "ocp_p5probe_ecaceb6d" OCP
 // (ERK K4, N = 3, soft stage ineq h in [0,1], hard terminal ineq,
 // non-convex h_t). Verifies:
 //   (A) model fidelity at the acados reference trajectory (raw cost,
@@ -8,7 +8,7 @@
 //   (B) SQP convergence to a valid KKT point from a generic warm start
 //       (final residuals from the solver's own slack-aware residuals).
 //
-// Reference: examples/p5probe/acados_codegen/ref_A_traj.txt.  The acados
+// Reference: examples/p5probe_erk/acados_codegen/ref_A_traj.txt.  The acados
 // reference was run with FIXED_STEP globalization and dt-scaled stage
 // costs; our port follows the codebase convention (stage cost without an
 // explicit dt factor, merit-backtracking globalization), so a different
@@ -19,7 +19,7 @@
 #include <cstdio>
 
 #include "ocp/solvers/acados/acados.hpp"
-#include "P5probe.hpp"
+#include "P5probeErk.hpp"
 
 namespace
 {
@@ -49,7 +49,7 @@ void check_close(double v, double ref, double tol, const char* what)
 
 int main()
 {
-    using P5 = ocp::P5probe;
+    using P5 = ocp::P5probeErk;
     P5 p;
     constexpr int N = 3;
 
@@ -223,7 +223,7 @@ int main()
     //      expl_vde_forw, called with Sx=I, Su=0) must match 5-point FD of
     //      the (independently generated) expl_ode_fun at several points.
     {
-        using Ode = ocp::P5probeOde;
+        using Ode = ocp::P5probeErkOde;
         constexpr int nxf = P5::nx;
         constexpr int nuf = P5::nu;
         const double pts[3][4] = {
@@ -320,13 +320,13 @@ int main()
     check(static_cast<double>(ge(0)) < 1e-9, "terminal ineq lo satisfied");
     check(static_cast<double>(ge(1)) < 1e-9, "terminal ineq hi satisfied");
 
-    std::printf("sqp_p5probe: cost=%.6f iters=%d status=%d\n",
+    std::printf("sqp_p5probe_erk: cost=%.6f iters=%d status=%d\n",
                 sol.cost_value, solver.statistics().iter, static_cast<int>(st));
     if (failures > 0)
     {
-        std::fprintf(stderr, "sqp_p5probe: %d failure(s)\n", failures);
+        std::fprintf(stderr, "sqp_p5probe_erk: %d failure(s)\n", failures);
         return 1;
     }
-    std::printf("sqp_p5probe: OK\n");
+    std::printf("sqp_p5probe_erk: OK\n");
     return 0;
 }
