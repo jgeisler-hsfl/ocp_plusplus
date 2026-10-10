@@ -602,7 +602,7 @@ struct CstrOcp : ErkBase
         CstrP::state_box_t spec;
         spec.lo << 0.0, 250.0, 0.05;
         spec.hi << 2.0, 450.0, 1.5;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -611,7 +611,7 @@ struct CstrOcp : ErkBase
         CstrP::control_box_t spec;
         spec.lo << 250.0, 0.0;
         spec.hi << 400.0, 0.5;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -620,7 +620,7 @@ struct CstrOcp : ErkBase
         CstrP::term_state_box_t spec;
         spec.lo << 0.0, 250.0, 0.05;
         spec.hi << 2.0, 450.0, 1.5;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 

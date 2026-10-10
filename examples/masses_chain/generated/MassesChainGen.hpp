@@ -204,7 +204,7 @@ public:
             spec.hi(13) = 10000.0;
             spec.lo(19) = -0.01;
             spec.hi(19) = 10000.0;
-        spec.soft_penalty << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0;
         return spec;
     }
     control_box_t stage_control_box_constr(int /*k*/) const
@@ -216,7 +216,7 @@ public:
         spec.hi(0) = 1.0;
         spec.hi(1) = 1.0;
         spec.hi(2) = 1.0;
-        spec.soft_penalty << 0.0, 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0, 0.0;
         return spec;
     }
     double cp_value(const state_t& x, const control_t& u,

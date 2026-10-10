@@ -728,24 +728,25 @@ struct MeritBacktracking
     }
 
 private:
-    // -- slack penalty: 0.5 * w * s^2 per soft side ------------------
+    // -- slack penalty: 0.5 * w * s^2 + r * s per soft side ----------
 
     template <class SV>
     static double add_slack_pair(const SV& sv, int base,
-                                 int col_lo, int col_hi, double w)
+                                  int col_lo, int col_hi,
+                                  double w, double r)
     {
         double m = 0.0;
         if (col_lo >= 0)
         {
             const double s =
                 static_cast<double>(sv[col_lo - base]);
-            m += 0.5 * w * s * s;
+            m += 0.5 * w * s * s + r * s;
         }
         if (col_hi >= 0)
         {
             const double s =
                 static_cast<double>(sv[col_hi - base]);
-            m += 0.5 * w * s * s;
+            m += 0.5 * w * s * s + r * s;
         }
         return m;
     }
@@ -765,13 +766,12 @@ private:
                     problem.stage_state_box_constr(k);
                 for (int i = 0; i < P::nbx_soft; ++i)
                 {
-                    const int r = lay.row_off(detail::g_bx)
-                                 + P::state_box_soft_idx[i];
+                    const int row = P::state_box_soft_idx[i];
+                    const int r = lay.row_off(detail::g_bx) + row;
                     m += add_slack_pair(
                         sv, base, idxl[r], idxh[r],
-                        static_cast<double>(
-                            spec.soft_penalty(
-                                P::state_box_soft_idx[i])));
+                        static_cast<double>(spec.penalty.quad(row)),
+                        static_cast<double>(spec.penalty.lin(row)));
                 }
             }
         }
@@ -781,13 +781,12 @@ private:
                 problem.stage_control_box_constr(k);
             for (int i = 0; i < P::nbu_soft; ++i)
             {
-                const int r = lay.row_off(detail::g_bu)
-                             + P::control_box_soft_idx[i];
+                const int row = P::control_box_soft_idx[i];
+                const int r = lay.row_off(detail::g_bu) + row;
                 m += add_slack_pair(
                     sv, base, idxl[r], idxh[r],
-                    static_cast<double>(
-                        spec.soft_penalty(
-                            P::control_box_soft_idx[i])));
+                    static_cast<double>(spec.penalty.quad(row)),
+                    static_cast<double>(spec.penalty.lin(row)));
             }
         }
         if constexpr (P::ng_soft > 0)
@@ -800,7 +799,8 @@ private:
                              + P::ineq_soft_idx[i];
                 m += add_slack_pair(
                     sv, base, idxl[r], idxh[r],
-                    static_cast<double>(pen(i)));
+                    static_cast<double>(pen.quad(i)),
+                    static_cast<double>(pen.lin(i)));
             }
         }
         if constexpr (P::ne_soft > 0)
@@ -813,7 +813,8 @@ private:
                              + P::eq_soft_idx[i];
                 m += add_slack_pair(
                     sv, base, idxl[r], idxh[r],
-                    static_cast<double>(pen(i)));
+                    static_cast<double>(pen.quad(i)),
+                    static_cast<double>(pen.lin(i)));
             }
         }
         if constexpr (P::nl_soft > 0)
@@ -821,12 +822,12 @@ private:
             const auto spec = problem.stage_linear_constr(k);
             for (int i = 0; i < P::nl_soft; ++i)
             {
-                const int r = lay.row_off(detail::g_lin)
-                             + P::lin_soft_idx[i];
+                const int row = P::lin_soft_idx[i];
+                const int r = lay.row_off(detail::g_lin) + row;
                 m += add_slack_pair(
                     sv, base, idxl[r], idxh[r],
-                    static_cast<double>(spec.bounds.soft_penalty(
-                        P::lin_soft_idx[i])));
+                    static_cast<double>(spec.bounds.penalty.quad(row)),
+                    static_cast<double>(spec.bounds.penalty.lin(row)));
             }
         }
         return m;
@@ -868,13 +869,12 @@ private:
                     problem.terminal_state_box_constr();
                 for (int i = 0; i < P::nbx_t_soft; ++i)
                 {
-                    const int r = lay.row_off(detail::g_bx)
-                                 + P::terminal_state_box_soft_idx[i];
+                    const int row = P::terminal_state_box_soft_idx[i];
+                    const int r = lay.row_off(detail::g_bx) + row;
                     m += add_slack_pair(
                         sv, base, idxl[r], idxh[r],
-                        static_cast<double>(
-                            spec.soft_penalty(
-                                P::terminal_state_box_soft_idx[i])));
+                        static_cast<double>(spec.penalty.quad(row)),
+                        static_cast<double>(spec.penalty.lin(row)));
                 }
             }
             if constexpr (P::ng_t_soft > 0)
@@ -887,7 +887,8 @@ private:
                                  + P::terminal_ineq_soft_idx[i];
                     m += add_slack_pair(
                         sv, base, idxl[r], idxh[r],
-                        static_cast<double>(pen(i)));
+                        static_cast<double>(pen.quad(i)),
+                        static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::ne_t_soft > 0)
@@ -900,7 +901,8 @@ private:
                                  + P::terminal_eq_soft_idx[i];
                     m += add_slack_pair(
                         sv, base, idxl[r], idxh[r],
-                        static_cast<double>(pen(i)));
+                        static_cast<double>(pen.quad(i)),
+                        static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::nl_t_soft > 0)
@@ -909,13 +911,12 @@ private:
                     problem.terminal_linear_constr();
                 for (int i = 0; i < P::nl_t_soft; ++i)
                 {
-                    const int r = lay.row_off(detail::g_lin)
-                                 + P::terminal_lin_soft_idx[i];
+                    const int row = P::terminal_lin_soft_idx[i];
+                    const int r = lay.row_off(detail::g_lin) + row;
                     m += add_slack_pair(
                         sv, base, idxl[r], idxh[r],
-                        static_cast<double>(
-                            spec.bounds.soft_penalty(
-                                P::terminal_lin_soft_idx[i])));
+                        static_cast<double>(spec.bounds.penalty.quad(row)),
+                        static_cast<double>(spec.bounds.penalty.lin(row)));
                 }
             }
         }

@@ -194,7 +194,9 @@ public:
 
     ineq_pen_t stage_inequality_constr_soft_penalty(int) const
     {
-        return ineq_pen_t::Constant(1, 7.0);
+        ineq_pen_t pen;
+        pen.quad << 7.0;
+        return pen;
     }
 
     state_box_t stage_state_box_constr(int) const
@@ -202,7 +204,7 @@ public:
         state_box_t spec;
         spec.lo(0) = -5.0;
         spec.hi(0) = 5.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = 0.0;
         return spec;
     }
 
@@ -211,7 +213,7 @@ public:
         control_box_t spec;
         spec.lo(0) = -2.0;
         spec.hi(0) = 2.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = 0.0;
         return spec;
     }
 
@@ -241,7 +243,9 @@ public:
 
     eq_term_pen_t terminal_equality_constr_soft_penalty() const
     {
-        return eq_term_pen_t::Constant(1, 3.0);
+        eq_term_pen_t pen;
+        pen.quad << 3.0;
+        return pen;
     }
 };
 
@@ -361,7 +365,7 @@ public:
         state_box_t spec;
         spec.lo(0) = -10.0;
         spec.hi(0) = 10.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = 0.0;
         return spec;
     }
 
@@ -370,7 +374,7 @@ public:
         control_box_t spec;
         spec.lo(0) = -1.0;
         spec.hi(0) = 1.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = 0.0;
         return spec;
     }
 };
@@ -493,7 +497,7 @@ public:
         state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty << w_bx, 0.0;
+        spec.penalty.quad << w_bx, 0.0;
         return spec;
     }
 
@@ -502,7 +506,7 @@ public:
         control_box_t spec;
         spec.lo << -1.0, -1.0;
         spec.hi << 1.0, 1.0;
-        spec.soft_penalty << w_bu, 0.0;
+        spec.penalty.quad << w_bu, 0.0;
         return spec;
     }
 
@@ -511,7 +515,7 @@ public:
         term_state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty << w_bx_t, 0.0;
+        spec.penalty.quad << w_bx_t, 0.0;
         return spec;
     }
 };

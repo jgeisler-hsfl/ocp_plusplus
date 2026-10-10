@@ -109,6 +109,34 @@ struct GnDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
 };
 
+// LinBoxDims: ExactDims plus one soft state-box row (check_softlin).
+struct LinBoxDims
+{
+    static constexpr int nx = dims_base::nx;
+    static constexpr int nu = dims_base::nu;
+    static constexpr int ng = 1;
+    static constexpr int ne = 0;
+    static constexpr int nl = 0;
+    static constexpr int ng_t = 0;
+    static constexpr int ne_t = 1;
+    static constexpr int nl_t = 0;
+    static constexpr bool fixed_initial_state = false;
+    static constexpr bool has_dynamics_hess = true;
+    static constexpr bool has_constr_hess = true;
+    static constexpr std::array<int, 1> state_box_idx = {0};
+    static constexpr std::array<int, 1> control_box_idx = {0};
+    static constexpr std::array<int, 0> terminal_state_box_idx = {};
+    static constexpr std::array<int, 1> ineq_soft_idx = {0};
+    static constexpr std::array<int, 0> eq_soft_idx = {};
+    static constexpr std::array<int, 0> lin_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_ineq_soft_idx = {};
+    static constexpr std::array<int, 1> terminal_eq_soft_idx = {0};
+    static constexpr std::array<int, 0> terminal_lin_soft_idx = {};
+    static constexpr std::array<int, 1> state_box_soft_idx = {0};
+    static constexpr std::array<int, 0> control_box_soft_idx = {};
+    static constexpr std::array<int, 0> terminal_state_box_soft_idx = {};
+};
+
 // ---------------------------------------------------------------------
 // Problem (same math as QuadTest in assemble_2f.cpp):
 //
@@ -134,6 +162,12 @@ public:
     using control_t = typename P::control_t;
 
     static constexpr double Ts = 0.2;
+
+    // runtime-tunable slack penalty weights (used by check 7)
+    double ineq_lin = 0.0;
+    double eq_term_lin = 0.0;
+    double box_quad = 0.0;
+    double box_lin = 0.0;
 
     state_t dynamics_next_state(int, const state_t& x,
                                 const control_t& u) const
@@ -247,7 +281,8 @@ public:
     typename P::ineq_pen_t stage_inequality_constr_soft_penalty(int) const
     {
         typename P::ineq_pen_t w;
-        w(0) = 7.0;
+        w.quad(0) = 7.0;
+        w.lin(0) = ineq_lin;
         return w;
     }
 
@@ -256,7 +291,8 @@ public:
         typename P::state_box_t spec;
         spec.lo(0) = -5.0;
         spec.hi(0) = 5.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = box_quad;
+        spec.penalty.lin(0) = box_lin;
         return spec;
     }
 
@@ -265,7 +301,7 @@ public:
         typename P::control_box_t spec;
         spec.lo(0) = -2.0;
         spec.hi(0) = 2.0;
-        spec.soft_penalty(0) = 0.0;
+        spec.penalty.quad(0) = 0.0;
         return spec;
     }
 
@@ -301,7 +337,8 @@ public:
     typename P::eq_term_pen_t terminal_equality_constr_soft_penalty() const
     {
         typename P::eq_term_pen_t w;
-        w(0) = 3.0;
+        w.quad(0) = 3.0;
+        w.lin(0) = eq_term_lin;
         return w;
     }
 };
@@ -464,12 +501,104 @@ void check_fd_exact()
     check_close(s.hess(1, 1), hxx, "FD exact hess(x,x)", 1e-5);
 }
 
+// ---------------------------------------------------------------------
+// Check 7: SoftPenalty{quad, lin} value-level checks (item 5).
+// LinBoxDims adds a soft state-box row; runtime weights set:
+//   box: quad 5, lin 1.25   ineq: quad 7 (fixed), lin 2
+//   term eq: quad 3 (fixed), lin 1.5
+//   * QP slack Hessian diag == quad, QP slack grad == lin
+//     (first + path stage, terminal);
+//   * NLP compute_cost == raw cost + sum(0.5*quad*s^2 + lin*s);
+//   * FD cross-check of the NLP cost w.r.t. the ineq slack.
+// ---------------------------------------------------------------------
+void check_softlin()
+{
+    const std::string p = "5a softlin: ";
+    using Prob = HessModeProb<LinBoxDims>;
+    Prob prob;
+    prob.ineq_lin = 2.0;
+    prob.eq_term_lin = 1.5;
+    prob.box_quad = 5.0;
+    prob.box_lin = 1.25;
+
+    constexpr int N = 2;
+    Solution<Prob> sol(N);
+    sol.x[0] << x0;
+    sol.u[0] << u0;
+    sol.x[1] << x1b;
+    sol.u[1] << u0;
+    sol.x[2] << x1b;
+    sol.lambda_dyn[0] << lam_dyn;
+    sol.lambda_dyn[1] << lam_dyn;
+    sol.lambda_ineq_stage[0] << lam_ineq;
+    sol.lambda_ineq_stage[1] << lam_ineq;
+    sol.lambda_eq_term << lam_eq_t;
+
+    SqpSolver<Prob> solver;
+    solver.resize(N);
+    if (solver.assemble_qp(prob, sol) != Status::kSolved)
+    {
+        std::fprintf(stderr, "FAIL: %s assemble status\n", p.c_str());
+        ++failures;
+        return;
+    }
+
+    // slack columns (after (u;x)): [bx_lo=2; bx_hi=3; ineq=4]
+    const auto& f = solver.last_qp().first;
+    const auto& pa = solver.last_qp().path[0];
+    check_close(f.grad(2), 1.25, (p + "first bx lo grad").c_str());
+    check_close(f.grad(3), 1.25, (p + "first bx hi grad").c_str());
+    check_close(f.grad(4), 2.0, (p + "first ineq grad").c_str());
+    check_close(f.hess(2, 2), 5.0, (p + "first bx lo hess").c_str());
+    check_close(f.hess(3, 3), 5.0, (p + "first bx hi hess").c_str());
+    check_close(f.hess(4, 4), 7.0, (p + "first ineq hess").c_str());
+    check_close(pa.grad(2), 1.25, (p + "path bx lo grad").c_str());
+    check_close(pa.grad(3), 1.25, (p + "path bx hi grad").c_str());
+    check_close(pa.grad(4), 2.0, (p + "path ineq grad").c_str());
+    check_close(pa.hess(2, 2), 5.0, (p + "path bx lo hess").c_str());
+    check_close(pa.hess(3, 3), 5.0, (p + "path bx hi hess").c_str());
+    check_close(pa.hess(4, 4), 7.0, (p + "path ineq hess").c_str());
+
+    // terminal: [x=0; eq_lo=1; eq_hi=2]
+    const auto& t = solver.last_qp().term;
+    check_close(t.grad(1), 1.5, (p + "term eq lo grad").c_str());
+    check_close(t.grad(2), 1.5, (p + "term eq hi grad").c_str());
+    check_close(t.hess(1, 1), 3.0, (p + "term eq lo hess").c_str());
+    check_close(t.hess(2, 2), 3.0, (p + "term eq hi hess").c_str());
+
+    // NLP cost: raw = 0.37 (st0) + 0.61 (st1) + 1.0 (term) = 1.98
+    // slack_pen first: 1.25 (bx lo) + 0.46875 (bx hi) + 1.36 (ineq)
+    // slack_pen term:  1.44 (eq lo) + 0.165 (eq hi)
+    // total = 1.98 + 4.68375 = 6.66375
+    auto make_slacks = [&](double s_ineq)
+    {
+        SqpSlacks<Prob> sl(N);
+        sl.setZero();
+        sl.first(0) = 0.5;   // bx lo
+        sl.first(1) = 0.25;  // bx hi
+        sl.first(2) = s_ineq;
+        sl.term(0) = 0.6;    // eq lo
+        sl.term(1) = 0.1;    // eq hi
+        return sl;
+    };
+    const double cost = solver.compute_cost(prob, sol, make_slacks(0.4));
+    check_close(cost, 6.66375, (p + "cost with lin slack").c_str());
+
+    // FD cross-check d(cost)/ds_ineq = 7*s + 2 = 4.8 at s = 0.4
+    const double h = 1e-6;
+    const double dc = (solver.compute_cost(prob, sol, make_slacks(0.4 + h))
+                       - solver.compute_cost(prob, sol, make_slacks(0.4 - h)))
+        / (2.0 * h);
+    check_close(dc, 4.8, (p + "FD d cost / d s_ineq").c_str(), 1e-6);
+}
+
 }  // namespace
 
 int run_hessmode_5a_tests()
 {
     check_assembly<ExactDims>("exact");
     check_assembly<GnDims>("gn");
+    check_softlin();
 
     // check 3: runtime gates -- EXACT Dims but both compute_hess_dyn and
     // compute_hess_constr = false behaves like GN (HVP terms dropped).

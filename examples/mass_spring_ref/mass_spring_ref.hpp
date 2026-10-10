@@ -280,7 +280,7 @@ public:
         state_box_t spec;
         spec.lo.setConstant(-4.0);
         spec.hi.setConstant(4.0);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -289,7 +289,7 @@ public:
         control_box_t spec;
         spec.lo.setConstant(-0.5);
         spec.hi.setConstant(0.5);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -298,7 +298,7 @@ public:
         term_state_box_t spec;
         spec.lo.setConstant(-4.0);
         spec.hi.setConstant(4.0);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -388,7 +388,7 @@ public:
         state_box_t spec;
         spec.lo.setConstant(-4.0);
         spec.hi.setConstant(4.0);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -397,7 +397,7 @@ public:
         control_box_t spec;
         spec.lo.setConstant(-0.5);
         spec.hi.setConstant(0.5);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -406,7 +406,7 @@ public:
         term_state_box_t spec;
         spec.lo.setConstant(-4.0);
         spec.hi.setConstant(4.0);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 

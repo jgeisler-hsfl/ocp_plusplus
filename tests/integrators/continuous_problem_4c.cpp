@@ -150,7 +150,7 @@ struct ContDoubleIntegrator : Base
         CP::state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -159,7 +159,7 @@ struct ContDoubleIntegrator : Base
         CP::control_box_t spec;
         spec.lo(0) = -1.0;
         spec.hi(0) = 1.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -168,7 +168,7 @@ struct ContDoubleIntegrator : Base
         CP::term_state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 };

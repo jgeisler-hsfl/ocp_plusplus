@@ -188,7 +188,7 @@ public:
         spec.lo.setConstant(-inf_);
         spec.hi.setConstant(inf_);
 
-        spec.soft_penalty << 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0;
         return spec;
     }
     double cp_value(const state_t& x, const control_t& u,

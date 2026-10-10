@@ -197,7 +197,7 @@ public:
         spec.lo.setConstant(-inf_);
         spec.hi.setConstant(inf_);
 
-        spec.soft_penalty << 0.0, 0.0, 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0, 0.0, 0.0;
         return spec;
     }
     control_box_t stage_control_box_constr(int /*k*/) const
@@ -205,7 +205,7 @@ public:
         control_box_t spec;
         spec.lo(0) = -80.0;
         spec.hi(0) = 80.0;
-        spec.soft_penalty << 0.0;
+        spec.penalty.quad << 0.0;
         return spec;
     }
     double cp_value(const state_t& x, const control_t& u,

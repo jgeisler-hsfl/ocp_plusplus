@@ -208,7 +208,7 @@ public:
     ineq_pen_t stage_inequality_constr_soft_penalty(int /*k*/) const
     {
         ineq_pen_t w;
-        w << 1.0, 1.0;
+        w.quad << 1.0, 1.0;
         return w;
     }
 
@@ -219,7 +219,7 @@ public:
         spec.B = linB_;
         spec.bounds.lo << 0.0;
         spec.bounds.hi << 2.0;
-        spec.bounds.soft_penalty << 0.0;
+        spec.bounds.penalty.quad << 0.0;
         return spec;
     }
     ineq_term_t terminal_inequality_value(
@@ -255,7 +255,7 @@ public:
             spec.lo(1) = 0.0;
             spec.hi(1) = 1.0;
         }
-        spec.soft_penalty << 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0;
         return spec;
     }
     control_box_t stage_control_box_constr(int /*k*/) const
@@ -265,7 +265,7 @@ public:
         spec.lo(1) = -5.0;
         spec.hi(0) = 10.0;
         spec.hi(1) = 5.0;
-        spec.soft_penalty << 0.0, 0.0;
+        spec.penalty.quad << 0.0, 0.0;
         return spec;
     }
     double cp_value(const state_t& x, const control_t& u,

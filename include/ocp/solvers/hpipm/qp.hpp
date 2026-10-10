@@ -68,13 +68,15 @@
 // Per-stage-type slack order (groups in row-group order, zero-sized groups
 // contribute nothing):
 //   [bx lo; bx hi; bu lo; bu hi; ineq hi; eq lo; eq hi; lin lo; lin hi]
-// with p indexing the group's *_soft_idx order. A soft row's penalty weight
-// (one per row, from the problem's spec / *_constr_soft_penalty) applies to
-// all of its slack variables: hess diagonal = w, grad slack part = 0
-// (HPIPM's slack objective is 0.5 s'Zs + r_s' s, so Z = w; verified in
-// x_ocp_qp_res.c and COND_SLACKS_FACT). Unused slack slots at a stage type
-// still need a positive Hessian diagonal (e.g. 1.0) so the stage Hessian
-// stays nonsingular.
+// with p indexing the group's *_soft_idx order. A soft row's penalty
+// (one SoftPenalty{quad,lin} pair per row, from the problem's spec /
+// *_constr_soft_penalty) applies to all of its slack variables: hess
+// diagonal = quad, grad slack part = lin (HPIPM's slack objective is
+// 0.5 s'Zs + r_s' s, so Z = quad and the slack gradient carries lin;
+// the standard soft constraint is quad = w, lin = 0; verified in
+// x_ocp_qp_res.c and COND_SLACKS_FACT). Unused slack slots at a stage
+// type still need a positive Hessian diagonal (e.g. 1.0) so the stage
+// Hessian stays nonsingular.
 //
 // Row layout per stage type (groups in order; count 0 = absent group):
 //   [pin; bx; bu; ineq; eq; lin]

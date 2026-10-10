@@ -1821,7 +1821,7 @@ using {name}Integ =
                     f"(int /*k*/) const\n"
                     f"    {{\n"
                     f"        ineq_pen_t w;\n"
-                    f"        w << {wvec(h['ineq_soft_w'])};\n"
+                    f"        w.quad << {wvec(h['ineq_soft_w'])};\n"
                     f"        return w;\n"
                     f"    }}\n")
         if h["eq"]:
@@ -1857,7 +1857,7 @@ using {name}Integ =
                     f"(int /*k*/) const\n"
                     f"    {{\n"
                     f"        eq_pen_t w;\n"
-                    f"        w << {wvec(h['eq_soft_w'])};\n"
+                    f"        w.quad << {wvec(h['eq_soft_w'])};\n"
                     f"        return w;\n"
                     f"    }}\n")
 
@@ -1888,7 +1888,7 @@ using {name}Integ =
         spec.A = linA_;
 {('        spec.B = linB_;\n' if nu > 0 else '')}        spec.bounds.lo << {cvec(lin['lo'])};
         spec.bounds.hi << {cvec(lin['hi'])};
-        spec.bounds.soft_penalty << {soft_vals};
+        spec.bounds.penalty.quad << {soft_vals};
         return spec;
     }}""")
 
@@ -1971,7 +1971,7 @@ using {name}Integ =
                     f"terminal_inequality_constr_soft_penalty() const\n"
                     f"    {{\n"
                     f"        ineq_term_pen_t w;\n"
-                    f"        w << {wvec(h_t['ineq_soft_w'])};\n"
+                    f"        w.quad << {wvec(h_t['ineq_soft_w'])};\n"
                     f"        return w;\n"
                     f"    }}\n")
         if h_t["eq"]:
@@ -2005,7 +2005,7 @@ using {name}Integ =
                     f"terminal_equality_constr_soft_penalty() const\n"
                     f"    {{\n"
                     f"        eq_term_pen_t w;\n"
-                    f"        w << {wvec(h_t['eq_soft_w'])};\n"
+                    f"        w.quad << {wvec(h_t['eq_soft_w'])};\n"
                     f"        return w;\n"
                     f"    }}\n")
 
@@ -2029,7 +2029,7 @@ using {name}Integ =
         spec.A = lin_tA_;
         spec.bounds.lo << {cvec(lt['lo'])};
         spec.bounds.hi << {cvec(lt['hi'])};
-        spec.bounds.soft_penalty << {soft_vals};
+        spec.bounds.penalty.quad << {soft_vals};
         return spec;
     }}""")
 
@@ -2054,7 +2054,7 @@ using {name}Integ =
         spec.lo.setConstant(-{INF});
         spec.hi.setConstant({INF});
 {kp_assign}
-        spec.soft_penalty << {box_soft};
+        spec.penalty.quad << {box_soft};
         return spec;
     }}"""
         else:
@@ -2080,7 +2080,7 @@ using {name}Integ =
         spec.lo.setConstant(-{INF});
         spec.hi.setConstant({INF});
 {k_block}
-        spec.soft_penalty << {box_soft};
+        spec.penalty.quad << {box_soft};
         return spec;
     }}"""
         constr.append(box_method)
@@ -2100,7 +2100,7 @@ using {name}Integ =
         control_box_t spec;
 {cb_lo}
 {cb_hi}
-        spec.soft_penalty << {cb_soft};
+        spec.penalty.quad << {cb_soft};
         return spec;
     }}""")
 
@@ -2119,7 +2119,7 @@ using {name}Integ =
         term_state_box_t spec;
 {tb_lo}
 {tb_hi}
-        spec.soft_penalty << {tb_soft};
+        spec.penalty.quad << {tb_soft};
         return spec;
     }}""")
 

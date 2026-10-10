@@ -1007,6 +1007,16 @@ public:
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
+    /// NLP objective at the iterate: the problem's stage + terminal costs
+    /// plus the slack penalty 0.5 * quad * s^2 + lin * s per soft side
+    /// (sec. 1.6; the problem cost functions exclude the solver-internal
+    /// slacks).
+    double compute_cost(const P& problem, const Solution<P, NH>& sol,
+                        const SqpSlacks<P, NH>& sl) const
+    {
+        return raw_cost(problem, sol) + slack_penalty(problem, sl);
+    }
+
     /// Number of second-order-correction re-solves performed (3j).
     int soc_count() const { return soc_count_; }
 
@@ -1446,17 +1456,9 @@ private:
         return m;
     }
 
-    /// NLP objective at the iterate: the problem's stage + terminal costs
-    /// plus the slack penalty 0.5 * w * s^2 per soft side (sec. 1.6; the
-    /// problem cost functions exclude the solver-internal slacks).
-    double compute_cost(const P& problem, const Solution<P, NH>& sol,
-                        const SqpSlacks<P, NH>& sl) const
-    {
-        return raw_cost(problem, sol) + slack_penalty(problem, sl);
-    }
-
-    /// Slack penalty 0.5 * w * s^2 over every soft side (same weights and
-    /// slack order as fill_slack_diag / fill_slack_diag_term; the first
+    /// Slack penalty 0.5 * w * s^2 + r * s over every soft side (same
+    /// weights and slack order as fill_slack_diag /
+    /// fill_slack_diag_term; the first
     /// stage drops the state-box slacks when x_0 is fixed, so the bx lo
     /// block is absent there — guarded via the stage-type layout).
     double slack_penalty(const P& problem,
@@ -1476,13 +1478,12 @@ private:
                     const auto spec = problem.stage_state_box_constr(k);
                     for (int i = 0; i < P::nbx_soft; ++i)
                     {
-                        const int r =
-                            lay.row_off(detail::g_bx)
-                            + P::state_box_soft_idx[i];
-                        m += slack_pair(sv, base, idxl[r], idxh[r],
-                                        static_cast<double>(
-                                            spec.soft_penalty(
-                                                P::state_box_soft_idx[i])));
+                        const int row = P::state_box_soft_idx[i];
+                        const int r = lay.row_off(detail::g_bx) + row;
+                        m += slack_pair(
+                            sv, base, idxl[r], idxh[r],
+                            static_cast<double>(spec.penalty.quad(row)),
+                            static_cast<double>(spec.penalty.lin(row)));
                     }
                 }
             }
@@ -1491,13 +1492,12 @@ private:
                 const auto spec = problem.stage_control_box_constr(k);
                 for (int i = 0; i < P::nbu_soft; ++i)
                 {
-                    const int r =
-                        lay.row_off(detail::g_bu)
-                        + P::control_box_soft_idx[i];
-                    m += slack_pair(sv, base, idxl[r], idxh[r],
-                                    static_cast<double>(
-                                        spec.soft_penalty(
-                                            P::control_box_soft_idx[i])));
+                    const int row = P::control_box_soft_idx[i];
+                    const int r = lay.row_off(detail::g_bu) + row;
+                    m += slack_pair(
+                        sv, base, idxl[r], idxh[r],
+                        static_cast<double>(spec.penalty.quad(row)),
+                        static_cast<double>(spec.penalty.lin(row)));
                 }
             }
             if constexpr (P::ng_soft > 0)
@@ -1509,7 +1509,8 @@ private:
                     const int r =
                         lay.row_off(detail::g_ineq) + P::ineq_soft_idx[i];
                     m += slack_pair(sv, base, idxl[r], idxh[r],
-                                    static_cast<double>(pen(i)));
+                                    static_cast<double>(pen.quad(i)),
+                                    static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::ne_soft > 0)
@@ -1521,7 +1522,8 @@ private:
                     const int r =
                         lay.row_off(detail::g_eq) + P::eq_soft_idx[i];
                     m += slack_pair(sv, base, idxl[r], idxh[r],
-                                    static_cast<double>(pen(i)));
+                                    static_cast<double>(pen.quad(i)),
+                                    static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::nl_soft > 0)
@@ -1529,12 +1531,12 @@ private:
                 const auto spec = problem.stage_linear_constr(k);
                 for (int i = 0; i < P::nl_soft; ++i)
                 {
-                    const int r =
-                        lay.row_off(detail::g_lin) + P::lin_soft_idx[i];
-                    m += slack_pair(sv, base, idxl[r], idxh[r],
-                                    static_cast<double>(
-                                        spec.bounds.soft_penalty(
-                                            P::lin_soft_idx[i])));
+                    const int row = P::lin_soft_idx[i];
+                    const int r = lay.row_off(detail::g_lin) + row;
+                    m += slack_pair(
+                        sv, base, idxl[r], idxh[r],
+                        static_cast<double>(spec.bounds.penalty.quad(row)),
+                        static_cast<double>(spec.bounds.penalty.lin(row)));
                 }
             }
         };
@@ -1557,13 +1559,12 @@ private:
                 const auto spec = problem.terminal_state_box_constr();
                 for (int i = 0; i < P::nbx_t_soft; ++i)
                 {
-                    const int r = lay.row_off(detail::g_bx)
-                                 + P::terminal_state_box_soft_idx[i];
-                    m += slack_pair(sv, base, D::idxs_lo_term[r],
-                                    D::idxs_hi_term[r],
-                                    static_cast<double>(
-                                        spec.soft_penalty(
-                                            P::terminal_state_box_soft_idx[i])));
+                    const int row = P::terminal_state_box_soft_idx[i];
+                    const int r = lay.row_off(detail::g_bx) + row;
+                    m += slack_pair(
+                        sv, base, D::idxs_lo_term[r], D::idxs_hi_term[r],
+                        static_cast<double>(spec.penalty.quad(row)),
+                        static_cast<double>(spec.penalty.lin(row)));
                 }
             }
             if constexpr (P::ng_t_soft > 0)
@@ -1576,7 +1577,8 @@ private:
                                  + P::terminal_ineq_soft_idx[i];
                     m += slack_pair(sv, base, D::idxs_lo_term[r],
                                     D::idxs_hi_term[r],
-                                    static_cast<double>(pen(i)));
+                                    static_cast<double>(pen.quad(i)),
+                                    static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::ne_t_soft > 0)
@@ -1589,7 +1591,8 @@ private:
                                  + P::terminal_eq_soft_idx[i];
                     m += slack_pair(sv, base, D::idxs_lo_term[r],
                                     D::idxs_hi_term[r],
-                                    static_cast<double>(pen(i)));
+                                    static_cast<double>(pen.quad(i)),
+                                    static_cast<double>(pen.lin(i)));
                 }
             }
             if constexpr (P::nl_t_soft > 0)
@@ -1597,35 +1600,34 @@ private:
                 const auto spec = problem.terminal_linear_constr();
                 for (int i = 0; i < P::nl_t_soft; ++i)
                 {
-                    const int r = lay.row_off(detail::g_lin)
-                                 + P::terminal_lin_soft_idx[i];
-                    m += slack_pair(sv, base, D::idxs_lo_term[r],
-                                    D::idxs_hi_term[r],
-                                    static_cast<double>(
-                                        spec.bounds.soft_penalty(
-                                            P::terminal_lin_soft_idx[i])));
+                    const int row = P::terminal_lin_soft_idx[i];
+                    const int r = lay.row_off(detail::g_lin) + row;
+                    m += slack_pair(
+                        sv, base, D::idxs_lo_term[r], D::idxs_hi_term[r],
+                        static_cast<double>(spec.bounds.penalty.quad(row)),
+                        static_cast<double>(spec.bounds.penalty.lin(row)));
                 }
             }
         }
         return m;
     }
 
-    /// 0.5 * w * (s_lo^2 + s_hi^2) for one soft row's slack columns
+    /// (0.5 * w * s^2 + r * s) over one soft row's slack columns
     /// (absent sides, col < 0, contribute nothing).
     template <class SV>
     static double slack_pair(const SV& sv, int base, int col_lo, int col_hi,
-                             double w)
+                             double w, double r)
     {
         double m = 0.0;
         if (col_lo >= 0)
         {
             const double s = static_cast<double>(sv[col_lo - base]);
-            m += 0.5 * w * s * s;
+            m += 0.5 * w * s * s + r * s;
         }
         if (col_hi >= 0)
         {
             const double s = static_cast<double>(sv[col_hi - base]);
-            m += 0.5 * w * s * s;
+            m += 0.5 * w * s * s + r * s;
         }
         return m;
     }
@@ -1986,10 +1988,11 @@ private:
                         add_permuted_hess(st.hess, M_eq, +1.0);
                 }
             }
-            fill_slack_diag(st.hess, problem, /*is_first=*/true, /*k=*/0);
+            fill_slack_diag(st.hess, st.grad, problem,
+                            /*is_first=*/true, /*k=*/0);
         }
 
-        // grad: [g_u; g_x], slack part 0
+        // grad: [g_u; g_x], slack part filled by fill_slack_diag
         {
             for (int i = 0; i < nux; ++i)
             {
@@ -2132,10 +2135,11 @@ private:
                         add_permuted_hess(st.hess, M_eq, +1.0);
                 }
             }
-            fill_slack_diag(st.hess, problem, /*is_first=*/false, k);
+            fill_slack_diag(st.hess, st.grad, problem,
+                            /*is_first=*/false, k);
         }
 
-        // grad: [g_u; g_x], slack part 0
+        // grad: [g_u; g_x], slack part filled by fill_slack_diag
         {
             for (int i = 0; i < nux; ++i)
             {
@@ -2254,10 +2258,10 @@ private:
                     }
                 }
             }
-            fill_slack_diag_term(st.hess, problem);
+            fill_slack_diag_term(st.hess, st.grad, problem);
         }
 
-        // grad: [g_x], slack part 0
+        // grad: [g_x], slack part filled by fill_slack_diag_term
         {
             for (int i = 0; i < nx; ++i)
             {
@@ -2982,9 +2986,9 @@ private:
     //  Slack Hessian diagonal (soft rows: weight w, unused: 1.0)
     // ---------------------------------------------------------------
 
-    template <class HessT>
-    void fill_slack_diag(HessT& hess, const P& problem, bool is_first,
-                         int k) const
+    template <class HessT, class GradT>
+    void fill_slack_diag(HessT& hess, GradT& grad, const P& problem,
+                         bool is_first, int k) const
     {
         constexpr int nux = D::nu + D::nx;
         const int nslack = is_first ? D::nslack_first : D::nslack_path;
@@ -3006,13 +3010,15 @@ private:
             const auto spec = problem.stage_state_box_constr(k);
             for (int i = 0; i < nbx_s; ++i)
             {
-                hess(nux + i, nux + i) = static_cast<S>(
-                    static_cast<double>(
-                        spec.soft_penalty(P::state_box_soft_idx[i])));
+                const int row = P::state_box_soft_idx[i];
+                const double w =
+                    static_cast<double>(spec.penalty.quad(row));
+                const double r = static_cast<double>(spec.penalty.lin(row));
+                hess(nux + i, nux + i) = static_cast<S>(w);
                 const int col = nux + nbx_s + i;
-                hess(col, col) = static_cast<S>(
-                    static_cast<double>(
-                        spec.soft_penalty(P::state_box_soft_idx[i])));
+                hess(col, col) = static_cast<S>(w);
+                grad(nux + i) = static_cast<S>(r);
+                grad(col) = static_cast<S>(r);
             }
         }
         // bu lo / bu hi
@@ -3023,13 +3029,17 @@ private:
             const auto spec = problem.stage_control_box_constr(k);
             for (int i = 0; i < P::nbu_soft; ++i)
             {
-                const double w = static_cast<double>(
-                    spec.soft_penalty(P::control_box_soft_idx[i]));
+                const int row = P::control_box_soft_idx[i];
+                const double w =
+                    static_cast<double>(spec.penalty.quad(row));
+                const double r = static_cast<double>(spec.penalty.lin(row));
                 hess(nux + 2 * off_bx + i,
                      nux + 2 * off_bx + i) = static_cast<S>(w);
                 hess(nux + 2 * off_bx + P::nbu_soft + i,
                      nux + 2 * off_bx + P::nbu_soft + i) =
                     static_cast<S>(w);
+                grad(nux + 2 * off_bx + i) = static_cast<S>(r);
+                grad(nux + 2 * off_bx + P::nbu_soft + i) = static_cast<S>(r);
             }
         }
         // ineq hi
@@ -3044,8 +3054,8 @@ private:
             for (int i = 0; i < P::ng_soft; ++i)
             {
                 const int col = nux + off + i;
-                hess(col, col) =
-                    static_cast<S>(static_cast<double>(pen(i)));
+                hess(col, col) = static_cast<S>(static_cast<double>(pen.quad(i)));
+                grad(col) = static_cast<S>(static_cast<double>(pen.lin(i)));
             }
         }
         // eq lo / eq hi
@@ -3059,10 +3069,13 @@ private:
                 problem.stage_equality_constr_soft_penalty(k);
             for (int i = 0; i < P::ne_soft; ++i)
             {
-                const double w = static_cast<double>(pen(i));
+                const double w = static_cast<double>(pen.quad(i));
+                const double r = static_cast<double>(pen.lin(i));
                 hess(nux + off + i, nux + off + i) = static_cast<S>(w);
                 hess(nux + off + P::ne_soft + i,
                      nux + off + P::ne_soft + i) = static_cast<S>(w);
+                grad(nux + off + i) = static_cast<S>(r);
+                grad(nux + off + P::ne_soft + i) = static_cast<S>(r);
             }
         }
         // lin lo / lin hi
@@ -3076,17 +3089,22 @@ private:
             const auto spec = problem.stage_linear_constr(k);
             for (int i = 0; i < P::nl_soft; ++i)
             {
-                const double w = static_cast<double>(
-                    spec.bounds.soft_penalty(P::lin_soft_idx[i]));
+                const int row = P::lin_soft_idx[i];
+                const double w =
+                    static_cast<double>(spec.bounds.penalty.quad(row));
+                const double r =
+                    static_cast<double>(spec.bounds.penalty.lin(row));
                 hess(nux + off + i, nux + off + i) = static_cast<S>(w);
                 hess(nux + off + P::nl_soft + i,
                      nux + off + P::nl_soft + i) = static_cast<S>(w);
+                grad(nux + off + i) = static_cast<S>(r);
+                grad(nux + off + P::nl_soft + i) = static_cast<S>(r);
             }
         }
     }
 
-    template <class HessT>
-    void fill_slack_diag_term(HessT& hess, const P& problem) const
+    template <class HessT, class GradT>
+    void fill_slack_diag_term(HessT& hess, GradT& grad, const P& problem) const
     {
         constexpr int nx = D::nx;
         const int nslack = D::nslack_term;
@@ -3105,11 +3123,15 @@ private:
             const auto spec = problem.terminal_state_box_constr();
             for (int i = 0; i < P::nbx_t_soft; ++i)
             {
-                const double w = static_cast<double>(
-                    spec.soft_penalty(P::terminal_state_box_soft_idx[i]));
+                const int row = P::terminal_state_box_soft_idx[i];
+                const double w =
+                    static_cast<double>(spec.penalty.quad(row));
+                const double r = static_cast<double>(spec.penalty.lin(row));
                 hess(nx + i, nx + i) = static_cast<S>(w);
                 hess(nx + P::nbx_t_soft + i,
                      nx + P::nbx_t_soft + i) = static_cast<S>(w);
+                grad(nx + i) = static_cast<S>(r);
+                grad(nx + P::nbx_t_soft + i) = static_cast<S>(r);
             }
         }
         if constexpr (P::ng_t_soft > 0)
@@ -3120,7 +3142,9 @@ private:
             for (int i = 0; i < P::ng_t_soft; ++i)
             {
                 hess(nx + off + i, nx + off + i) =
-                    static_cast<S>(static_cast<double>(pen(i)));
+                    static_cast<S>(static_cast<double>(pen.quad(i)));
+                grad(nx + off + i) =
+                    static_cast<S>(static_cast<double>(pen.lin(i)));
             }
         }
         if constexpr (P::ne_t_soft > 0)
@@ -3130,10 +3154,13 @@ private:
             const int off = 2 * P::nbx_t_soft + P::ng_t_soft;
             for (int i = 0; i < P::ne_t_soft; ++i)
             {
-                const double w = static_cast<double>(pen(i));
+                const double w = static_cast<double>(pen.quad(i));
+                const double r = static_cast<double>(pen.lin(i));
                 hess(nx + off + i, nx + off + i) = static_cast<S>(w);
                 hess(nx + off + P::ne_t_soft + i,
                      nx + off + P::ne_t_soft + i) = static_cast<S>(w);
+                grad(nx + off + i) = static_cast<S>(r);
+                grad(nx + off + P::ne_t_soft + i) = static_cast<S>(r);
             }
         }
         if constexpr (P::nl_t_soft > 0)
@@ -3143,11 +3170,16 @@ private:
                            + 2 * P::ne_t_soft;
             for (int i = 0; i < P::nl_t_soft; ++i)
             {
-                const double w = static_cast<double>(
-                    spec.bounds.soft_penalty(P::terminal_lin_soft_idx[i]));
+                const int row = P::terminal_lin_soft_idx[i];
+                const double w =
+                    static_cast<double>(spec.bounds.penalty.quad(row));
+                const double r =
+                    static_cast<double>(spec.bounds.penalty.lin(row));
                 hess(nx + off + i, nx + off + i) = static_cast<S>(w);
                 hess(nx + off + P::nl_t_soft + i,
                      nx + off + P::nl_t_soft + i) = static_cast<S>(w);
+                grad(nx + off + i) = static_cast<S>(r);
+                grad(nx + off + P::nl_t_soft + i) = static_cast<S>(r);
             }
         }
     }

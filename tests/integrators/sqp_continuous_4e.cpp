@@ -165,7 +165,7 @@ struct ErkOcp : ErkBase
         OCP::state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -174,7 +174,7 @@ struct ErkOcp : ErkBase
         OCP::control_box_t spec;
         spec.lo(0) = -1.0;
         spec.hi(0) = 1.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -183,7 +183,7 @@ struct ErkOcp : ErkBase
         OCP::term_state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -291,7 +291,7 @@ struct IrkOcp : IrkBase
         OCP::state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -300,7 +300,7 @@ struct IrkOcp : IrkBase
         OCP::control_box_t spec;
         spec.lo(0) = -1.0;
         spec.hi(0) = 1.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -309,7 +309,7 @@ struct IrkOcp : IrkBase
         OCP::term_state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 

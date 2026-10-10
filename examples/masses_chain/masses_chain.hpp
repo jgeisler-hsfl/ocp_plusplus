@@ -264,7 +264,7 @@ public:
         state_box_t spec;
         spec.lo.setConstant(-0.01);
         spec.hi.setConstant(1.0e4);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -273,7 +273,7 @@ public:
         control_box_t spec;
         spec.lo.setConstant(-1.0);
         spec.hi.setConstant(1.0);
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 

@@ -183,6 +183,44 @@ public:
 //  Constraint specs
 // =========================================================================
 
+/// Per-row slack penalty weights for soft constraint rows.
+///
+/// Each soft row i contributes a slack s[i] >= 0 that relaxes the row from
+/// the outside. The solver adds to the objective
+///
+///     0.5 * quad[i] * s[i]^2  +  lin[i] * s[i]
+///
+/// for each soft side of row i. `quad` is the Hessian (second-order) weight
+/// and `lin` the gradient (first-order) weight. This mirrors acados'
+/// per-slack `Z` (diagonal Hessian weight) and `z` (gradient weight) in
+/// `ocp_nlp_cost_common`; the standard soft constraint uses `quad = w`,
+/// `lin = 0`. A full (non-diagonal) Hessian weight is not supported, in
+/// line with the dense HPIPM QP which carries a diagonal slack Hessian.
+template <class Scalar, int N>
+struct SoftPenalty
+{
+    Eigen::Matrix<Scalar, N, 1> quad;  // Hessian weight: 0.5 * quad * s^2
+    Eigen::Matrix<Scalar, N, 1> lin;   // gradient weight: lin * s (default 0)
+
+    SoftPenalty()
+    {
+        quad.setZero();
+        lin.setZero();
+    }
+
+    /// Quadratic-only convenience (the common case): lin defaults to 0.
+    SoftPenalty(const Eigen::Matrix<Scalar, N, 1>& w)
+        : quad(w), lin(0)
+    {
+    }
+
+    SoftPenalty(const Eigen::Matrix<Scalar, N, 1>& w,
+                const Eigen::Matrix<Scalar, N, 1>& r)
+        : quad(w), lin(r)
+    {
+    }
+};
+
 /// Two-sided bounds on `Dim` active constraint rows, with per-row slack
 /// (soft-constraint) penalty weights.
 ///
@@ -194,16 +232,17 @@ public:
 /// Which rows are *soft* is a compile-time decision made by the problem's
 /// `Dims`: a row is soft iff its index appears in the group's `*_soft_idx`
 /// set. A soft row may be violated by a non-negative slack that relaxes
-/// the row from the outside; soft_penalty[i] is the weight of the
-/// 0.5 * soft_penalty[i] * s[i]^2 term the solver adds to the stage cost
-/// for that slack (per side). The numerical treatment of soft rows is the
-/// solver's business; the problem only declares them.
+/// the row from the outside; `penalty.quad[i]` and `penalty.lin[i]` are
+/// the second- and first-order weights of the slack penalty the solver
+/// adds to the stage cost for that row (per side, see `SoftPenalty`). The
+/// numerical treatment of soft rows is the solver's business; the problem
+/// only declares them.
 template <class Scalar, int Dim>
 struct BoxSpec
 {
-    Eigen::Matrix<Scalar, Dim, 1> lo{};            // lower bounds
-    Eigen::Matrix<Scalar, Dim, 1> hi{};            // upper bounds
-    Eigen::Matrix<Scalar, Dim, 1> soft_penalty{};  // slack penalty weight
+    Eigen::Matrix<Scalar, Dim, 1> lo{};      // lower bounds
+    Eigen::Matrix<Scalar, Dim, 1> hi{};      // upper bounds
+    SoftPenalty<Scalar, Dim>      penalty;   // per-row slack penalty weights
 };
 
 /// Linear two-sided stage constraint  lo <= A x + B u <= hi  (stage k);
@@ -364,11 +403,14 @@ struct TerminalLinearSpec
 ///   `initial_state()` is not part of the interface.
 /// - Soft constraint rows are selected per group at compile time by the
 ///   `*_soft_idx` index sets in `Dims` (their size is the number of soft
-///   rows in that group). Nonlinear (in)equality groups report their
-///   per-soft-row slack penalty weights via the `*_constr_soft_penalty`
-///   methods; box and linear groups carry their weights in the returned
-///   spec's `soft_penalty` field. The slack variables themselves are
-///   solver-internal.
+///   rows in that group). Each soft row i carries a `SoftPenalty` with a
+///   quadratic (Hessian) weight `quad[i]` and a linear (gradient) weight
+///   `lin[i]`; the solver adds 0.5*quad*s^2 + lin*s per soft side (acados
+///   `Zl/Zu` + `zl/zu`; the standard soft constraint is quad = w, lin = 0).
+///   Nonlinear (in)equality groups report their penalties via the
+///   `*_constr_soft_penalty` methods (returning a `SoftPenalty`); box and
+///   linear groups carry them in the returned spec's `penalty` field. The
+///   slack variables themselves are solver-internal.
 /// - The `*_value_jac_hess` entries return the multiplier-contracted
 ///   Hessian in one call: `hess v = sum_i lam_i D^2(·)_i v`, where `lam`
 ///   is the net KKT multiplier of the corresponding group (e.g.
@@ -510,11 +552,12 @@ public:
     using ineq_term_dg_dx_t = Eigen::Matrix<Scalar, ng_t, nx>;
     using eq_term_de_dx_t   = Eigen::Matrix<Scalar, ne_t, nx>;
 
-    // soft-row penalty weights (one entry per soft row, *_soft_idx order)
-    using ineq_pen_t      = Eigen::Matrix<Scalar, ng_soft, 1>;
-    using eq_pen_t        = Eigen::Matrix<Scalar, ne_soft, 1>;
-    using ineq_term_pen_t = Eigen::Matrix<Scalar, ng_t_soft, 1>;
-    using eq_term_pen_t   = Eigen::Matrix<Scalar, ne_t_soft, 1>;
+    // soft-row penalty weights (one {quad, lin} pair per soft row,
+    // *_soft_idx order); see SoftPenalty
+    using ineq_pen_t      = SoftPenalty<Scalar, ng_soft>;
+    using eq_pen_t        = SoftPenalty<Scalar, ne_soft>;
+    using ineq_term_pen_t = SoftPenalty<Scalar, ng_t_soft>;
+    using eq_term_pen_t   = SoftPenalty<Scalar, ne_t_soft>;
 
     // constraint specs
     using state_box_t      = BoxSpec<Scalar, nbx>;

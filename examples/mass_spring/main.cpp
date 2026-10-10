@@ -270,7 +270,7 @@ int main()
                                      std::fabs(cb.hi(i) - 0.5)));
         }
         check_close("ctrl box bounds [-0.5; 0.5]", d, 0.0, 1e-12);
-        check_close("ctrl box soft penalty", cb.soft_penalty.maxCoeff(), 0.0, 1e-12);
+        check_close("ctrl box soft penalty", cb.penalty.quad.maxCoeff(), 0.0, 1e-12);
 
         const auto sb = problem.stage_state_box_constr(0);
         d = 0.0;
@@ -280,7 +280,7 @@ int main()
                                      std::fabs(sb.hi(i) - 4.0)));
         }
         check_close("state box bounds [-4; 4]", d, 0.0, 1e-12);
-        check_close("state box soft penalty", sb.soft_penalty.maxCoeff(), 0.0, 1e-12);
+        check_close("state box soft penalty", sb.penalty.quad.maxCoeff(), 0.0, 1e-12);
 
         const auto tsb = problem.terminal_state_box_constr();
         d = 0.0;

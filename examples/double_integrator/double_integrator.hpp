@@ -200,7 +200,7 @@ public:
     ineq_pen_t stage_inequality_constr_soft_penalty(int) const
     {
         ineq_pen_t pen;
-        pen(0) = 100.0;
+        pen.quad(0) = 100.0;
         return pen;
     }
 
@@ -215,7 +215,7 @@ public:
         spec.B.setZero();
         spec.bounds.lo(0) = -3.0;
         spec.bounds.hi(0) = 3.0;
-        spec.bounds.soft_penalty.setZero();
+        spec.bounds.penalty = {};
         return spec;
     }
 
@@ -224,7 +224,7 @@ public:
         state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -233,7 +233,7 @@ public:
         control_box_t spec;
         spec.lo(0) = -1.0;
         spec.hi(0) = 1.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
@@ -245,7 +245,7 @@ public:
         term_state_box_t spec;
         spec.lo << -10.0, -10.0;
         spec.hi << 10.0, 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 

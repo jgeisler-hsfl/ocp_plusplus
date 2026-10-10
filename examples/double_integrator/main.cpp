@@ -154,8 +154,9 @@ int main()
         problem.stage_inequality_value_jac(k, x, u, g_val, Gx, Gu);
         check_close("ineq jac Gx(0,1)", Gx(0, 1), 1.0, 1e-12);
 
-        check_close("ineq soft penalty",
-                    problem.stage_inequality_constr_soft_penalty(k)(0), 100.0, 1e-12);
+        check_close("ineq soft penalty quad",
+                    problem.stage_inequality_constr_soft_penalty(k).quad(0),
+                    100.0, 1e-12);
 
         const auto lin = problem.stage_linear_constr(k);
         const double val = (lin.A * x + lin.B * u)(0);

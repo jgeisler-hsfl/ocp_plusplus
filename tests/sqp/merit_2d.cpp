@@ -115,7 +115,7 @@ public:
     ineq_pen_t stage_inequality_constr_soft_penalty(int) const
     {
         ineq_pen_t pen;
-        pen(0) = 4.0;
+        pen.quad(0) = 4.0;
         return pen;
     }
 
@@ -124,7 +124,7 @@ public:
         state_box_t spec;
         spec.lo(0) = -10.0;
         spec.hi(0) = 10.0;
-        spec.soft_penalty.setZero();
+        spec.penalty = {};
         return spec;
     }
 
