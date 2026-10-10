@@ -136,8 +136,14 @@ def _split_h(lh, uh):
 def parse_c_sig(cpath, sym):
     """Parse the casadi ABI comment of `sym` from the C source file.
 
-    Returns (inputs, outputs) where each side is a list of (name, size) with
-    size None for dense (unannotated) arguments.
+    Returns (inputs, outputs) where each side is a list of (name, shape)
+    with shape one of:
+      * None          -- dense, unannotated argument
+      * int           -- dense vector of that size
+      * (r, c, None)  -- dense r-by-c matrix
+      * (r, c, nnz)   -- sparse r-by-c matrix with nnz nonzeros (CasADi
+                         column-major wire format: [nrow, ncol, dense_flag],
+                         then ncol+1 cumulative column ends, then row idxs)
     """
     with open(cpath) as fh:
         txt = fh.read()
@@ -148,21 +154,20 @@ def parse_c_sig(cpath, sym):
 
     def parse_side(s):
         out = []
-        for part in s.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            mm = re.match(r"[io]\d+\[([^\]]*)\]$", part)
-            if mm:
-                inner = mm.group(1)
-                if "nz" in inner or "," in inner:
-                    fail(f"sparse ABI argument {part!r} in {cpath} is "
-                         f"not supported")
-                out.append((part, 0 if inner == "" else int(inner)))
+        for mm in re.finditer(r"([io]\d+)(?:\[([^\]]*)\])?", s):
+            name = mm.group(1)
+            inner = mm.group(2)
+            if inner is None:
+                out.append((name, None))   # dense
             else:
-                if not re.match(r"[io]\d+$", part):
-                    fail(f"unrecognized ABI token {part!r} in {cpath}")
-                out.append((part, None))   # dense
+                m2 = re.match(r"(\d+)x(\d+)(?:,(\d+)nz)?$", inner)
+                if m2:
+                    out.append((name, (int(m2.group(1)),
+                                       int(m2.group(2)),
+                                       int(m2.group(3))
+                                       if m2.group(3) else None)))
+                else:
+                    out.append((name, 0 if inner == "" else int(inner)))
         return out
 
     return parse_side(m.group(1)), parse_side(m.group(2))
@@ -236,6 +241,40 @@ def _find_cfile(files, suffix, label):
             return f
     fail(f"no value function '{suffix}' for {label} in the external "
          f"function files: {files}")
+
+
+def _find_cfile_suffix(files, suffix, label):
+    """Find a derivative C file by its exact base-name suffix."""
+    for f in files or []:
+        if os.path.basename(f).endswith(suffix):
+            return f
+    fail(f"no derivative function '{suffix}' for {label} in the "
+         f"external function files: {files}")
+
+
+# Roles whose casadi function returns multiple outputs, mapped to the C++
+# dense member names in output order (None: output not stored; a nullptr is
+# passed as the res entry for it).
+_MULTI_OUT = {
+    "dyn_jac": ("F", "dFdx", "dFxdot", "dFdu"),
+    "cost_jac": ("val", "grad"),
+    "cost0_jac": ("val", "grad"),
+    "cost_e_jac": ("val", "grad"),
+    "cost_jac_hess": ("val", "grad", "hess", None, None),
+    "cost0_jac_hess": ("val", "grad", "hess", None, None),
+    "cost_e_jac_hess": ("val", "grad", "hess", None, None),
+    # NONLINEAR_LS cost y-Jacobian: o0 = y (skipped), o1 = dy/d[u;x]
+    # (transposed, rows in [u;x] order), o2 = empty (nullptr).
+    "cost_y_jac": (None, "Jt", None),
+    "cost0_y_jac": (None, "Jt", None),
+    "cost_e_y_jac": (None, "Jt", None),
+    # Nonlinear h-constraint Jacobian: o0 = h (skipped, value fn has it),
+    # o1 = dh/d[u;x] (transposed, rows in [u;x] order), o2 = dummy.
+    "h_jac": (None, "Jt", None),
+    "h_e_jac": (None, "Jt", None),
+    # Explicit-ODE forward VDE (custom struct; member names unused).
+    "ode_jac": ("f", "Sx", "Su"),
+}
 
 
 def load_spec(path):
@@ -575,18 +614,43 @@ def load_spec(path):
             return
         seen.add(sym)
         ins, outs = parse_c_sig(cfile, sym)
-        if len(outs) != 1:
+        if role not in _MULTI_OUT and len(outs) != 1:
             fail(f"casadi output of {sym} is not a single vector")
-        # Only the DAE residual carries an xdot slot; cost/constraint
-        # functions never take xdot, regardless of integrator kind.
-        plan_kind = "dae" if (role == "ode" and itype == "IRK") else "ode"
-        plan = plan_args(ins, plan_kind, nx, nu, np_, terminal)
+        if role == "ode_jac":
+            # Non-standard signature (x, Sx, Su, u, [p]); emitted by
+            # _emit_ode_jac_struct, the canonical plan is not used.
+            plan = []
+        else:
+            # Only the DAE residual / its Jacobian carry an xdot slot;
+            # cost/constraint functions never take xdot, regardless of
+            # integrator kind.
+            plan_kind = "dae" if role in ("ode", "dyn_jac") and itype == "IRK" \
+                else "ode"
+            plan = plan_args(ins, plan_kind, nx, nu, np_, terminal)
         cfuns.append({"sym": sym, "path": cfile, "role": role,
-                      "plan": plan, "terminal": terminal})
+                      "plan": plan, "terminal": terminal, "outs": outs,
+                      "n_in": len(ins)})
 
     add_cfun(spec["dyn_c"],
              os.path.splitext(os.path.basename(spec["dyn_c"]))[0],
              "ode", False)
+    if itype == "IRK":
+        spec["dyn_jac_c"] = _find_cfile_suffix(
+            model_files, "impl_dae_fun_jac_x_xdot_u.c", "dynamics")
+        add_cfun(spec["dyn_jac_c"],
+                 os.path.splitext(os.path.basename(spec["dyn_jac_c"]))[0],
+                 "dyn_jac", False)
+    elif itype == "ERK":
+        # Explicit ODE: the analytic RHS Jacobian comes from the forward
+        # VDE (x, Sx, Su, u, [p]) -> (f, df/dx, df/du).  Optional: when
+        # the generated file is absent the generator keeps the FD Jacobian.
+        vde_c = next((m for m in model_files
+                      if m.endswith("_vde_forw.c")), None)
+        if vde_c is not None:
+            spec["ode_jac_c"] = vde_c
+            add_cfun(vde_c,
+                     os.path.splitext(os.path.basename(vde_c))[0],
+                     "ode_jac", False)
     for key, role, terminal in (("cost_stage", "cost", False),
                                 ("cost_stage0", "cost0", False),
                                 ("cost_term", "cost_e", True),
@@ -597,6 +661,55 @@ def load_spec(path):
             add_cfun(block["cfile"],
                      os.path.splitext(os.path.basename(block["cfile"]))[0],
                      role, terminal)
+    # EXTERNAL cost scopes additionally have casadi gradient / Hessian
+    # functions (value, grad[, hess]); register them for analytic derivs.
+    ext_roles = (("cost_stage", "cost_jac", "cost_jac_hess", False),
+                 ("cost_stage0", "cost0_jac", "cost0_jac_hess", False),
+                 ("cost_term", "cost_e_jac", "cost_e_jac_hess", True))
+    for key, jac_role, hess_role, terminal in ext_roles:
+        block = spec[key]
+        if not (block and block["type"] == "EXTERNAL"):
+            continue
+        suf = block["suffix"]
+        for role, fsuf in ((jac_role, "_fun_jac.c"),
+                           (hess_role, "_fun_jac_hess.c")):
+            cfile = _find_cfile_suffix(
+                cost_files, f"cost_ext_cost{suf}{fsuf}", block["label"])
+            add_cfun(cfile,
+                     os.path.splitext(os.path.basename(cfile))[0],
+                     role, terminal)
+    # NONLINEAR_LS cost scopes have a casadi y-Jacobian function
+    # (o1 = dy/d[u;x], transposed, rows in [u;x] order); register for
+    # analytic J.
+    nls_roles = (("cost_stage", "cost_y_jac", False),
+                 ("cost_stage0", "cost0_y_jac", False),
+                 ("cost_term", "cost_e_y_jac", True))
+    for key, jac_role, terminal in nls_roles:
+        block = spec[key]
+        if not (block and block["type"] == "NONLINEAR_LS"):
+            continue
+        suf = block["suffix"]
+        cfile = _find_cfile_suffix(
+            cost_files, f"cost_y{suf}_fun_jac_ut_xt.c", block["label"])
+        add_cfun(cfile,
+                 os.path.splitext(os.path.basename(cfile))[0],
+                 jac_role, terminal)
+    # Nonlinear h-constraint scopes may have a casadi Jacobian function
+    # (o1 = dh/d[u;x], transposed, rows in [u;x] order).  Optional: if the
+    # .c file is absent the generator keeps the FD Jacobian.
+    for key, role, terminal in (("h", "h_jac", False),
+                                ("h_t", "h_e_jac", True)):
+        block = spec[key]
+        if not (block and block.get("cfile")):
+            continue
+        base = os.path.splitext(os.path.basename(block["cfile"]))[0]
+        jname = base + "_jac_uxt_zt.c"
+        jfile = next((f for f in ocp_files
+                      if os.path.basename(f) == jname), None)
+        if jfile is None:
+            continue
+        block["jac_cfile"] = jfile
+        add_cfun(jfile, base + "_jac_uxt_zt", role, terminal)
     spec["cfuns"] = cfuns
     spec["c_files"] = sorted({f["path"] for f in cfuns})
     return spec
@@ -651,8 +764,16 @@ def wvec(values):
 
 
 INF = "inf_"
-_ROLE_NAMES = {"ode": "Dyn", "cost": "Cost", "cost0": "Cost0",
-               "cost_e": "CostE", "h": "H", "h_e": "HE"}
+_ROLE_NAMES = {"ode": "Dyn", "dyn_jac": "DynJac", "cost": "Cost",
+               "cost0": "Cost0", "cost_e": "CostE", "h": "H", "h_e": "HE",
+               "cost_jac": "CostJac", "cost0_jac": "Cost0Jac",
+                "cost_e_jac": "CostEJac", "cost_jac_hess": "CostJacHess",
+                "cost0_jac_hess": "Cost0JacHess",
+                "cost_e_jac_hess": "CostEJacHess", "cost_y_jac": "CostYJac",
+                "cost0_y_jac": "Cost0YJac",
+                "cost_e_y_jac": "CostEYJac",
+                "h_jac": "HJac", "h_e_jac": "HEJac",
+                "ode_jac": "OdeJac"}
 
 
 # ---------------------------------------------------------------------------
@@ -676,7 +797,233 @@ def _arg_entry(sym, sz):
     fail(f"unknown plan slot {sym!r}")
 
 
+def _void_body(plan):
+    """`(void)x;` statements for unused eval() parameters of a cfun."""
+    voids = []
+    if not any(s == "u" and sz > 0 for s, sz in plan):
+        voids.append("u")
+    if not any(s == "xdot" for s, sz in plan):
+        voids.append("xdot")
+    if not any(s == "p" and sz == 1 for s, sz in plan):
+        voids.append("p")
+    if not any(s == "t" and sz == 1 for s, sz in plan):
+        voids.append("t")
+    return " ".join(f"(void){v};" for v in voids)
+
+
+# Densification helpers for CasADi multi-output C functions (emitted into the
+# capi header, in ocp::detail, only when a multi-output role is registered).
+_SPARSITY_HELPERS = """
+// CasADi sparse wire format: the sparsity array is [nrow, ncol, dense_flag];
+// when sparse it is followed by ncol+1 cumulative column-end indices and nnz
+// row indices (column-major / CSC order).
+inline std::vector<int> casadi_sparsity(const int* sp)
+{
+    const int ncol = sp[1];
+    const int len = 3 + (sp[2] ? 0 : (ncol + 1 + sp[2 + ncol]));
+    return std::vector<int>(sp, sp + len);
+}
+
+/// Number of doubles a CasADi output occupies in the wire buffer.
+inline std::size_t casadi_nnz(const int* sp)
+{
+    return sp[2]
+        ? static_cast<std::size_t>(sp[0]) * static_cast<std::size_t>(sp[1])
+        : static_cast<std::size_t>(sp[2 + sp[1]]);
+}
+
+/// Densify a CasADi wire-format output (dense or sparse) into a
+/// column-major dense buffer.
+inline void casadi_densify(const int* sp, const double* raw, double* dense)
+{
+    const int nrow = sp[0];
+    const int ncol = sp[1];
+    if (sp[2])
+    {
+        for (int i = 0; i < nrow * ncol; ++i)
+            dense[i] = raw[i];
+    }
+    else
+    {
+        std::fill(dense, dense + nrow * ncol, 0.0);
+        const int* col = sp + 2;
+        const int* row = sp + ncol + 3;
+        for (int c = 0; c < ncol; ++c)
+            for (int i = col[c]; i < col[c + 1]; ++i)
+                dense[c * nrow + row[i]] = raw[i];
+    }
+}
+
+"""
+
+
+def _output_wire(oshape):
+    """(raw_size, dense_size, is_sparse) for a casadi output shape.
+
+    raw_size   -- doubles the casadi C function writes into the wire buffer
+                  (0 => no buffer needed, pass nullptr as res entry).
+    dense_size -- doubles in the densified column-major buffer (0 => none).
+    is_sparse  -- True when the wire buffer is in CasADi CSC wire format.
+    """
+    if oshape is None:            # unannotated scalar output
+        return 1, 1, False
+    if isinstance(oshape, int):   # dense vector
+        return (oshape, oshape, False) if oshape > 0 else (0, 0, False)
+    r, c, nnz = oshape            # matrix
+    if r == 0 or c == 0:
+        return 0, 0, False
+    if nnz is not None:
+        return nnz, r * c, True
+    return r * c, r * c, False
+
+
+def _emit_multi_out_struct(spec, name, f):
+    """Workspace struct for a multi-output casadi C function.
+
+    Each output in f['outs'] maps to a C++ member named by
+    _MULTI_OUT[role]. Dense outputs become plain member buffers; sparse
+    matrix outputs carry a sparsity pattern + raw wire buffer and are
+    densified (column-major) after every call. Unnamed or zero-size
+    outputs are passed as nullptr (casadi guards with if(res[i]!=0)).
+    """
+    sym = f["sym"]
+    role = _ROLE_NAMES[f["role"]]
+    plan = f["plan"]
+    outs = f["outs"]
+    names = _MULTI_OUT[f["role"]]
+    if len(names) != len(outs):
+        fail(f"{sym}: role '{f['role']}' expects {len(names)} outputs, "
+             f"found {len(outs)} in the ABI comment")
+
+    entries = ", ".join(_arg_entry(s, sz) for s, sz in plan)
+    void_body = _void_body(plan)
+    arg_desc = ", ".join(f"{s}[{sz}]" for s, sz in plan)
+
+    decls, ctor, res_entries, densify = [], [], [], []
+    for idx, ((oname, oshape), mname) in enumerate(zip(outs, names)):
+        if mname is None:
+            res_entries.append("nullptr")
+            continue
+        raw_sz, dense_sz, is_sp = _output_wire(oshape)
+        if raw_sz == 0:
+            res_entries.append("nullptr")
+            continue
+        if is_sp:
+            decls.append(f"    mutable double {mname}_[{dense_sz}];")
+            decls.append(f"    std::vector<int> sp_{mname}_;")
+            decls.append(f"    mutable std::vector<double> raw_{mname}_;")
+            ctor.append(f"        sp_{mname}_ = "
+                        f"casadi_sparsity({sym}_sparsity_out({idx}));")
+            ctor.append(f"        raw_{mname}_.resize("
+                        f"casadi_nnz(sp_{mname}_.data()));")
+            res_entries.append(f"raw_{mname}_.data()")
+            densify.append(f"        casadi_densify(sp_{mname}_.data(), "
+                           f"raw_{mname}_.data(), {mname}_);")
+        elif raw_sz == 1:
+            decls.append(f"    mutable double {mname}_;")
+            res_entries.append(f"&{mname}_")
+        else:
+            decls.append(f"    mutable double {mname}_[{raw_sz}];")
+            res_entries.append(f"{mname}_")
+
+    decls_body = "\n".join(decls)
+    ctor_body = ("\n".join(ctor) + "\n") if ctor else ""
+    densify_body = ("\n".join(densify) + "\n") if densify else ""
+    res_body = ",\n                            ".join(res_entries)
+    return f"""
+/// CasADi workspace + evaluator for {sym} (args: {arg_desc}).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct {name}{role}
+{{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+{decls_body}
+
+    {name}{role}()
+    {{
+        int sz_iw = 0, sz_w = 0;
+        (void){sym}_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+{ctor_body}    }}
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {{
+        {void_body}
+        const double* arg[{len(plan)}] = {{ {entries} }};
+        double* res[{len(outs)}] = {{ {res_body} }};
+        (void){sym}(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+{densify_body}    }}
+}};
+"""
+
+
+def _emit_ode_jac_struct(spec, name, f):
+    """Workspace struct for the explicit-ODE forward VDE (vde_forw).
+
+    Signature: (x, Sx, Su, u, [p]) -> (f, Sx', Su')  with
+    Sx' = (df/dx) Sx and Su' = (df/dx) Su + df/du.  eval() always calls
+    the VDE with Sx = I, Su = 0, so Sx_ = df/dx and Su_ = df/du
+    (both column-major); f_ holds the RHS (unused by the generated
+    problem code but required as a casadi output slot).
+    """
+    nx = spec["nx"]
+    nu = spec["nu"]
+    np_ = spec["np"]
+    sym = f["sym"]
+    role = _ROLE_NAMES[f["role"]]
+    f_sz = nx
+    sx_sz = nx * nx
+    su_sz = nx * nu
+    sx_init = ", ".join(
+        "1.0" if i % nx == i // nx else "0.0" for i in range(sx_sz))
+    su_init = ", ".join("0.0" for _ in range(su_sz))
+    n_in = f["n_in"]
+    if n_in not in (4, 5):
+        fail(f"{sym}: expected 4 or 5 inputs, found {n_in}")
+    tail = ", &p" if (n_in == 5 and np_ > 0) else (", nullptr" if n_in == 5 else "")
+    void_p = "        (void)p;\n" if not (n_in == 5 and np_ > 0) else ""
+    return f"""
+/// CasADi workspace + evaluator for {sym} (explicit-ODE forward VDE).
+/// eval() runs the VDE with Sx=I, Su=0: Sx_ = df/dx, Su_ = df/du.
+struct {name}{role}
+{{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double f_[{f_sz}];
+    mutable double Sx_[{sx_sz}];
+    mutable double Su_[{su_sz}];
+
+    {name}{role}()
+    {{
+        int sz_iw = 0, sz_w = 0;
+        (void){sym}_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+    }}
+
+    void eval(const double* x, const double* u, double p, double t) const
+    {{
+        (void)t;
+{void_p}        double Sx_in[{sx_sz}] = {{ {sx_init} }};
+        double Su_in[{su_sz}] = {{ {su_init} }};
+        const double* arg[{n_in}] = {{ x, Sx_in, Su_in, u{tail} }};
+        double* res[3] = {{ f_, Sx_, Su_ }};
+        (void){sym}(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+    }}
+}};
+"""
+
+
 def emit_capi(spec, name, json_path):
+    has_multi = any(f["role"] in _MULTI_OUT for f in spec["cfuns"])
+    extra_inc = "#include <algorithm>\n" if has_multi else ""
     lines = [f"""// {name}_capi.hpp
 // GENERATED by tools/acados2ocp_pp.py from {os.path.basename(json_path)} (hash {spec['hash']}).
 // Do not edit by hand.
@@ -687,7 +1034,7 @@ def emit_capi(spec, name, json_path):
 
 #pragma once
 
-#include <cstddef>
+{extra_inc}#include <cstddef>
 #include <vector>
 
 namespace ocp
@@ -704,23 +1051,25 @@ extern "C"
                    int* iw, double* w, int mem);
     int {f['sym']}_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
 """)
+        if f["role"] in _MULTI_OUT:
+            lines.append(f"    const int* {f['sym']}_sparsity_out(int i);\n")
     lines.append("}\n")
+
+    if has_multi:
+        lines.append(_SPARSITY_HELPERS)
 
     for f in spec["cfuns"]:
         sym = f["sym"]
         role = _ROLE_NAMES[f["role"]]
+        if f["role"] == "ode_jac":
+            lines.append(_emit_ode_jac_struct(spec, name, f))
+            continue
+        if f["role"] in _MULTI_OUT:
+            lines.append(_emit_multi_out_struct(spec, name, f))
+            continue
         plan = f["plan"]
         entries = ", ".join(_arg_entry(s, sz) for s, sz in plan)
-        voids = []
-        if not any(s == "u" and sz > 0 for s, sz in plan):
-            voids.append("u")
-        if not any(s == "xdot" for s, sz in plan):
-            voids.append("xdot")
-        if not any(s == "p" and sz == 1 for s, sz in plan):
-            voids.append("p")
-        if not any(s == "t" and sz == 1 for s, sz in plan):
-            voids.append("t")
-        void_body = " ".join(f"(void){v};" for v in voids)
+        void_body = _void_body(plan)
         arg_desc = ", ".join(f"{s}[{sz}]" for s, sz in plan)
         lines.append(f"""
 /// CasADi workspace + evaluator for {sym} (args: {arg_desc}).
@@ -773,7 +1122,10 @@ def emit_header(spec, name, json_path):
     t_end = cnum(spec["t_end"])
     pval = cnum(spec["parameter_values"][0])
     integ_inc = ("rk_explicit" if spec["integ_kind"] == "ERK"
-                 else "rk_implicit")
+                  else "rk_implicit")
+    # IRK Ode uses assert (calib) + std::abs; ERK needs neither.
+    std_inc = ("#include <cassert>\n#include <cmath>\n"
+               if spec["integ_kind"] == "IRK" else "")
 
     ng = len(spec["h"]["ineq"]) if spec["h"] else 0
     ne = len(spec["h"]["eq"]) if spec["h"] else 0
@@ -857,44 +1209,60 @@ struct {name}Dims
     // Per-component coefficient c_i of xdot in the implicit-DAE residual
     // F(x, xdot, u). For an ODE the residual is linear in xdot with a
     // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Calibrated once at construction so f() is
-    // correct regardless of which sign the codegen residual uses. The raw
-    // difference F1 - F0 carries ulp-level noise, so each c_i is snapped to
-    // exactly +/-1 (exact for ODE residuals).
+    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
+    // construction; the diagonal entries carry ulp-level noise, so each
+    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
+    // DAE row (|c_i| < 0.5) is not supported and aborts here.
     state_t c_ = state_t::Zero();
 
     {name}Ode()
     {{
-        state_t xref, zero, one, F0, F1;
+        state_t xref, xdot_one;
         control_t uref;
         for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
         uref.setConstant(0.05);
-        zero.setZero();
-        one.setConstant(1.0);
-        dyn_.eval(xref.data(), uref.data(), zero.data(), {p_use}, 0.0,
-                  F0.data());
-        dyn_.eval(xref.data(), uref.data(), one.data(), {p_use}, 0.0,
-                  F1.data());
+        xdot_one.setConstant(1.0);
+        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), {p_use}, 0.0);
         for (int i = 0; i < P::nx; ++i)
-            c_(i) = (F1(i) - F0(i) >= 0.0) ? 1.0 : -1.0;
+        {{
+            const double c = dyn_j_.dFxdot_[i * P::nx + i];
+            assert(std::abs(c) >= 0.5);
+            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
+        }}
     }}
 """
 
-    ode = f"""
-struct {name}Ode
-{{
-    using P = ocp::Problem<{name}Dims>;
-    using state_t   = typename P::state_t;
-    using control_t = typename P::control_t;
-    using dyn_df_dx_t = typename P::dyn_df_dx_t;
-    using dyn_df_du_t = typename P::dyn_df_du_t;
-
-    detail::{name}Dyn dyn_;
-    double {p_use} = {pval};
-{calib}
-    {f_body}
-
-    // Central finite differences of f(x, u, t) w.r.t. x and u.
+    if spec["integ_kind"] == "IRK":
+        jac_body = f"""    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
+    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
+    void jacobian(const state_t& x, const control_t& u, double t,
+                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    {{
+        const state_t zero = state_t::Zero();
+        dyn_j_.eval(x.data(), u.data(), zero.data(), {p_use}, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
+    }}"""
+    elif spec.get("ode_jac_c"):
+        jac_body = f"""    // Analytic dynamics Jacobian from the explicit-ODE forward VDE:
+    // vde_forw(x, I, 0, u) -> (f, df/dx, df/du).
+    void jacobian(const state_t& x, const control_t& u, double t,
+                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    {{
+        dyn_vde_.eval(x.data(), u.data(), {p_use}, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                df_dx(i, j) = dyn_vde_.Sx_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                df_du(i, j) = dyn_vde_.Su_[j * P::nx + i];
+    }}"""
+    else:
+        jac_body = f"""    // Central finite differences of f(x, u, t) w.r.t. x and u.
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {{
@@ -913,7 +1281,29 @@ struct {name}Ode
             um(j) -= h;
             df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
         }}
-    }}
+    }}"""
+
+    dyn_jac_mem = ""
+    if spec["integ_kind"] == "IRK":
+        dyn_jac_mem = f"    detail::{name}DynJac dyn_j_;\n"
+    elif spec.get("ode_jac_c"):
+        dyn_jac_mem = f"    detail::{name}OdeJac dyn_vde_;\n"
+
+    ode = f"""
+struct {name}Ode
+{{
+    using P = ocp::Problem<{name}Dims>;
+    using state_t   = typename P::state_t;
+    using control_t = typename P::control_t;
+    using dyn_df_dx_t = typename P::dyn_df_dx_t;
+    using dyn_df_du_t = typename P::dyn_df_du_t;
+
+    detail::{name}Dyn dyn_;
+{dyn_jac_mem}    double {p_use} = {pval};
+{calib}
+    {f_body}
+
+{jac_body}
 }};
 """
 
@@ -1051,6 +1441,9 @@ using {name}Integ =
             mem.append(f"    Eigen::Matrix<double, {ny}, {ny}> {prefix}W_{{}};")
             mem.append(f"    Eigen::Matrix<double, {ny}, 1> {prefix}yref_{{}};")
             mem.append(f"    detail::{name}{role} ws_{prefix}_;")
+            jy_role = "CostEYJac" if terminal else (
+                "Cost0YJac" if prefix == "c0" else "CostYJac")
+            mem.append(f"    detail::{name}{jy_role} ws_{prefix}_jy_;")
             ctor.append(f"        {prefix}W_ = Eigen::Map<const "
                         f"Eigen::Matrix<double, {ny}, {ny}>>"
                         f"({prefix}W_data);")
@@ -1086,16 +1479,11 @@ using {name}Integ =
     Eigen::Matrix<double, {ny}, {nx}> {prefix}_jy(const state_t& x,
                                                   double t) const
     {{
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, {ny}, {nx}> J;
-        for (int j = 0; j < {nx}; ++j)
-        {{
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = ({prefix}_y(xp, t) - {prefix}_y(xm, t)) / (2.0 * h);
-        }}
-        return J;
+        ws_{prefix}_jy_.eval(x.data(), nullptr, nullptr, {p_cls}, t);
+        // o1 is dy/dx (nx x ny), column-major; J = o1^T (ny x nx).
+        const auto Jt = Eigen::Map<const Eigen::Matrix<double, {nx}, {ny}>>(
+            ws_{prefix}_jy_.Jt_);
+        return Jt.transpose();
     }}""")
             else:
                 meth.append(f"""    double {prefix}_value(const state_t& x, const control_t& u,
@@ -1144,33 +1532,30 @@ using {name}Integ =
     }}
 
     Eigen::Matrix<double, {ny}, {nx + nu}> {prefix}_jy(const state_t& x,
-                                                       const control_t& u,
-                                                       double t) const
+                                                        const control_t& u,
+                                                        double t) const
     {{
-        const double h = 1.0e-6;
+        ws_{prefix}_jy_.eval(x.data(), u.data(), nullptr, {p_cls}, t);
+        // o1 is dy/d[u;x] ((nx+nu) x ny), column-major; rows 0..nu-1 = Ju^T,
+        // rows nu.. = Jx^T.  Assemble J = [Jx | Ju] (ny x (nx+nu)).
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, {nx + nu}, {ny}>>(
+            ws_{prefix}_jy_.Jt_);
         Eigen::Matrix<double, {ny}, {nx + nu}> J;
-        for (int j = 0; j < {nx}; ++j)
-        {{
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = ({prefix}_y(xp, u, t) - {prefix}_y(xm, u, t))
-                       / (2.0 * h);
-        }}
-        for (int j = 0; j < {nu}; ++j)
-        {{
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            J.col({nx} + j) =
-                ({prefix}_y(x, up, t) - {prefix}_y(x, um, t)) / (2.0 * h);
-        }}
+        J.leftCols<{nx}>() = Jt.bottomRows<{nx}>().transpose();
+        J.rightCols<{nu}>() = Jt.topRows<{nu}>().transpose();
         return J;
     }}""")
         else:  # EXTERNAL
             role = "CostE" if terminal else ("Cost0" if prefix == "c0"
                                              else "Cost")
+            jac_role = "CostEJac" if terminal else (
+                "Cost0Jac" if prefix == "c0" else "CostJac")
+            hess_role = "CostEJacHess" if terminal else (
+                "Cost0JacHess" if prefix == "c0" else "CostJacHess")
             mem.append(f"    detail::{name}{role} ws_{prefix}_;")
+            mem.append(f"    detail::{name}{jac_role} ws_{prefix}_jac_;")
+            mem.append(f"    detail::{name}{hess_role} ws_{prefix}_hess_;")
             if terminal:
                 meth.append(f"""    double {prefix}_value(const state_t& x, double t) const
     {{
@@ -1181,39 +1566,28 @@ using {name}Integ =
 
     term_grad_t {prefix}_grad(const state_t& x, double t) const
     {{
-        const double h = 1.0e-6;
+        ws_{prefix}_jac_.eval(x.data(), nullptr, nullptr, {p_cls}, t);
         term_grad_t g;
         for (int j = 0; j < {nx}; ++j)
-        {{
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            g(j) = ({prefix}_value(xp, t) - {prefix}_value(xm, t))
-                   / (2.0 * h);
-        }}
+            g(j) = ws_{prefix}_jac_.grad_[j];
         return g;
     }}
 
     term_hess_t {prefix}_hess(const state_t& x, double t) const
     {{
-        const double h = 1.0e-4;
+        ws_{prefix}_hess_.eval(x.data(), nullptr, nullptr, {p_cls}, t);
+        // The casadi Hessian is lower-triangular; mirror to a symmetric
+        // matrix.
         term_hess_t H;
         for (int i = 0; i < {nx}; ++i)
-            for (int j = i; j < {nx}; ++j)
-            {{
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                xpp(i) += h; xpp(j) += h;
-                xpm(i) += h; xpm(j) -= h;
-                xmp(i) -= h; xmp(j) += h;
-                xmm(i) -= h; xmm(j) -= h;
-                H(i, j) = ({prefix}_value(xpp, t) - {prefix}_value(xpm, t)
-                           - {prefix}_value(xmp, t)
-                           + {prefix}_value(xmm, t)) / (4.0 * h * h);
-                if (i != j) H(j, i) = H(i, j);
-            }}
+            for (int j = 0; j < {nx}; ++j)
+                H(i, j) = (i >= j)
+                    ? ws_{prefix}_hess_.hess_[j * {nx} + i]
+                    : ws_{prefix}_hess_.hess_[i * {nx} + j];
         return H;
     }}""")
             else:
+                n_full = nx + nu
                 meth.append(f"""    double {prefix}_value(const state_t& x, const control_t& u,
                           double t) const
     {{
@@ -1222,80 +1596,36 @@ using {name}Integ =
         return c;
     }}
 
+    // The casadi derivative of the EXTERNAL cost is emitted in [u; x]
+    // block order; the framework wants [x; u].
     stage_grad_t {prefix}_grad(const state_t& x, const control_t& u,
                                double t) const
     {{
-        const double h = 1.0e-6;
+        ws_{prefix}_jac_.eval(x.data(), u.data(), nullptr, {p_cls}, t);
         stage_grad_t g;
-        for (int j = 0; j < {nx}; ++j)
-        {{
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            g(j) = ({prefix}_value(xp, u, t) - {prefix}_value(xm, u, t))
-                   / (2.0 * h);
-        }}
-        for (int j = 0; j < {nu}; ++j)
-        {{
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            g({nx} + j) =
-                ({prefix}_value(x, up, t) - {prefix}_value(x, um, t))
-                / (2.0 * h);
-        }}
+        for (int i = 0; i < {nx}; ++i)
+            g(i) = ws_{prefix}_jac_.grad_[{nu} + i];
+        for (int i = 0; i < {nu}; ++i)
+            g({nx} + i) = ws_{prefix}_jac_.grad_[i];
         return g;
     }}
 
     stage_hess_t {prefix}_hess(const state_t& x, const control_t& u,
                                double t) const
     {{
-        const double h = 1.0e-4;
+        ws_{prefix}_hess_.eval(x.data(), u.data(), nullptr, {p_cls}, t);
         stage_hess_t H;
-        for (int i = 0; i < {nx}; ++i)
-            for (int j = i; j < {nx}; ++j)
+        const int N = {n_full};
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j)
             {{
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                xpp(i) += h; xpp(j) += h;
-                xpm(i) += h; xpm(j) -= h;
-                xmp(i) -= h; xmp(j) += h;
-                xmm(i) -= h; xmm(j) -= h;
-                H(i, j) = ({prefix}_value(xpp, u, t)
-                           - {prefix}_value(xpm, u, t)
-                           - {prefix}_value(xmp, u, t)
-                           + {prefix}_value(xmm, u, t)) / (4.0 * h * h);
-                if (i != j) H(j, i) = H(i, j);
-            }}
-        for (int i = 0; i < {nx}; ++i)
-            for (int j = 0; j < {nu}; ++j)
-            {{
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                xpp(i) += h; upp(j) += h;
-                xpm(i) += h; upm(j) -= h;
-                xmp(i) -= h; ump(j) += h;
-                xmm(i) -= h; umm(j) -= h;
-                H(i, {nx} + j) =
-                    ({prefix}_value(xpp, upp, t) - {prefix}_value(xpm, upm, t)
-                     - {prefix}_value(xmp, ump, t)
-                     + {prefix}_value(xmm, umm, t)) / (4.0 * h * h);
-                H({nx} + j, i) = H(i, {nx} + j);
-            }}
-        for (int i = 0; i < {nu}; ++i)
-            for (int j = i; j < {nu}; ++j)
-            {{
-                state_t z = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                upp(i) += h; upp(j) += h;
-                upm(i) += h; upm(j) -= h;
-                ump(i) -= h; ump(j) += h;
-                umm(i) -= h; umm(j) -= h;
-                H({nx} + i, {nx} + j) =
-                    ({prefix}_value(z, upp, t) - {prefix}_value(z, upm, t)
-                     - {prefix}_value(z, ump, t)
-                     + {prefix}_value(z, umm, t)) / (4.0 * h * h);
-                if (i != j)
-                    H({nx} + j, {nx} + i) = H({nx} + i, {nx} + j);
+                // casadi Hessian is lower-triangular in [u; x] order;
+                // symmetrize + reorder to [x; u].
+                const int ri = (i < {nx}) ? (i + {nu}) : (i - {nx});
+                const int cj = (j < {nx}) ? (j + {nu}) : (j - {nx});
+                H(i, j) = (ri >= cj)
+                    ? ws_{prefix}_hess_.hess_[cj * N + ri]
+                    : ws_{prefix}_hess_.hess_[ri * N + cj];
             }}
         return H;
     }}""")
@@ -1426,39 +1756,60 @@ using {name}Integ =
 
     if h and (h["ineq"] or h["eq"]):
         if h["cfile"]:
+            nh_raw = len(h["lh"])
             members.append(f"    detail::{name}H ws_h_;")
-            helpers.append(f"""    Eigen::Matrix<double, {nh}, 1> hval(const state_t& x,
+            if h.get("jac_cfile"):
+                members.append(f"    detail::{name}HJac ws_h_jac_;")
+            hval_body = f"""    Eigen::Matrix<double, {nh}, 1> hval(const state_t& x,
                                          const control_t& u,
                                          double t) const
     {{
         Eigen::Matrix<double, {nh}, 1> h;
         ws_h_.eval(x.data(), u.data(), nullptr, {p_cls}, t, h.data());
         return h;
-    }}
-
-    Eigen::Matrix<double, {nh}, {nx + nu}> hjac(const state_t& x,
-                                                const control_t& u,
-                                                double t) const
+    }}"""
+            if h.get("jac_cfile"):
+                hjac_body = f"""    Eigen::Matrix<double, {nh_raw}, {nx + nu}> hjac(
+        const state_t& x, const control_t& u, double t) const
     {{
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, {nh}, {nx + nu}> J;
+        ws_h_jac_.eval(x.data(), u.data(), nullptr, {p_cls}, t);
+        // o1 is dh/d[u;x] ((nx+nu) x nh_raw), column-major; rows 0..nu-1
+        // = (dh/du)^T, rows nu.. = (dh/dx)^T.  Jh = [dh/dx | dh/du].
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, {nx + nu}, {nh_raw}>>(
+            ws_h_jac_.Jt_);
+        Eigen::Matrix<double, {nh_raw}, {nx + nu}> J;
+        J.leftCols<{nx}>() = Jt.bottomRows<{nx}>().transpose();
+        J.rightCols<{nu}>() = Jt.topRows<{nu}>().transpose();
+        return J;
+    }}"""
+            else:
+                hjac_body = f"""    Eigen::Matrix<double, {nh_raw}, {nx + nu}> hjac(
+        const state_t& x, const control_t& u, double t) const
+    {{
+        const double hstep = 1.0e-6;
+        Eigen::Matrix<double, {nh_raw}, {nx + nu}> J;
         for (int j = 0; j < {nx}; ++j)
         {{
             state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (hval(xp, u, t) - hval(xm, u, t)) / (2.0 * h);
+            xp(j) += hstep;
+            xm(j) -= hstep;
+            J.col(j) = (hval(xp, u, t).topRows<{nh_raw}>()
+                        - hval(xm, u, t).topRows<{nh_raw}>())
+                       / (2.0 * hstep);
         }}
         for (int j = 0; j < {nu}; ++j)
         {{
             control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            J.col({nx} + j) = (hval(x, up, t) - hval(x, um, t))
-                              / (2.0 * h);
+            up(j) += hstep;
+            um(j) -= hstep;
+            J.col({nx} + j) = (hval(x, up, t).topRows<{nh_raw}>()
+                               - hval(x, um, t).topRows<{nh_raw}>())
+                              / (2.0 * hstep);
         }}
         return J;
-    }}""")
+    }}"""
+            helpers.append(hval_body + "\n\n" + hjac_body)
         if h["ineq"]:
             val_lines = "\n".join(
                 (f"        g({r}) = {cnum(h['lh'][i])} - h({i});"
@@ -1573,28 +1924,46 @@ using {name}Integ =
     nh_t = (len(h_t["ineq"]) + len(h_t["eq"])) if h_t else 0
     if h_t and (h_t["ineq"] or h_t["eq"]):
         if h_t["cfile"]:
+            nh_raw_t = len(h_t["lh"])
             members.append(f"    detail::{name}HE ws_he_;")
-            helpers.append(f"""    Eigen::Matrix<double, {nh_t}, 1> htval(const state_t& x) const
+            if h_t.get("jac_cfile"):
+                members.append(f"    detail::{name}HEJac ws_he_jac_;")
+            htval_body = f"""    Eigen::Matrix<double, {nh_t}, 1> htval(const state_t& x) const
     {{
         Eigen::Matrix<double, {nh_t}, 1> h;
         ws_he_.eval(x.data(), nullptr, nullptr, {p_cls}, {t_end},
                     h.data());
         return h;
-    }}
-
-    Eigen::Matrix<double, {nh_t}, {nx}> htjac(const state_t& x) const
+    }}"""
+            if h_t.get("jac_cfile"):
+                htjac_body = f"""    Eigen::Matrix<double, {nh_raw_t}, {nx}> htjac(
+        const state_t& x) const
     {{
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, {nh_t}, {nx}> J;
+        ws_he_jac_.eval(x.data(), nullptr, nullptr, {p_cls}, {t_end});
+        // o1 is dh/dx flattened (nx x nh_raw_t, column-major); Jh = o1^T.
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, {nx}, {nh_raw_t}>>(
+            ws_he_jac_.Jt_);
+        return Jt.transpose();
+    }}"""
+            else:
+                htjac_body = f"""    Eigen::Matrix<double, {nh_raw_t}, {nx}> htjac(
+        const state_t& x) const
+    {{
+        const double hstep = 1.0e-6;
+        Eigen::Matrix<double, {nh_raw_t}, {nx}> J;
         for (int j = 0; j < {nx}; ++j)
         {{
             state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (htval(xp) - htval(xm)) / (2.0 * h);
+            xp(j) += hstep;
+            xm(j) -= hstep;
+            J.col(j) = (htval(xp).topRows<{nh_raw_t}>()
+                        - htval(xm).topRows<{nh_raw_t}>())
+                       / (2.0 * hstep);
         }}
         return J;
-    }}""")
+    }}"""
+            helpers.append(htval_body + "\n\n" + htjac_body)
         if h_t["ineq"]:
             val_lines = "\n".join(
                 (f"        g({r}) = {cnum(h_t['lh'][i])} - h({i});"
@@ -1844,7 +2213,7 @@ private:
 
 #include "{name}_capi.hpp"
 
-#include <Eigen/Dense>
+{std_inc}#include <Eigen/Dense>
 #include <limits>
 
 namespace ocp

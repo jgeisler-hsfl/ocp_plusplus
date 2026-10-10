@@ -51,6 +51,92 @@ int main()
     check(std::fabs(p.terminal_cost_value(xz)) < 1e-12,
           "ref terminal cost ~ 0");
 
+    // (A2) analytic cost derivatives cross-checked against finite
+    //      differences of the (independently generated) value functions
+    {
+        constexpr int nxf = P5B::nx;
+        constexpr int nuf = P5B::nu;
+        constexpr int m = nxf + nuf;
+        P5B::state_t x;
+        x << 0.31, -0.57;
+        P5B::control_t u;
+        u << 0.42;
+        const double h = 1.0e-5;
+
+        // stage (k=1 -> path cost path)
+        const auto sval = [&](const P5B::state_t& xs,
+                              const P5B::control_t& us) {
+            return p.stage_cost_value(1, xs, us);
+        };
+        double sv;
+        P5B::stage_grad_t sg;
+        p.stage_cost_value_grad(1, x, u, sv, sg);
+        for (int i = 0; i < nxf; ++i)
+        {
+            P5B::state_t a = x, b = x, c = x, d = x;
+            a(i) += 2 * h; b(i) += h; c(i) -= h; d(i) -= 2 * h;
+            const double fd = (-sval(a, u) + 8 * sval(b, u)
+                              - 8 * sval(c, u) + sval(d, u)) / (12.0 * h);
+            check(std::fabs(sg(i) - fd) < 1e-6, "stage grad x vs FD");
+        }
+        for (int j = 0; j < nuf; ++j)
+        {
+            P5B::control_t a = u, b = u, c = u, d = u;
+            P5B::state_t x0 = x;
+            a(j) += 2 * h; b(j) += h; c(j) -= h; d(j) -= 2 * h;
+            const double fd = (-sval(x0, a) + 8 * sval(x0, b)
+                              - 8 * sval(x0, c) + sval(x0, d)) / (12.0 * h);
+            check(std::fabs(sg(nxf + j) - fd) < 1e-6, "stage grad u vs FD");
+        }
+        P5B::stage_hess_t SH;
+        p.stage_cost_value_grad_hess(1, x, u, sv, sg, SH);
+        const double h2 = 1.0e-4;
+        for (int j = 0; j < m; ++j)
+        {
+            P5B::state_t xp = x, xm = x;
+            P5B::control_t up = u, um = u;
+            if (j < nxf) { xp(j) += h2; xm(j) -= h2; }
+            else         { up(j - nxf) += h2; um(j - nxf) -= h2; }
+            double vv;
+            P5B::stage_grad_t gp, gm;
+            p.stage_cost_value_grad(1, xp, up, vv, gp);
+            p.stage_cost_value_grad(1, xm, um, vv, gm);
+            for (int i = 0; i < m; ++i)
+                check(std::fabs(SH(i, j) - (gp(i) - gm(i)) / (2.0 * h2)) < 1e-5,
+                      "stage hess vs FD");
+        }
+
+        // terminal
+        const auto tval = [&](const P5B::state_t& xs) {
+            return p.terminal_cost_value(xs);
+        };
+        double tv;
+        P5B::term_grad_t tg;
+        p.terminal_cost_value_grad(x, tv, tg);
+        for (int i = 0; i < nxf; ++i)
+        {
+            P5B::state_t a = x, b = x, c = x, d = x;
+            a(i) += 2 * h; b(i) += h; c(i) -= h; d(i) -= 2 * h;
+            const double fd = (-tval(a) + 8 * tval(b)
+                              - 8 * tval(c) + tval(d)) / (12.0 * h);
+            check(std::fabs(tg(i) - fd) < 1e-6, "term grad vs FD");
+        }
+        P5B::term_hess_t TH;
+        p.terminal_cost_value_grad_hess(x, tv, tg, TH);
+        for (int j = 0; j < nxf; ++j)
+        {
+            P5B::state_t xp = x, xm = x;
+            xp(j) += h2; xm(j) -= h2;
+            double vv;
+            P5B::term_grad_t gp, gm;
+            p.terminal_cost_value_grad(xp, vv, gp);
+            p.terminal_cost_value_grad(xm, vv, gm);
+            for (int i = 0; i < nxf; ++i)
+                check(std::fabs(TH(i, j) - (gp(i) - gm(i)) / (2.0 * h2)) < 1e-5,
+                      "term hess vs FD");
+        }
+    }
+
     // (B) SQP from a small nonzero warm start
     ocp::SqpOptions opts;
     opts.print_level = 0;

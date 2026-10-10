@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <vector>
 
@@ -22,6 +23,10 @@ extern "C"
     int p5probe_b_impl_dae_fun(const double** arg, double** res,
                    int* iw, double* w, int mem);
     int p5probe_b_impl_dae_fun_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    int p5probe_b_impl_dae_fun_jac_x_xdot_u(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_impl_dae_fun_jac_x_xdot_u_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_impl_dae_fun_jac_x_xdot_u_sparsity_out(int i);
     int p5probe_b_cost_ext_cost_fun(const double** arg, double** res,
                    int* iw, double* w, int mem);
     int p5probe_b_cost_ext_cost_fun_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
@@ -31,7 +36,72 @@ extern "C"
     int p5probe_b_cost_ext_cost_e_fun(const double** arg, double** res,
                    int* iw, double* w, int mem);
     int p5probe_b_cost_ext_cost_e_fun_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    int p5probe_b_cost_ext_cost_fun_jac(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_fun_jac_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_fun_jac_sparsity_out(int i);
+    int p5probe_b_cost_ext_cost_fun_jac_hess(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_fun_jac_hess_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_fun_jac_hess_sparsity_out(int i);
+    int p5probe_b_cost_ext_cost_0_fun_jac(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_0_fun_jac_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_0_fun_jac_sparsity_out(int i);
+    int p5probe_b_cost_ext_cost_0_fun_jac_hess(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_0_fun_jac_hess_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_0_fun_jac_hess_sparsity_out(int i);
+    int p5probe_b_cost_ext_cost_e_fun_jac(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_e_fun_jac_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_e_fun_jac_sparsity_out(int i);
+    int p5probe_b_cost_ext_cost_e_fun_jac_hess(const double** arg, double** res,
+                   int* iw, double* w, int mem);
+    int p5probe_b_cost_ext_cost_e_fun_jac_hess_work(int* sz_arg, int* sz_res, int* sz_iw, int* sz_w);
+    const int* p5probe_b_cost_ext_cost_e_fun_jac_hess_sparsity_out(int i);
 }
+
+// CasADi sparse wire format: the sparsity array is [nrow, ncol, dense_flag];
+// when sparse it is followed by ncol+1 cumulative column-end indices and nnz
+// row indices (column-major / CSC order).
+inline std::vector<int> casadi_sparsity(const int* sp)
+{
+    const int ncol = sp[1];
+    const int len = 3 + (sp[2] ? 0 : (ncol + 1 + sp[2 + ncol]));
+    return std::vector<int>(sp, sp + len);
+}
+
+/// Number of doubles a CasADi output occupies in the wire buffer.
+inline std::size_t casadi_nnz(const int* sp)
+{
+    return sp[2]
+        ? static_cast<std::size_t>(sp[0]) * static_cast<std::size_t>(sp[1])
+        : static_cast<std::size_t>(sp[2 + sp[1]]);
+}
+
+/// Densify a CasADi wire-format output (dense or sparse) into a
+/// column-major dense buffer.
+inline void casadi_densify(const int* sp, const double* raw, double* dense)
+{
+    const int nrow = sp[0];
+    const int ncol = sp[1];
+    if (sp[2])
+    {
+        for (int i = 0; i < nrow * ncol; ++i)
+            dense[i] = raw[i];
+    }
+    else
+    {
+        std::fill(dense, dense + nrow * ncol, 0.0);
+        const int* col = sp + 2;
+        const int* row = sp + ncol + 3;
+        for (int c = 0; c < ncol; ++c)
+            for (int i = col[c]; i < col[c + 1]; ++i)
+                dense[c * nrow + row[i]] = raw[i];
+    }
+}
+
 
 /// CasADi workspace + evaluator for p5probe_b_impl_dae_fun (args: x[2], xdot[2], u[1], z[0], p[0], t[0]).
 struct P5probeBDyn
@@ -56,6 +126,56 @@ struct P5probeBDyn
         (void)p5probe_b_impl_dae_fun(arg, res,
                     iw_.empty() ? nullptr : iw_.data(),
                     w_.empty() ? nullptr : w_.data(), 0);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_impl_dae_fun_jac_x_xdot_u (args: x[2], xdot[2], u[1], z[0], p[0], t[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBDynJac
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double F_[2];
+    mutable double dFdx_[4];
+    std::vector<int> sp_dFdx_;
+    mutable std::vector<double> raw_dFdx_;
+    mutable double dFxdot_[4];
+    std::vector<int> sp_dFxdot_;
+    mutable std::vector<double> raw_dFxdot_;
+    mutable double dFdu_[2];
+    std::vector<int> sp_dFdu_;
+    mutable std::vector<double> raw_dFdu_;
+
+    P5probeBDynJac()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_impl_dae_fun_jac_x_xdot_u_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+        sp_dFdx_ = casadi_sparsity(p5probe_b_impl_dae_fun_jac_x_xdot_u_sparsity_out(1));
+        raw_dFdx_.resize(casadi_nnz(sp_dFdx_.data()));
+        sp_dFxdot_ = casadi_sparsity(p5probe_b_impl_dae_fun_jac_x_xdot_u_sparsity_out(2));
+        raw_dFxdot_.resize(casadi_nnz(sp_dFxdot_.data()));
+        sp_dFdu_ = casadi_sparsity(p5probe_b_impl_dae_fun_jac_x_xdot_u_sparsity_out(3));
+        raw_dFdu_.resize(casadi_nnz(sp_dFdu_.data()));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)p; (void)t;
+        const double* arg[6] = { x, xdot, u, nullptr, nullptr, nullptr };
+        double* res[4] = { F_,
+                            raw_dFdx_.data(),
+                            raw_dFxdot_.data(),
+                            raw_dFdu_.data() };
+        (void)p5probe_b_impl_dae_fun_jac_x_xdot_u(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+        casadi_densify(sp_dFdx_.data(), raw_dFdx_.data(), dFdx_);
+        casadi_densify(sp_dFxdot_.data(), raw_dFxdot_.data(), dFxdot_);
+        casadi_densify(sp_dFdu_.data(), raw_dFdu_.data(), dFdu_);
     }
 };
 
@@ -134,6 +254,219 @@ struct P5probeBCostE
         (void)p5probe_b_cost_ext_cost_e_fun(arg, res,
                     iw_.empty() ? nullptr : iw_.data(),
                     w_.empty() ? nullptr : w_.data(), 0);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_fun_jac (args: x[2], u[1], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCostJac
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[3];
+
+    P5probeBCostJac()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_fun_jac_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, u, nullptr, nullptr };
+        double* res[2] = { &val_,
+                            grad_ };
+        (void)p5probe_b_cost_ext_cost_fun_jac(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_fun_jac_hess (args: x[2], u[1], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCostJacHess
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[3];
+    mutable double hess_[9];
+    std::vector<int> sp_hess_;
+    mutable std::vector<double> raw_hess_;
+
+    P5probeBCostJacHess()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_fun_jac_hess_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+        sp_hess_ = casadi_sparsity(p5probe_b_cost_ext_cost_fun_jac_hess_sparsity_out(2));
+        raw_hess_.resize(casadi_nnz(sp_hess_.data()));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, u, nullptr, nullptr };
+        double* res[5] = { &val_,
+                            grad_,
+                            raw_hess_.data(),
+                            nullptr,
+                            nullptr };
+        (void)p5probe_b_cost_ext_cost_fun_jac_hess(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+        casadi_densify(sp_hess_.data(), raw_hess_.data(), hess_);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_0_fun_jac (args: x[2], u[1], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCost0Jac
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[3];
+
+    P5probeBCost0Jac()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_0_fun_jac_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, u, nullptr, nullptr };
+        double* res[2] = { &val_,
+                            grad_ };
+        (void)p5probe_b_cost_ext_cost_0_fun_jac(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_0_fun_jac_hess (args: x[2], u[1], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCost0JacHess
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[3];
+    mutable double hess_[9];
+    std::vector<int> sp_hess_;
+    mutable std::vector<double> raw_hess_;
+
+    P5probeBCost0JacHess()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_0_fun_jac_hess_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+        sp_hess_ = casadi_sparsity(p5probe_b_cost_ext_cost_0_fun_jac_hess_sparsity_out(2));
+        raw_hess_.resize(casadi_nnz(sp_hess_.data()));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, u, nullptr, nullptr };
+        double* res[5] = { &val_,
+                            grad_,
+                            raw_hess_.data(),
+                            nullptr,
+                            nullptr };
+        (void)p5probe_b_cost_ext_cost_0_fun_jac_hess(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+        casadi_densify(sp_hess_.data(), raw_hess_.data(), hess_);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_e_fun_jac (args: x[2], u[0], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCostEJac
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[2];
+
+    P5probeBCostEJac()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_e_fun_jac_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)u; (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, nullptr, nullptr, nullptr };
+        double* res[2] = { &val_,
+                            grad_ };
+        (void)p5probe_b_cost_ext_cost_e_fun_jac(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+    }
+};
+
+/// CasADi workspace + evaluator for p5probe_b_cost_ext_cost_e_fun_jac_hess (args: x[2], u[0], z[0], p[0]).
+/// Multi-output; sparse matrix outputs are densified (column-major) into
+/// the fixed member buffers after every call.
+struct P5probeBCostEJacHess
+{
+    mutable std::vector<int> iw_;
+    mutable std::vector<double> w_;
+    mutable double val_;
+    mutable double grad_[2];
+    mutable double hess_[4];
+    std::vector<int> sp_hess_;
+    mutable std::vector<double> raw_hess_;
+
+    P5probeBCostEJacHess()
+    {
+        int sz_iw = 0, sz_w = 0;
+        (void)p5probe_b_cost_ext_cost_e_fun_jac_hess_work(nullptr, nullptr, &sz_iw, &sz_w);
+        iw_.resize(std::size_t(sz_iw));
+        w_.resize(std::size_t(sz_w));
+        sp_hess_ = casadi_sparsity(p5probe_b_cost_ext_cost_e_fun_jac_hess_sparsity_out(2));
+        raw_hess_.resize(casadi_nnz(sp_hess_.data()));
+    }
+
+    void eval(const double* x, const double* u, const double* xdot,
+              double p, double t) const
+    {
+        (void)u; (void)xdot; (void)p; (void)t;
+        const double* arg[4] = { x, nullptr, nullptr, nullptr };
+        double* res[5] = { &val_,
+                            grad_,
+                            raw_hess_.data(),
+                            nullptr,
+                            nullptr };
+        (void)p5probe_b_cost_ext_cost_e_fun_jac_hess(arg, res,
+                    iw_.empty() ? nullptr : iw_.data(),
+                    w_.empty() ? nullptr : w_.data(), 0);
+        casadi_densify(sp_hess_.data(), raw_hess_.data(), hess_);
     }
 };
 

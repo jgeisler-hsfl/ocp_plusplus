@@ -64,6 +64,7 @@ struct P5probeOde
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     detail::P5probeDyn dyn_;
+    detail::P5probeOdeJac dyn_vde_;
     double p_ = 0.0;
 
         // xdot = f_expl(x, u, t) directly from the explicit ODE function.
@@ -74,25 +75,18 @@ struct P5probeOde
         return r;
     }
 
-    // Central finite differences of f(x, u, t) w.r.t. x and u.
+    // Analytic dynamics Jacobian from the explicit-ODE forward VDE:
+    // vde_forw(x, I, 0, u) -> (f, df/dx, df/du).
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
-        const double h = 1.0e-6;
-        for (int j = 0; j < P::nx; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            df_dx.col(j) = (f(xp, u, t) - f(xm, u, t)) / (2.0 * h);
-        }
-        for (int j = 0; j < P::nu; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
-        }
+        dyn_vde_.eval(x.data(), u.data(), p_, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                df_dx(i, j) = dyn_vde_.Sx_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                df_du(i, j) = dyn_vde_.Su_[j * P::nx + i];
     }
 };
 
@@ -392,27 +386,18 @@ private:
     }
 
     Eigen::Matrix<double, 2, 4> cp_jy(const state_t& x,
-                                                       const control_t& u,
-                                                       double t) const
+                                                        const control_t& u,
+                                                        double t) const
     {
-        const double h = 1.0e-6;
+        ws_cp_jy_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        // o1 is dy/d[u;x] ((nx+nu) x ny), column-major; rows 0..nu-1 = Ju^T,
+        // rows nu.. = Jx^T.  Assemble J = [Jx | Ju] (ny x (nx+nu)).
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, 4, 2>>(
+            ws_cp_jy_.Jt_);
         Eigen::Matrix<double, 2, 4> J;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (cp_y(xp, u, t) - cp_y(xm, u, t))
-                       / (2.0 * h);
-        }
-        for (int j = 0; j < 2; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            J.col(2 + j) =
-                (cp_y(x, up, t) - cp_y(x, um, t)) / (2.0 * h);
-        }
+        J.leftCols<2>() = Jt.bottomRows<2>().transpose();
+        J.rightCols<2>() = Jt.topRows<2>().transpose();
         return J;
     }
     Eigen::Matrix<double, 2, 1> ct_y(const state_t& x,
@@ -426,16 +411,11 @@ private:
     Eigen::Matrix<double, 2, 2> ct_jy(const state_t& x,
                                                   double t) const
     {
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, 2, 2> J;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (ct_y(xp, t) - ct_y(xm, t)) / (2.0 * h);
-        }
-        return J;
+        ws_ct_jy_.eval(x.data(), nullptr, nullptr, 0.0, t);
+        // o1 is dy/dx (nx x ny), column-major; J = o1^T (ny x nx).
+        const auto Jt = Eigen::Map<const Eigen::Matrix<double, 2, 2>>(
+            ws_ct_jy_.Jt_);
+        return Jt.transpose();
     }
     Eigen::Matrix<double, 2, 1> hval(const state_t& x,
                                          const control_t& u,
@@ -446,27 +426,18 @@ private:
         return h;
     }
 
-    Eigen::Matrix<double, 2, 4> hjac(const state_t& x,
-                                                const control_t& u,
-                                                double t) const
+    Eigen::Matrix<double, 1, 4> hjac(
+        const state_t& x, const control_t& u, double t) const
     {
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, 2, 4> J;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (hval(xp, u, t) - hval(xm, u, t)) / (2.0 * h);
-        }
-        for (int j = 0; j < 2; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            J.col(2 + j) = (hval(x, up, t) - hval(x, um, t))
-                              / (2.0 * h);
-        }
+        ws_h_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        // o1 is dh/d[u;x] ((nx+nu) x nh_raw), column-major; rows 0..nu-1
+        // = (dh/du)^T, rows nu.. = (dh/dx)^T.  Jh = [dh/dx | dh/du].
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, 4, 1>>(
+            ws_h_jac_.Jt_);
+        Eigen::Matrix<double, 1, 4> J;
+        J.leftCols<2>() = Jt.bottomRows<2>().transpose();
+        J.rightCols<2>() = Jt.topRows<2>().transpose();
         return J;
     }
     Eigen::Matrix<double, 2, 1> htval(const state_t& x) const
@@ -477,23 +448,21 @@ private:
         return h;
     }
 
-    Eigen::Matrix<double, 2, 2> htjac(const state_t& x) const
+    Eigen::Matrix<double, 1, 2> htjac(
+        const state_t& x) const
     {
-        const double h = 1.0e-6;
-        Eigen::Matrix<double, 2, 2> J;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            J.col(j) = (htval(xp) - htval(xm)) / (2.0 * h);
-        }
-        return J;
+        ws_he_jac_.eval(x.data(), nullptr, nullptr, 0.0, 0.3);
+        // o1 is dh/dx flattened (nx x nh_raw_t, column-major); Jh = o1^T.
+        const auto Jt = Eigen::Map<
+            const Eigen::Matrix<double, 2, 1>>(
+            ws_he_jac_.Jt_);
+        return Jt.transpose();
     }
 
     Eigen::Matrix<double, 2, 2> cpW_{};
     Eigen::Matrix<double, 2, 1> cpyref_{};
     detail::P5probeCost ws_cp_;
+    detail::P5probeCostYJac ws_cp_jy_;
     Eigen::Matrix<double, 4, 2> c0Vx_{};
     Eigen::Matrix<double, 4, 4> c0W_{};
     Eigen::Matrix<double, 4, 1> c0yref_{};
@@ -501,10 +470,13 @@ private:
     Eigen::Matrix<double, 2, 2> ctW_{};
     Eigen::Matrix<double, 2, 1> ctyref_{};
     detail::P5probeCostE ws_ct_;
+    detail::P5probeCostEYJac ws_ct_jy_;
     detail::P5probeH ws_h_;
+    detail::P5probeHJac ws_h_jac_;
     Eigen::Matrix<double, 1, 2> linA_{};
     Eigen::Matrix<double, 1, 2> linB_{};
     detail::P5probeHE ws_he_;
+    detail::P5probeHEJac ws_he_jac_;
 };
 
 }  // namespace ocp

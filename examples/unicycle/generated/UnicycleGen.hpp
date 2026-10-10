@@ -16,6 +16,8 @@
 
 #include "UnicycleGen_capi.hpp"
 
+#include <cassert>
+#include <cmath>
 #include <Eigen/Dense>
 #include <limits>
 
@@ -64,31 +66,32 @@ struct UnicycleGenOde
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     detail::UnicycleGenDyn dyn_;
+    detail::UnicycleGenDynJac dyn_j_;
     double p_ = 0.0;
 
     // Per-component coefficient c_i of xdot in the implicit-DAE residual
     // F(x, xdot, u). For an ODE the residual is linear in xdot with a
     // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Calibrated once at construction so f() is
-    // correct regardless of which sign the codegen residual uses. The raw
-    // difference F1 - F0 carries ulp-level noise, so each c_i is snapped to
-    // exactly +/-1 (exact for ODE residuals).
+    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
+    // construction; the diagonal entries carry ulp-level noise, so each
+    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
+    // DAE row (|c_i| < 0.5) is not supported and aborts here.
     state_t c_ = state_t::Zero();
 
     UnicycleGenOde()
     {
-        state_t xref, zero, one, F0, F1;
+        state_t xref, xdot_one;
         control_t uref;
         for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
         uref.setConstant(0.05);
-        zero.setZero();
-        one.setConstant(1.0);
-        dyn_.eval(xref.data(), uref.data(), zero.data(), p_, 0.0,
-                  F0.data());
-        dyn_.eval(xref.data(), uref.data(), one.data(), p_, 0.0,
-                  F1.data());
+        xdot_one.setConstant(1.0);
+        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), p_, 0.0);
         for (int i = 0; i < P::nx; ++i)
-            c_(i) = (F1(i) - F0(i) >= 0.0) ? 1.0 : -1.0;
+        {
+            const double c = dyn_j_.dFxdot_[i * P::nx + i];
+            assert(std::abs(c) >= 0.5);
+            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
+        }
     }
 
         // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
@@ -103,25 +106,19 @@ struct UnicycleGenOde
         return r;
     }
 
-    // Central finite differences of f(x, u, t) w.r.t. x and u.
+    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
+    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
-        const double h = 1.0e-6;
-        for (int j = 0; j < P::nx; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            df_dx.col(j) = (f(xp, u, t) - f(xm, u, t)) / (2.0 * h);
-        }
-        for (int j = 0; j < P::nu; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
-        }
+        const state_t zero = state_t::Zero();
+        dyn_j_.eval(x.data(), u.data(), zero.data(), p_, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
     }
 };
 

@@ -53,6 +53,9 @@ enable_language(C)
 set(MC_MODEL_C examples/masses_chain/acados_codegen/masses_chain_model/masses_chain_impl_dae_fun.c)
 set_source_files_properties(${MC_MODEL_C} PROPERTIES
   COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+set(MC_DERIV_C examples/masses_chain/acados_codegen/masses_chain_model/masses_chain_impl_dae_fun_jac_x_xdot_u.c)
+set_source_files_properties(${MC_DERIV_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 add_executable(masses_chain examples/masses_chain/main.cpp ${MC_MODEL_C})
 target_include_directories(masses_chain PRIVATE include examples/masses_chain ${EIGEN3_INCLUDE_DIR})
 target_compile_options(masses_chain PRIVATE ${OCP_WARN_FLAGS})
@@ -75,7 +78,7 @@ target_compile_options(sqp_masses_chain PRIVATE ${OCP_WARN_FLAGS})
 #     --csrc examples/masses_chain/acados_codegen/masses_chain_model/masses_chain_impl_dae_fun.c
 add_executable(masseschaingen_gen
                examples/masses_chain/generated/masseschaingen_main.cpp
-               ${MC_MODEL_C})
+               ${MC_MODEL_C} ${MC_DERIV_C})
 target_include_directories(masseschaingen_gen
                            PRIVATE include examples/masses_chain/generated
                                    ${EIGEN3_INCLUDE_DIR})
@@ -84,7 +87,8 @@ target_compile_options(masseschaingen_gen PRIVATE ${OCP_WARN_FLAGS})
 # Generator equivalence check (Phase 1): proves the JSON-generated problem
 # class (tools/acados2ocp_pp.py) reproduces the hand-written port.
 add_executable(sqp_masses_chain_gen_equiv
-               tests/sqp_masses_chain/gen_equivalence.cpp ${MC_MODEL_C})
+               tests/sqp_masses_chain/gen_equivalence.cpp
+               ${MC_MODEL_C} ${MC_DERIV_C})
 target_include_directories(sqp_masses_chain_gen_equiv
                            PRIVATE include examples/masses_chain
                                    examples/masses_chain/generated
@@ -103,9 +107,12 @@ target_compile_options(sqp_masses_chain_gen_equiv PRIVATE ${OCP_WARN_FLAGS})
 set(PC_MODEL_C examples/pendulum_on_cart/acados_codegen/pendulum_model/pendulum_impl_dae_fun.c)
 set_source_files_properties(${PC_MODEL_C} PROPERTIES
   COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+set(PC_DERIV_C examples/pendulum_on_cart/acados_codegen/pendulum_model/pendulum_impl_dae_fun_jac_x_xdot_u.c)
+set_source_files_properties(${PC_DERIV_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 add_executable(pendulum_on_cart
                examples/pendulum_on_cart/generated/pendulumgen_main.cpp
-               ${PC_MODEL_C})
+               ${PC_MODEL_C} ${PC_DERIV_C})
 target_include_directories(pendulum_on_cart
                            PRIVATE include examples/pendulum_on_cart/generated
                                    ${EIGEN3_INCLUDE_DIR})
@@ -125,9 +132,12 @@ target_compile_options(pendulum_on_cart PRIVATE ${OCP_WARN_FLAGS})
 set(UN_MODEL_C examples/unicycle/acados_codegen/unicycle_model/unicycle_impl_dae_fun.c)
 set_source_files_properties(${UN_MODEL_C} PROPERTIES
   COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+set(UN_DERIV_C examples/unicycle/acados_codegen/unicycle_model/unicycle_impl_dae_fun_jac_x_xdot_u.c)
+set_source_files_properties(${UN_DERIV_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 add_executable(unicycle
                examples/unicycle/generated/unicyclegen_main.cpp
-               ${UN_MODEL_C})
+               ${UN_MODEL_C} ${UN_DERIV_C})
 target_include_directories(unicycle
                            PRIVATE include examples/unicycle/generated
                                    ${EIGEN3_INCLUDE_DIR})
@@ -136,14 +146,14 @@ target_compile_options(unicycle PRIVATE ${OCP_WARN_FLAGS})
 # ---- tests ----
 
 add_executable(sqp_pendulum
-               tests/sqp_pendulum/sqp_pendulum.cpp ${PC_MODEL_C})
+               tests/sqp_pendulum/sqp_pendulum.cpp ${PC_MODEL_C} ${PC_DERIV_C})
 target_include_directories(sqp_pendulum
                            PRIVATE include examples/pendulum_on_cart/generated
                                    ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_pendulum PRIVATE ${OCP_WARN_FLAGS})
 
 add_executable(sqp_unicycle
-               tests/sqp_unicycle/sqp_unicycle.cpp ${UN_MODEL_C})
+               tests/sqp_unicycle/sqp_unicycle.cpp ${UN_MODEL_C} ${UN_DERIV_C})
 target_include_directories(sqp_unicycle
                             PRIVATE include examples/unicycle/generated
                                     ${EIGEN3_INCLUDE_DIR})
@@ -168,8 +178,16 @@ foreach(p5f IN LISTS P5_MODEL_C)
   set_source_files_properties(${p5f} PROPERTIES
     COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 endforeach()
+set(P5_DERIV_C
+    examples/p5probe/acados_codegen/p5probe_cost/p5probe_cost_y_fun_jac_ut_xt.c
+    examples/p5probe/acados_codegen/p5probe_cost/p5probe_cost_y_e_fun_jac_ut_xt.c
+    examples/p5probe/acados_codegen/p5probe_constraints/p5probe_constr_h_fun_jac_uxt_zt.c
+    examples/p5probe/acados_codegen/p5probe_constraints/p5probe_constr_h_e_fun_jac_uxt_zt.c
+    examples/p5probe/acados_codegen/p5probe_model/p5probe_expl_vde_forw.c)
+set_source_files_properties(${P5_DERIV_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 add_executable(sqp_p5probe
-               tests/sqp_p5probe/sqp_p5probe.cpp ${P5_MODEL_C})
+               tests/sqp_p5probe/sqp_p5probe.cpp ${P5_MODEL_C} ${P5_DERIV_C})
 target_include_directories(sqp_p5probe
                            PRIVATE include examples/p5probe/generated
                                    ${EIGEN3_INCLUDE_DIR})
@@ -191,8 +209,17 @@ foreach(p5bf IN LISTS P5B_MODEL_C)
   set_source_files_properties(${p5bf} PROPERTIES
     COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 endforeach()
+set(P5B_DERIV_C examples/p5probe_b/acados_codegen/p5probe_b_model/p5probe_b_impl_dae_fun_jac_x_xdot_u.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_fun_jac.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_fun_jac_hess.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_0_fun_jac.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_0_fun_jac_hess.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_e_fun_jac.c
+    examples/p5probe_b/acados_codegen/p5probe_b_cost/p5probe_b_cost_ext_cost_e_fun_jac_hess.c)
+set_source_files_properties(${P5B_DERIV_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
 add_executable(sqp_p5probe_b
-               tests/sqp_p5probe_b/sqp_p5probe_b.cpp ${P5B_MODEL_C})
+               tests/sqp_p5probe_b/sqp_p5probe_b.cpp ${P5B_MODEL_C} ${P5B_DERIV_C})
 target_include_directories(sqp_p5probe_b
                            PRIVATE include examples/p5probe_b/generated
                                    ${EIGEN3_INCLUDE_DIR})

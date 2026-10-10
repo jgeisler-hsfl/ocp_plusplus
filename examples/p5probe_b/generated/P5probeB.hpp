@@ -16,6 +16,8 @@
 
 #include "P5probeB_capi.hpp"
 
+#include <cassert>
+#include <cmath>
 #include <Eigen/Dense>
 #include <limits>
 
@@ -64,31 +66,32 @@ struct P5probeBOde
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     detail::P5probeBDyn dyn_;
+    detail::P5probeBDynJac dyn_j_;
     double p_ = 0.0;
 
     // Per-component coefficient c_i of xdot in the implicit-DAE residual
     // F(x, xdot, u). For an ODE the residual is linear in xdot with a
     // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Calibrated once at construction so f() is
-    // correct regardless of which sign the codegen residual uses. The raw
-    // difference F1 - F0 carries ulp-level noise, so each c_i is snapped to
-    // exactly +/-1 (exact for ODE residuals).
+    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
+    // construction; the diagonal entries carry ulp-level noise, so each
+    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
+    // DAE row (|c_i| < 0.5) is not supported and aborts here.
     state_t c_ = state_t::Zero();
 
     P5probeBOde()
     {
-        state_t xref, zero, one, F0, F1;
+        state_t xref, xdot_one;
         control_t uref;
         for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
         uref.setConstant(0.05);
-        zero.setZero();
-        one.setConstant(1.0);
-        dyn_.eval(xref.data(), uref.data(), zero.data(), p_, 0.0,
-                  F0.data());
-        dyn_.eval(xref.data(), uref.data(), one.data(), p_, 0.0,
-                  F1.data());
+        xdot_one.setConstant(1.0);
+        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), p_, 0.0);
         for (int i = 0; i < P::nx; ++i)
-            c_(i) = (F1(i) - F0(i) >= 0.0) ? 1.0 : -1.0;
+        {
+            const double c = dyn_j_.dFxdot_[i * P::nx + i];
+            assert(std::abs(c) >= 0.5);
+            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
+        }
     }
 
         // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
@@ -103,25 +106,19 @@ struct P5probeBOde
         return r;
     }
 
-    // Central finite differences of f(x, u, t) w.r.t. x and u.
+    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
+    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
-        const double h = 1.0e-6;
-        for (int j = 0; j < P::nx; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            df_dx.col(j) = (f(xp, u, t) - f(xm, u, t)) / (2.0 * h);
-        }
-        for (int j = 0; j < P::nu; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
-        }
+        const state_t zero = state_t::Zero();
+        dyn_j_.eval(x.data(), u.data(), zero.data(), p_, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
     }
 };
 
@@ -228,80 +225,36 @@ public:
         return c;
     }
 
+    // The casadi derivative of the EXTERNAL cost is emitted in [u; x]
+    // block order; the framework wants [x; u].
     stage_grad_t cp_grad(const state_t& x, const control_t& u,
                                double t) const
     {
-        const double h = 1.0e-6;
+        ws_cp_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
         stage_grad_t g;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            g(j) = (cp_value(xp, u, t) - cp_value(xm, u, t))
-                   / (2.0 * h);
-        }
-        for (int j = 0; j < 1; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            g(2 + j) =
-                (cp_value(x, up, t) - cp_value(x, um, t))
-                / (2.0 * h);
-        }
+        for (int i = 0; i < 2; ++i)
+            g(i) = ws_cp_jac_.grad_[1 + i];
+        for (int i = 0; i < 1; ++i)
+            g(2 + i) = ws_cp_jac_.grad_[i];
         return g;
     }
 
     stage_hess_t cp_hess(const state_t& x, const control_t& u,
                                double t) const
     {
-        const double h = 1.0e-4;
+        ws_cp_hess_.eval(x.data(), u.data(), nullptr, 0.0, t);
         stage_hess_t H;
-        for (int i = 0; i < 2; ++i)
-            for (int j = i; j < 2; ++j)
+        const int N = 3;
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j)
             {
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                xpp(i) += h; xpp(j) += h;
-                xpm(i) += h; xpm(j) -= h;
-                xmp(i) -= h; xmp(j) += h;
-                xmm(i) -= h; xmm(j) -= h;
-                H(i, j) = (cp_value(xpp, u, t)
-                           - cp_value(xpm, u, t)
-                           - cp_value(xmp, u, t)
-                           + cp_value(xmm, u, t)) / (4.0 * h * h);
-                if (i != j) H(j, i) = H(i, j);
-            }
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 1; ++j)
-            {
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                xpp(i) += h; upp(j) += h;
-                xpm(i) += h; upm(j) -= h;
-                xmp(i) -= h; ump(j) += h;
-                xmm(i) -= h; umm(j) -= h;
-                H(i, 2 + j) =
-                    (cp_value(xpp, upp, t) - cp_value(xpm, upm, t)
-                     - cp_value(xmp, ump, t)
-                     + cp_value(xmm, umm, t)) / (4.0 * h * h);
-                H(2 + j, i) = H(i, 2 + j);
-            }
-        for (int i = 0; i < 1; ++i)
-            for (int j = i; j < 1; ++j)
-            {
-                state_t z = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                upp(i) += h; upp(j) += h;
-                upm(i) += h; upm(j) -= h;
-                ump(i) -= h; ump(j) += h;
-                umm(i) -= h; umm(j) -= h;
-                H(2 + i, 2 + j) =
-                    (cp_value(z, upp, t) - cp_value(z, upm, t)
-                     - cp_value(z, ump, t)
-                     + cp_value(z, umm, t)) / (4.0 * h * h);
-                if (i != j)
-                    H(2 + j, 2 + i) = H(2 + i, 2 + j);
+                // casadi Hessian is lower-triangular in [u; x] order;
+                // symmetrize + reorder to [x; u].
+                const int ri = (i < 2) ? (i + 1) : (i - 2);
+                const int cj = (j < 2) ? (j + 1) : (j - 2);
+                H(i, j) = (ri >= cj)
+                    ? ws_cp_hess_.hess_[cj * N + ri]
+                    : ws_cp_hess_.hess_[ri * N + cj];
             }
         return H;
     }
@@ -313,80 +266,36 @@ public:
         return c;
     }
 
+    // The casadi derivative of the EXTERNAL cost is emitted in [u; x]
+    // block order; the framework wants [x; u].
     stage_grad_t c0_grad(const state_t& x, const control_t& u,
                                double t) const
     {
-        const double h = 1.0e-6;
+        ws_c0_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
         stage_grad_t g;
-        for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            g(j) = (c0_value(xp, u, t) - c0_value(xm, u, t))
-                   / (2.0 * h);
-        }
-        for (int j = 0; j < 1; ++j)
-        {
-            control_t up = u, um = u;
-            up(j) += h;
-            um(j) -= h;
-            g(2 + j) =
-                (c0_value(x, up, t) - c0_value(x, um, t))
-                / (2.0 * h);
-        }
+        for (int i = 0; i < 2; ++i)
+            g(i) = ws_c0_jac_.grad_[1 + i];
+        for (int i = 0; i < 1; ++i)
+            g(2 + i) = ws_c0_jac_.grad_[i];
         return g;
     }
 
     stage_hess_t c0_hess(const state_t& x, const control_t& u,
                                double t) const
     {
-        const double h = 1.0e-4;
+        ws_c0_hess_.eval(x.data(), u.data(), nullptr, 0.0, t);
         stage_hess_t H;
-        for (int i = 0; i < 2; ++i)
-            for (int j = i; j < 2; ++j)
+        const int N = 3;
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j)
             {
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                xpp(i) += h; xpp(j) += h;
-                xpm(i) += h; xpm(j) -= h;
-                xmp(i) -= h; xmp(j) += h;
-                xmm(i) -= h; xmm(j) -= h;
-                H(i, j) = (c0_value(xpp, u, t)
-                           - c0_value(xpm, u, t)
-                           - c0_value(xmp, u, t)
-                           + c0_value(xmm, u, t)) / (4.0 * h * h);
-                if (i != j) H(j, i) = H(i, j);
-            }
-        for (int i = 0; i < 2; ++i)
-            for (int j = 0; j < 1; ++j)
-            {
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                xpp(i) += h; upp(j) += h;
-                xpm(i) += h; upm(j) -= h;
-                xmp(i) -= h; ump(j) += h;
-                xmm(i) -= h; umm(j) -= h;
-                H(i, 2 + j) =
-                    (c0_value(xpp, upp, t) - c0_value(xpm, upm, t)
-                     - c0_value(xmp, ump, t)
-                     + c0_value(xmm, umm, t)) / (4.0 * h * h);
-                H(2 + j, i) = H(i, 2 + j);
-            }
-        for (int i = 0; i < 1; ++i)
-            for (int j = i; j < 1; ++j)
-            {
-                state_t z = x;
-                control_t upp = u, upm = u, ump = u, umm = u;
-                upp(i) += h; upp(j) += h;
-                upm(i) += h; upm(j) -= h;
-                ump(i) -= h; ump(j) += h;
-                umm(i) -= h; umm(j) -= h;
-                H(2 + i, 2 + j) =
-                    (c0_value(z, upp, t) - c0_value(z, upm, t)
-                     - c0_value(z, ump, t)
-                     + c0_value(z, umm, t)) / (4.0 * h * h);
-                if (i != j)
-                    H(2 + j, 2 + i) = H(2 + i, 2 + j);
+                // casadi Hessian is lower-triangular in [u; x] order;
+                // symmetrize + reorder to [x; u].
+                const int ri = (i < 2) ? (i + 1) : (i - 2);
+                const int cj = (j < 2) ? (j + 1) : (j - 2);
+                H(i, j) = (ri >= cj)
+                    ? ws_c0_hess_.hess_[cj * N + ri]
+                    : ws_c0_hess_.hess_[ri * N + cj];
             }
         return H;
     }
@@ -399,36 +308,24 @@ public:
 
     term_grad_t ct_grad(const state_t& x, double t) const
     {
-        const double h = 1.0e-6;
+        ws_ct_jac_.eval(x.data(), nullptr, nullptr, 0.0, t);
         term_grad_t g;
         for (int j = 0; j < 2; ++j)
-        {
-            state_t xp = x, xm = x;
-            xp(j) += h;
-            xm(j) -= h;
-            g(j) = (ct_value(xp, t) - ct_value(xm, t))
-                   / (2.0 * h);
-        }
+            g(j) = ws_ct_jac_.grad_[j];
         return g;
     }
 
     term_hess_t ct_hess(const state_t& x, double t) const
     {
-        const double h = 1.0e-4;
+        ws_ct_hess_.eval(x.data(), nullptr, nullptr, 0.0, t);
+        // The casadi Hessian is lower-triangular; mirror to a symmetric
+        // matrix.
         term_hess_t H;
         for (int i = 0; i < 2; ++i)
-            for (int j = i; j < 2; ++j)
-            {
-                state_t xpp = x, xpm = x, xmp = x, xmm = x;
-                xpp(i) += h; xpp(j) += h;
-                xpm(i) += h; xpm(j) -= h;
-                xmp(i) -= h; xmp(j) += h;
-                xmm(i) -= h; xmm(j) -= h;
-                H(i, j) = (ct_value(xpp, t) - ct_value(xpm, t)
-                           - ct_value(xmp, t)
-                           + ct_value(xmm, t)) / (4.0 * h * h);
-                if (i != j) H(j, i) = H(i, j);
-            }
+            for (int j = 0; j < 2; ++j)
+                H(i, j) = (i >= j)
+                    ? ws_ct_hess_.hess_[j * 2 + i]
+                    : ws_ct_hess_.hess_[i * 2 + j];
         return H;
     }
 
@@ -439,8 +336,14 @@ private:
 
     state_t x0_{};
     detail::P5probeBCost ws_cp_;
+    detail::P5probeBCostJac ws_cp_jac_;
+    detail::P5probeBCostJacHess ws_cp_hess_;
     detail::P5probeBCost0 ws_c0_;
+    detail::P5probeBCost0Jac ws_c0_jac_;
+    detail::P5probeBCost0JacHess ws_c0_hess_;
     detail::P5probeBCostE ws_ct_;
+    detail::P5probeBCostEJac ws_ct_jac_;
+    detail::P5probeBCostEJacHess ws_ct_hess_;
 };
 
 }  // namespace ocp
