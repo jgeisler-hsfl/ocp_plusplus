@@ -67,6 +67,16 @@
 // at compile time by the `ode_supports_*` traits below and `static_assert`ed
 // or branch-selected at the integrator call sites (mirrors the `Problem`
 // stub approach): a nonlinear ODE that forgets `hess_prod` fails to compile.
+//
+// Derivative-source precedence (explicit integrator): when `f` is
+// dual-evaluable (i.e. `f` is a template in the scalar type, as for
+// AutoDiffOde), ExplicitRkIntegrator takes the integrator-level AD path
+// unconditionally (see `ode_f_evaluable_at`) and never calls user-supplied
+// `jacobian` / `hess_prod` of that ODE, even if they exist. The legacy
+// paths (threaded Jacobian, adjoint HVP sweep) — the only paths that use
+// user-supplied derivatives — are taken iff `f` is defined at `scalar_t`
+// only. To have the integrator use hand-written derivatives, do not make
+// `f` templated in the scalar type.
 
 #pragma once
 

@@ -45,6 +45,11 @@
 //   time by ode_f_evaluable_at (the ODE's f must be callable with the dual
 //   scalar type and return Matrix<D, nx, 1>).
 //
+//   Precedence: the AD path wins unconditionally. An ODE whose f is
+//   dual-evaluable never has its user-supplied jacobian / hess_prod called
+//   by this integrator, even if it provides them; the legacy (user-derivative)
+//   paths are taken iff f is defined at scalar_t only (see ode_model.hpp).
+//
 // Forward cache: the v-independent forward state of the hand-written-ODE
 // paths (stage states, stage derivatives K, raw stage Jacobians in the
 // workspace) is keyed on (x, u, t_k). A second call with the same key
