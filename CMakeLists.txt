@@ -46,6 +46,21 @@ add_executable(mass_spring examples/mass_spring/main.cpp)
 target_include_directories(mass_spring PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mass_spring PRIVATE ${OCP_WARN_FLAGS})
 
+# Tutorial companion examples (docs/tutorial/): minimal discrete problem
+# (chapters 2-3), continuous-time OCP with ERK/IRK (chapter 6), advanced
+# features (chapter 7).
+add_executable(tutorial_minimal examples/tutorial/minimal.cpp)
+target_include_directories(tutorial_minimal PRIVATE include ${EIGEN3_INCLUDE_DIR})
+target_compile_options(tutorial_minimal PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(tutorial_continuous examples/tutorial/continuous.cpp)
+target_include_directories(tutorial_continuous PRIVATE include ${EIGEN3_INCLUDE_DIR})
+target_compile_options(tutorial_continuous PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(tutorial_advanced examples/tutorial/advanced.cpp)
+target_include_directories(tutorial_advanced PRIVATE include ${EIGEN3_INCLUDE_DIR})
+target_compile_options(tutorial_advanced PRIVATE ${OCP_WARN_FLAGS})
+
 # masses_chain: ocp++ port of the acados masses_chain OCP. The dynamics are
 # the CasADi-generated implicit-DAE residual (compiled as C); the wrapper
 # (capi + Ode + ContinuousProblem subclass) and the SQP driver are C++.

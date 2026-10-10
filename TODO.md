@@ -14,5 +14,5 @@
 - [x] Test acados reimplementation with simple example from acados repo
 - [x] Test more examples from acados repo
 - [] add hess_prod to IRK
-- [] We should start to write some documentation/how to use, that explains these things, maybe even a tutorial with increasing levels of difficulty.
+- [x] We should start to write some documentation/how to use, that explains these things, maybe even a tutorial with increasing levels of difficulty.
 - [] rework all code documentation to be more precise, informative and not too long (doxygen style), name inputs and outputs. leave the genesis (reference to the implementation phases) and the acados original code only as supplementary info.

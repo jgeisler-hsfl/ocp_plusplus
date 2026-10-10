@@ -59,3 +59,12 @@ cmake --build build
 ```
 
 Only dependency: Eigen3 (header-only). C++17 required.
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — design principles behind the
+  interface.
+- [docs/tutorial/](docs/tutorial/README.md) — a hands-on tutorial, from
+  writing your first problem to advanced features (constraints, Hessian
+  models, continuous-time integrators, compile-time horizons, code
+  generation), with runnable companion examples under `examples/tutorial/`.
