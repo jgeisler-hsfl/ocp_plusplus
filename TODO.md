@@ -13,3 +13,6 @@
 - [PLANNED] investigate a way to implement a central "discovery"-map where all parts of a problem/solver-object can "register" their run-time mutable values (lists) like options and parameters. all values shall be alloc-free class members somewhere, only the "by-name"-access refs them from a map. every part of the problem has its own local list or lists (maps that ref values). the central registry maps theses lists/maps forming a hierarchie. maybe add a special accessor that takes complete value-"paths" and resolves them through the maps (of course handling nonexistent entries gracefully), like get("solver/hpimp/options/i_max") would return the value i_max that is an option in the hpipm solver.
 - [x] Test acados reimplementation with simple example from acados repo
 - [x] Test more examples from acados repo
+- [] add hess_prod to IRK
+- [] We should start to write some documentation/how to use, that explains these things, maybe even a tutorial with increasing levels of difficulty.
+- [] rework all code documentation to be more precise, informative and not too long (doxygen style), name inputs and outputs. leave the genesis (reference to the implementation phases) and the acados original code only as supplementary info.
