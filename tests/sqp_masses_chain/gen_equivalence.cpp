@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <cmath>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "masses_chain.hpp"               // hand-written: ocp::MassesChain
 #include "generated/MassesChainGen.hpp"   // generated:    ocp::MassesChainGen
@@ -25,11 +25,11 @@ namespace
 // Warm-start exactly as examples/masses_chain/main.cpp: x0 fixed, u_k = 0,
 // x_k = cost reference (spread config) for k = 1..N.
 template <class P>
-Solution<P> solve(const P& p, int N, SqpStatistics* stat)
+Solution<P> solve(const P& p, int N, AcadosStatistics* stat)
 {
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
-    SqpSolver<P> solver(opts);
+    AcadosSolver<P> solver(opts);
 
     Solution<P> sol(N);
     if constexpr (P::fixed_initial_state)
@@ -55,7 +55,7 @@ int main()
     MassesChain a;
     MassesChainGen b;
 
-    SqpStatistics sa, sb;
+    AcadosStatistics sa, sb;
     Solution<MassesChain> sol_a = solve(a, N, &sa);
     Solution<MassesChainGen> sol_b = solve(b, N, &sb);
 

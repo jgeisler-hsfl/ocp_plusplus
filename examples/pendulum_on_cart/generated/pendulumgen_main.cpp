@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "PendulumGen.hpp"
 
 using namespace ocp;
@@ -14,7 +14,7 @@ int main()
 {
     PendulumGen problem;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
     opts.max_iter = 100;
     opts.tol_stat = 1e-06;
@@ -22,7 +22,7 @@ int main()
     opts.tol_ineq = 1e-06;
     opts.tol_comp = 1e-06;
 
-    SqpSolver<PendulumGen> solver(opts);
+    AcadosSolver<PendulumGen> solver(opts);
     Solution<PendulumGen> sol(20);
     sol.x[0] = problem.initial_state();
     for (int k = 0; k < 20; ++k)

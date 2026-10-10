@@ -1,5 +1,5 @@
 // Phase 2 sub-step 2h test: standalone end-to-end SQP run on the
-// DoubleIntegrator (N = 10) with the default SqpSolver
+// DoubleIntegrator (N = 10) with the default AcadosSolver
 // (HPIPM QP + GLM regularizer + merit backtracking).
 //
 // Warm start: x[0] = initial_state(), constant control a* that keeps the
@@ -13,14 +13,14 @@
 // gradient at the solution (the SQP_PHASE2_PLAN sec. 1.3 sign-convention
 // gate: a wrong multiplier sign shows up as an O(1) FD gradient).
 //
-// Writes sqp_double_integrator.csv (SqpStatistics::write_csv) and prints
+// Writes sqp_double_integrator.csv (AcadosStatistics::write_csv) and prints
 // the stat rows (print_level = 1).
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -229,10 +229,10 @@ void check_residuals(const DoubleIntegrator& p,
 int main()
 {
     DoubleIntegrator p;
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
 
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosSolver<DoubleIntegrator> solver(opts);
     Solution<DoubleIntegrator> sol = warm_start(p);
 
     const Status st = solver.solve(p, sol);

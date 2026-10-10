@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "P5probeB.hpp"
 
 using namespace ocp;
@@ -14,7 +14,7 @@ int main()
 {
     P5probeB problem;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
     opts.max_iter = 100;
     opts.tol_stat = 1e-06;
@@ -22,7 +22,7 @@ int main()
     opts.tol_ineq = 1e-06;
     opts.tol_comp = 1e-06;
 
-    SqpSolver<P5probeB> solver(opts);
+    AcadosSolver<P5probeB> solver(opts);
     Solution<P5probeB> sol(3);
     sol.x[0] = problem.initial_state();
     for (int k = 0; k < 3; ++k)

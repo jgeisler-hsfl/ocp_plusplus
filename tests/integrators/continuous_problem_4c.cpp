@@ -12,7 +12,7 @@
 #include <string>
 
 #include "ocp/integrators/continuous_problem.hpp"
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 namespace
 {
@@ -259,7 +259,7 @@ int run_erk_4c_tests()
     //  QP for the continuous problem.
     // ---------------------------------------------------------------
     {
-        using Solver = ocp::SqpSolver<ContDoubleIntegrator>;
+        using Solver = ocp::AcadosSolver<ContDoubleIntegrator>;
         Solver solver;
         ocp::Solution<ContDoubleIntegrator> sol(5);
         solver.resize(5);

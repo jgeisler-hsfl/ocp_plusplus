@@ -33,7 +33,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/pendulum_on_cart/generated/PendulumGen.hpp"
 #include "ref_pendulum.h"
@@ -97,14 +97,14 @@ int main()
         sol.x[k + 1] = problem.cost_reference();
     }
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
     opts.max_iter = 100;
     opts.tol_stat = 1e-06;
     opts.tol_eq = 1e-06;
     opts.tol_ineq = 1e-06;
     opts.tol_comp = 1e-06;
-    SqpSolver<PendulumGen> solver(opts);
+    AcadosSolver<PendulumGen> solver(opts);
     const Status st = solver.solve(problem, sol);
 
     check_integrator_map();

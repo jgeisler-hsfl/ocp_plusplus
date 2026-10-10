@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -49,7 +49,7 @@ void check_close(double a, double b, double tol, const std::string& msg)
 }
 
 // Merit-backtracking globalizer (the default; the SOC pre-pass lives here).
-using SocSolver = SqpSolver<DI>;
+using SocSolver = AcadosSolver<DI>;
 
 Solution<DI> make_warm_start(const DI& p, int n_stages)
 {
@@ -79,7 +79,7 @@ void test_no_soc_regression()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     opts.glob.use_soc = false;
     SocSolver solver(opts);
@@ -108,7 +108,7 @@ void test_soc_converges()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts_ref;
+    AcadosOptions opts_ref;
     opts_ref.max_iter = 30;
     opts_ref.glob.use_soc = false;
     SocSolver ref(opts_ref);
@@ -120,7 +120,7 @@ void test_soc_converges()
         return;
     }
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     opts.glob.use_soc = true;
     SocSolver solver(opts);

@@ -13,7 +13,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/acados/qpscaling.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
@@ -253,20 +253,20 @@ void test_scaled_matches_unscaled()
     DI prob;
     const int N = 10;
 
-    SqpOptions off;
+    AcadosOptions off;
     off.max_iter = 20;
     off.scale_qp_objective = false;
     off.scale_qp_constraints = false;
-    SqpSolver<DI> solver_off(off);
+    AcadosSolver<DI> solver_off(off);
     Solution<DI> sol_off = make_warm_start(prob, N);
     const Status st_off = solver_off.solve(prob, sol_off);
     check(st_off == Status::kSolved, "unscaled: kSolved");
 
-    SqpOptions on;
+    AcadosOptions on;
     on = off;
     on.scale_qp_objective = true;
     on.scale_qp_constraints = true;
-    SqpSolver<DI> solver_on(on);
+    AcadosSolver<DI> solver_on(on);
     Solution<DI> sol_on = make_warm_start(prob, N);
     const Status st_on = solver_on.solve(prob, sol_on);
     check(st_on == Status::kSolved, "scaled: kSolved");
@@ -301,11 +301,11 @@ void test_adaptive_tolerance_strategies()
 
     for (int strategy = 1; strategy <= 2; ++strategy)
     {
-        SqpOptions opts;
+        AcadosOptions opts;
         opts.max_iter = 30;
         opts.nlp_qp_tol_strategy = strategy;
         opts.scale_qp_constraints = true;  // gives strategy 2 a real factor
-        SqpSolver<DI> solver(opts);
+        AcadosSolver<DI> solver(opts);
         Solution<DI> sol = make_warm_start(prob, N);
         const Status st = solver.solve(prob, sol);
         check(st == Status::kSolved,
@@ -323,12 +323,12 @@ void test_end_to_end_converges()
     const int N = 10;
 
     // All features on at once.
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     opts.scale_qp_objective = true;
     opts.scale_qp_constraints = true;
     opts.nlp_qp_tol_strategy = 2;
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     Solution<DI> sol = make_warm_start(prob, N);
     const Status st = solver.solve(prob, sol);
     check(st == Status::kSolved, "all-scaling end-to-end: kSolved");

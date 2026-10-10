@@ -7,7 +7,7 @@
 //   - integrator value: K4 single-step vs 10k-step RK4 reference
 //   - integrator jacobian: central-FD of the composed map (ERK + IRK)
 //   - integrator hess_prod: central-FD Hessian of w' Phi (ERK K4, IRK Radau2)
-//   - end-to-end: ContinuousProblem + SqpSolver, kSolved + NLP residuals
+//   - end-to-end: ContinuousProblem + AcadosSolver, kSolved + NLP residuals
 
 #include <cmath>
 #include <cstdio>
@@ -16,7 +16,7 @@
 #include "ocp/integrators/continuous_problem.hpp"
 #include "ocp/integrators/rk_explicit.hpp"
 #include "ocp/integrators/rk_implicit.hpp"
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 namespace
 {
@@ -494,7 +494,7 @@ void check_hess_prod_fd(const Integ& integ, const char* label)
 }
 
 // ------------------------------------------------------------------
-//  End-to-end: ContinuousProblem + SqpSolver  (CSTR OCP)
+//  End-to-end: ContinuousProblem + AcadosSolver  (CSTR OCP)
 // ------------------------------------------------------------------
 
 using ErkInteg =
@@ -662,8 +662,8 @@ void check_end_to_end()
     constexpr int N = 10;
     CstrOcp prob(0.1);
 
-    SqpOptions opts;
-    SqpSolver<CstrOcp> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<CstrOcp> solver(opts);
 
     Solution<CstrOcp> sol(N);
     sol.x[0] = prob.initial_state();

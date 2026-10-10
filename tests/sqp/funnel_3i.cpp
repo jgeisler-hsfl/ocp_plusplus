@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -46,13 +46,13 @@ void check_close(double a, double b, double tol, const std::string& msg)
 }
 
 // Solver with the funnel globalizer.
-using FunnelSolver = SqpSolver<DI, Eigen::Dynamic,
+using FunnelSolver = AcadosSolver<DI, Eigen::Dynamic,
                                HpipmQpSolver<DI, Eigen::Dynamic>,
                                GlmRegularizer<DI, Eigen::Dynamic>,
                                Funnel<DI, Eigen::Dynamic>>;
 
 // Solver with the default merit-backtracking globalizer (reference).
-using MeritSolver = SqpSolver<DI>;
+using MeritSolver = AcadosSolver<DI>;
 
 Solution<DI> make_warm_start(const DI& p, int n_stages)
 {
@@ -82,7 +82,7 @@ void test_funnel_converges()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     FunnelSolver solver(opts);
     Solution<DI> sol = make_warm_start(prob, N);
@@ -110,7 +110,7 @@ void test_funnel_width_monotone()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     FunnelSolver solver(opts);
     Solution<DI> sol = make_warm_start(prob, N);
@@ -154,7 +154,7 @@ void test_funnel_iter_type_logged()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
     FunnelSolver solver(opts);
     Solution<DI> sol = make_warm_start(prob, N);
@@ -187,7 +187,7 @@ void test_funnel_matches_merit()
     DI prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 30;
 
     MeritSolver solver_m(opts);

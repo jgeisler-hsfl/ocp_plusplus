@@ -11,7 +11,7 @@
 
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -60,11 +60,11 @@ double terminal_eq_feasible_control(const DI& p, int n_stages)
 void test_check_termination_timeout()
 {
     // Solver with an active timeout budget.
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.timeout_max_time = 1.0;  // 1-second budget
     opts.timeout_heuristic = 0;   // ZERO: estimate stays 0
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     NlpResiduals res;
     res.res_stat = 1.0;
     res.res_eq = 1.0;
@@ -84,7 +84,7 @@ void test_check_termination_timeout()
           "check_termination: elapsed == budget -> kTimeout");
 
     // Default options (timeout_max_time = 0): the branch is inert
-    SqpSolver<DI> solver_def;
+    AcadosSolver<DI> solver_def;
     check(
         solver_def.check_termination(1, res, 1.0, 0.0, 1e9) == Status::kUnset,
         "check_termination: timeout_max_time = 0 -> inert");
@@ -99,12 +99,12 @@ void test_solve_timeout()
     DI prob;
     const int N = 5;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
     opts.timeout_max_time = 1e-9;  // smaller than any iteration's elapsed
     opts.timeout_heuristic = 1;    // LAST (irrelevant: triggers at iter 0)
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     Solution<DI> sol = make_warm_start(prob, N);
 
     const Status st = solver.solve(prob, sol);
@@ -128,12 +128,12 @@ void test_solve_timeout_large_inert()
 
     for (int h = 0; h <= 3; ++h)
     {
-        SqpOptions opts;
+        AcadosOptions opts;
         opts.print_level = 0;
         opts.timeout_heuristic = h;
         opts.timeout_max_time = 1e9;  // effectively no timeout
 
-        SqpSolver<DI> solver(opts);
+        AcadosSolver<DI> solver(opts);
         Solution<DI> sol = make_warm_start(prob, N, a);
 
         const Status st = solver.solve(prob, sol);

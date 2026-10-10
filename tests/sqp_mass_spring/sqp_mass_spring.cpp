@@ -1,5 +1,5 @@
 // Phase 2 sub-step 2h test: standalone end-to-end SQP run on the MassSpring
-// (N = 20) with the default SqpSolver (HPIPM QP + GLM regularizer + merit
+// (N = 20) with the default AcadosSolver (HPIPM QP + GLM regularizer + merit
 // backtracking). Box-only problem (no ineq/eq/lin, no soft rows): verifies
 // the stage-type layout at a larger horizon with 3 controls and 8 states.
 //
@@ -12,14 +12,14 @@
 // solution multipliers, and stationarity via a finite-difference Lagrangian
 // gradient (the SQP_PHASE2_PLAN sec. 1.3 sign-convention gate).
 //
-// Writes sqp_mass_spring.csv (SqpStatistics::write_csv) and prints the stat
+// Writes sqp_mass_spring.csv (AcadosStatistics::write_csv) and prints the stat
 // rows (print_level = 1).
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/mass_spring/mass_spring.hpp"
 
@@ -205,10 +205,10 @@ void check_residuals(const MassSpring& p, const Solution<MassSpring>& sol)
 int main()
 {
     MassSpring p;
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
 
-    SqpSolver<MassSpring> solver(opts);
+    AcadosSolver<MassSpring> solver(opts);
     Solution<MassSpring> sol = warm_start(p);
 
     const Status st = solver.solve(p, sol);

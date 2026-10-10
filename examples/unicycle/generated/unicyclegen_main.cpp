@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "UnicycleGen.hpp"
 
 using namespace ocp;
@@ -14,7 +14,7 @@ int main()
 {
     UnicycleGen problem;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
     opts.max_iter = 100;
     opts.tol_stat = 1e-06;
@@ -22,7 +22,7 @@ int main()
     opts.tol_ineq = 1e-06;
     opts.tol_comp = 1e-06;
 
-    SqpSolver<UnicycleGen> solver(opts);
+    AcadosSolver<UnicycleGen> solver(opts);
     Solution<UnicycleGen> sol(50);
     sol.x[0] = problem.initial_state();
     for (int k = 0; k < 50; ++k)

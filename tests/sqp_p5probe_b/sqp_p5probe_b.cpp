@@ -11,7 +11,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "P5probeB.hpp"
 
 namespace
@@ -138,14 +138,14 @@ int main()
     }
 
     // (B) SQP from a small nonzero warm start
-    ocp::SqpOptions opts;
+    ocp::AcadosOptions opts;
     opts.print_level = 0;
     opts.max_iter = 100;
     opts.tol_stat = 1e-6;
     opts.tol_eq = 1e-6;
     opts.tol_ineq = 1e-6;
     opts.tol_comp = 1e-6;
-    ocp::SqpSolver<P5B> solver(opts);
+    ocp::AcadosSolver<P5B> solver(opts);
     ocp::Solution<P5B> sol(N);
     sol.x[0] << 0.1, 0.2;
     for (int k = 0; k < N; ++k)

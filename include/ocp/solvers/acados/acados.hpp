@@ -1,4 +1,4 @@
-// ocp/solvers/acados/sqp.hpp
+// ocp/solvers/acados/acados.hpp
 //
 // SQP driver components (phase 2).
 //
@@ -7,13 +7,13 @@
 //
 // 2c: NlpResiduals, compute_nlp_residuals
 //     Port of acados ocp_nlp_res_compute (ocp_nlp_common.c:3743-3846).
-// 2e: SqpOptions, SqpIteration, SqpStatistics, print_sqp_iteration
+// 2e: AcadosOptions, SqpIteration, AcadosStatistics, print_sqp_iteration
 //     Driver options (defaults per ocp_nlp_common.c:1215-1287,
 //     ocp_nlp_sqp.c:103-119), per-iteration statistics (acados `stat`
 //     matrix, ocp_nlp_sqp.c:266-271) and the stdout printing
 //     (ocp_nlp_sqp.c:449-466).
-// 2f: SqpSolver::assemble_qp / add_lm_term / resize (QP assembly).
-// 2g: SqpSolver::solve / check_termination / compute_cost (driver).
+// 2f: AcadosSolver::assemble_qp / add_lm_term / resize (QP assembly).
+// 2g: AcadosSolver::solve / check_termination / compute_cost (driver).
 //
 // References (re-read at implementation time):
 //   acados/ocp_nlp/ocp_nlp_common.c:3743-3846  (ocp_nlp_res_compute)
@@ -719,7 +719,7 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 ///
 /// `tau_min` follows HPIPM's IPM convention (x_ocp_qp_ipm.c:95); the acados
 /// NLP-level default is 0 (zero-initialized struct).
-struct SqpOptions
+struct AcadosOptions
 {
     int max_iter = 20;
     double tol_stat = 1e-8, tol_eq = 1e-8, tol_ineq = 1e-8, tol_comp = 1e-8;
@@ -789,7 +789,7 @@ struct SqpIteration
 ///
 /// `iter` is the number of recorded iterations.  `status` is the final
 /// exit status, set by the driver before returning.
-struct SqpStatistics
+struct AcadosStatistics
 {
     int iter = 0;
     Status status = Status::kUnset;
@@ -840,7 +840,7 @@ inline void print_sqp_iteration(int iter, const SqpIteration& row)
 }
 
 // =========================================================================
-//  SqpSolver (sub-step 2f: QP assembly + LM term)
+//  AcadosSolver (sub-step 2f: QP assembly + LM term)
 // =========================================================================
 
 namespace detail
@@ -869,26 +869,16 @@ template <class P, int NH = Eigen::Dynamic,
           class QpSolver = HpipmQpSolver<P, NH>,
           class Regularizer = GlmRegularizer<P, NH>,
           class Globalizer = MeritBacktracking<P, NH>>
-class SqpSolver
+class AcadosSolver
 {
 public:
     using D = QpDim<P>;
     using S = typename P::scalar_t;
 
-    explicit SqpSolver(SqpOptions opts = SqpOptions{})
+    explicit AcadosSolver(AcadosOptions opts = AcadosOptions{})
         : opts_(opts)
         , scaler_(make_scaler_opts(opts))
     {
-    }
-
-    static typename QpScaler<P, NH>::Opts make_scaler_opts(const SqpOptions& o)
-    {
-        typename QpScaler<P, NH>::Opts so;
-        so.scale_objective = o.scale_qp_objective;
-        so.scale_constraints = o.scale_qp_constraints;
-        so.ub_max_abs_eig = o.ub_max_abs_eig;
-        so.lb_norm_inf_grad_obj = o.lb_norm_inf_grad_obj;
-        return so;
     }
 
     /// Assemble the staged QP at the current NLP iterate into qp_in_.
@@ -1002,8 +992,8 @@ public:
         slacks_.resize(n_stages);
     }
 
-    const SqpOptions& options() const { return opts_; }
-    const SqpStatistics& statistics() const { return stat_; }
+    const AcadosOptions& options() const { return opts_; }
+    const AcadosStatistics& statistics() const { return stat_; }
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
@@ -1105,7 +1095,7 @@ public:
     {
         const int N = sol.N;
 
-        stat_ = SqpStatistics{};
+        stat_ = AcadosStatistics{};
         qp_status_ = 0;
         qp_iter_ = 0;
         alpha_ = 0.0;
@@ -1323,6 +1313,19 @@ public:
     }
 
 private:
+    /// Map AcadosOptions to QpScaler opts (internal glue; used only by the
+    /// constructor).
+    static typename QpScaler<P, NH>::Opts make_scaler_opts(
+        const AcadosOptions& o)
+    {
+        typename QpScaler<P, NH>::Opts so;
+        so.scale_objective = o.scale_qp_objective;
+        so.scale_constraints = o.scale_qp_constraints;
+        so.ub_max_abs_eig = o.ub_max_abs_eig;
+        so.lb_norm_inf_grad_obj = o.lb_norm_inf_grad_obj;
+        return so;
+    }
+
     // ---------------------------------------------------------------
     //  Driver helpers (sub-step 2g)
     // ---------------------------------------------------------------
@@ -3277,12 +3280,12 @@ private:
     //  Members
     // ---------------------------------------------------------------
 
-    SqpOptions opts_;
+    AcadosOptions opts_;
     QpScaler<P, NH> scaler_;
     QpSolver qp_;
     Regularizer reg_;
     Globalizer glob_;
-    SqpStatistics stat_;
+    AcadosStatistics stat_;
     Qp<P, NH> qp_in_;
     QpSol<P, NH> qp_out_;
     Solution<P, NH> trial_;

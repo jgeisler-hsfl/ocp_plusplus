@@ -1,6 +1,6 @@
 // Phase 2 sub-step 2f test: QP assembly
-// (SqpSolver::assemble_qp, SqpSolver::add_lm_term) from
-// include/ocp/solvers/acados/sqp.hpp.
+// (AcadosSolver::assemble_qp, AcadosSolver::add_lm_term) from
+// include/ocp/solvers/acados/acados.hpp.
 //
 // Checks (SQP_PHASE2_PLAN.md sec. 2f, acados ocp_nlp_common.c:3079-3203,
 // :3034-3059):
@@ -18,7 +18,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -541,8 +541,8 @@ void check_double_integrator()
     sol.lambda_ineq_stage[1] << 0.2;
     sol.lambda_eq_term << 0.3;
 
-    SqpOptions opts;
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<DoubleIntegrator> solver(opts);
     solver.resize(N);
 
     const Status st = solver.assemble_qp(prob, sol);
@@ -661,9 +661,9 @@ void check_double_integrator()
 
     // -- LM term ---------------------------------------------------------
     {
-        SqpOptions opts_lm;
+        AcadosOptions opts_lm;
         opts_lm.levenberg_marquardt = 0.0;  // not used here; mu is explicit
-        SqpSolver<DoubleIntegrator> solver_lm(opts_lm);
+        AcadosSolver<DoubleIntegrator> solver_lm(opts_lm);
         solver_lm.resize(N);
         const Status st2 = solver_lm.assemble_qp(prob, sol);
         if (st2 != Status::kSolved)
@@ -686,7 +686,7 @@ void check_double_integrator()
         // off-diagonals unchanged
         check_close(q.first.hess(0, 1), 0.0, "DI LM first offdiag");
         // no-op: mu <= 0 leaves the Hessian untouched
-        SqpSolver<DoubleIntegrator> solver_no;
+        AcadosSolver<DoubleIntegrator> solver_no;
         solver_no.resize(N);
         solver_no.assemble_qp(prob, sol);
         auto& q2 = const_cast<Qp<DoubleIntegrator, Eigen::Dynamic>&>(
@@ -694,10 +694,10 @@ void check_double_integrator()
         solver_no.add_lm_term(q2, 0.0);
         check_close(q2.first.hess(0, 0), 0.01, "DI LM no-op (mu=0)");
         // no-op: all Hessian gates off leaves the Hessian untouched
-        SqpOptions opts_no;
+        AcadosOptions opts_no;
         opts_no.compute_hess_dyn = false;
         opts_no.compute_hess_constr = false;
-        SqpSolver<DoubleIntegrator> solver_off(opts_no);
+        AcadosSolver<DoubleIntegrator> solver_off(opts_no);
         solver_off.resize(N);
         solver_off.assemble_qp(prob, sol);
         auto& q3 = const_cast<Qp<DoubleIntegrator, Eigen::Dynamic>&>(
@@ -724,8 +724,8 @@ void check_quad()
     sol.lambda_ineq_stage[0] << 0.4;
     sol.lambda_eq_term << -2.5;
 
-    SqpOptions opts;
-    SqpSolver<QuadTest> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<QuadTest> solver(opts);
     solver.resize(N);
 
     const Status st = solver.assemble_qp(prob, sol);
@@ -823,8 +823,8 @@ void check_softbox_assembly()
     sol.u[0] << 0.1, 0.2;
     sol.u[1] << 0.3, 0.4;
 
-    SqpOptions opts;
-    SqpSolver<SoftBoxProbe> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<SoftBoxProbe> solver(opts);
     solver.resize(N);
 
     const Status st = solver.assemble_qp(prob, sol);
@@ -951,8 +951,8 @@ void check_degeneracy()
     sol.x[1] << 1.0;
     sol.u[0] << 0.0;
 
-    SqpOptions opts;
-    SqpSolver<DegProbe> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<DegProbe> solver(opts);
     solver.resize(N);
 
     const Status st = solver.assemble_qp(prob, sol);

@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/acados/regularize.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
@@ -60,13 +60,13 @@ Solution<DI> make_warm_start(const DI& p, int n_stages, double a = 0.0)
 
 void test_mu_schedule()
 {
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.with_adaptive_lm = true;
     opts.adaptive_lm_mu0 = 1e-3;
     opts.adaptive_lm_lam = 5.0;
     opts.adaptive_lm_mu_min = 1e-16;
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
 
     // iter 0: init
     solver.update_adaptive_lm_mu(0, 0.0);
@@ -130,12 +130,12 @@ void test_mu_schedule()
 
 void test_mu_min_floor()
 {
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.adaptive_lm_mu0 = 1e-3;
     opts.adaptive_lm_lam = 5.0;
     opts.adaptive_lm_mu_min = 1e-16;
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     solver.update_adaptive_lm_mu(0, 0.0);
 
     // 50 full steps: mu decays by 1/lam per pair of steps, eventually
@@ -154,12 +154,12 @@ void test_mu_min_floor()
 
 void test_mu_cap_at_one()
 {
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.adaptive_lm_mu0 = 0.8;
     opts.adaptive_lm_lam = 5.0;
     opts.adaptive_lm_mu_min = 1e-16;
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     solver.update_adaptive_lm_mu(0, 0.0);
     check_close(solver.adaptive_lm_mu(), 0.8, 1e-15,
                 "cap: iter 0 mu = mu0 = 0.8");
@@ -199,11 +199,11 @@ void test_effective_damping()
     const double expected = obj_scalar * raw * mu0;
 
     // Use NoRegularizer so the Hessian difference is purely the LM term.
-    using SolverT = SqpSolver<DI, Eigen::Dynamic, HpipmQpSolver<DI>,
+    using SolverT = AcadosSolver<DI, Eigen::Dynamic, HpipmQpSolver<DI>,
                               NoRegularizer<DI>>;
 
     // Baseline: no LM
-    SqpOptions optsA;
+    AcadosOptions optsA;
     optsA.max_iter = 0;
     optsA.with_adaptive_lm = false;
     SolverT solverA(optsA);
@@ -212,7 +212,7 @@ void test_effective_damping()
     const auto& qpA = solverA.last_qp();
 
     // Adaptive LM (mu at iter 0 = mu0)
-    SqpOptions optsB;
+    AcadosOptions optsB;
     optsB.max_iter = 0;
     optsB.with_adaptive_lm = true;
     optsB.adaptive_lm_mu0 = mu0;
@@ -288,11 +288,11 @@ void test_solve_converges()
         Ts * Ts * N * (N - 1) / 2.0 + Ts * N;
     const double a = (1.0 - (q0 + v0) - Ts * N * v0) / den;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
     opts.with_adaptive_lm = true;
 
-    SqpSolver<DI> solver(opts);
+    AcadosSolver<DI> solver(opts);
     Solution<DI> sol = make_warm_start(prob, N, a);
 
     const Status st = solver.solve(prob, sol);

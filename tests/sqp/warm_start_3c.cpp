@@ -7,7 +7,7 @@
 //     iterate preserved) converges in fewer IPM iterations to the same
 //     solution; a warm-dual re-solve (warm_start=2, ux zeroed) also converges
 //     to the same primal.
-//   - Driver-level: SqpSolver with qp_warm_start=2 on DoubleIntegrator uses
+//   - Driver-level: AcadosSolver with qp_warm_start=2 on DoubleIntegrator uses
 //     fewer total IPM iterations than qp_warm_start=0, both kSolved.
 
 #include <cmath>
@@ -15,7 +15,7 @@
 #include <random>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
@@ -88,7 +88,7 @@ double terminal_eq_feasible_control(const DI& p, int n_stages)
 /// across all QP solves; the last row for a kSolved run carries a stale
 /// value from the prior iteration's solve but is the same for both
 /// warm/cold so the comparison remains valid).
-int total_ipm_iters(const SqpStatistics& stat)
+int total_ipm_iters(const AcadosStatistics& stat)
 {
     int total = 0;
     for (const auto& row : stat.rows)
@@ -101,9 +101,9 @@ int total_ipm_iters(const SqpStatistics& stat)
 /// Build a real DI QP at the given iterate via the driver's assemble_qp.
 Qp<DI, Eigen::Dynamic> assemble_di_qp(const DI& prob, const Solution<DI>& sol)
 {
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
-    SqpSolver<DI> drv(opts);
+    AcadosSolver<DI> drv(opts);
     drv.resize(sol.N);
     drv.assemble_qp(prob, sol);
     return drv.last_qp();  // copy
@@ -596,10 +596,10 @@ void test_driver_warm_start()
 
     // Cold (qp_warm_start = 0)
     {
-        SqpOptions co;
+        AcadosOptions co;
         co.qp_warm_start = 0;
         co.print_level = 0;
-        SqpSolver<DI> solver(co);
+        AcadosSolver<DI> solver(co);
         Solution<DI> sol = make_warm_start(prob, N, a);
 
         const Status st = solver.solve(prob, sol);
@@ -615,10 +615,10 @@ void test_driver_warm_start()
                     cold_cost);
 
         // Warm (qp_warm_start = 2)
-        SqpOptions wo;
+        AcadosOptions wo;
         wo.qp_warm_start = 2;
         wo.print_level = 0;
-        SqpSolver<DI> w_solver(wo);
+        AcadosSolver<DI> w_solver(wo);
         Solution<DI> w_sol = make_warm_start(prob, N, a);
 
         const Status w_st = w_solver.solve(prob, w_sol);

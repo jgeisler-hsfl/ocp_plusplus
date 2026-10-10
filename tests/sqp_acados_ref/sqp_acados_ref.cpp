@@ -5,7 +5,7 @@
 // acados FULL_CONDENSING_HPIPM in a standalone C driver and the
 // full-precision (x, u, cost)
 // output is embedded in ref_boxonly.h / ref_termeq.h. This test solves the
-// same QP with our SqpSolver and compares:
+// same QP with our AcadosSolver and compares:
 //   - cost:       relative error < 1e-4
 //   - (x, u):     component-wise inf-norm error < 1e-4
 //
@@ -23,7 +23,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/mass_spring_ref/mass_spring_ref.hpp"
 #include "ref_boxonly.h"
@@ -59,8 +59,8 @@ void run_variant(const char* name, const double ref_x[16][8],
         sol.x[k + 1] = p.dynamics_next_state(k, sol.x[k], sol.u[k]);
     }
 
-    SqpOptions opts;
-    SqpSolver<P> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<P> solver(opts);
     const Status st = solver.solve(p, sol);
     check(st == Status::kSolved, (std::string(name) + " solve kSolved").c_str());
     if (st != Status::kSolved)

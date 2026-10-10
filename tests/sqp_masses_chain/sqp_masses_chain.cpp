@@ -41,7 +41,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/masses_chain/masses_chain.hpp"
 #include "ref_masses_chain.h"
@@ -94,9 +94,9 @@ void check_qp_gn()
         }
     }
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
-    SqpSolver<MassesChain> solver(opts);
+    AcadosSolver<MassesChain> solver(opts);
     solver.resize(MASS_CHAIN_N);
     check(solver.assemble_qp(problem, sol) == Status::kSolved,
           "QP assembly at warm start (status)");
@@ -285,7 +285,7 @@ int main()
         sol.x[k + 1] = problem.cost_reference();
     }
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
     // Mirror the acados codegen NLP tolerances (acados_ocp_nlp.json, 1e-6):
     // with the 1e-8 defaults the weakly-convex OCP stalls in kMinStep just
@@ -294,7 +294,7 @@ int main()
     opts.tol_eq = 1e-6;
     opts.tol_ineq = 1e-6;
     opts.tol_comp = 1e-6;
-    SqpSolver<MassesChain> solver(opts);
+    AcadosSolver<MassesChain> solver(opts);
     const Status st = solver.solve(problem, sol);
 
     check_integrator_map();

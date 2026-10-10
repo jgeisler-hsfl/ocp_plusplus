@@ -428,7 +428,7 @@ struct TerminalLinearSpec
 ///   linear (zero dynamics Hessian). `has_constr_hess` = false omits the
 ///   constraint Hessian terms (valid exactly when the constraint maps are
 ///   linear, i.e. their Hessians are identically zero). The solver exposes
-///   two independent runtime gates, `SqpOptions::compute_hess_dyn` /
+///   two independent runtime gates, `AcadosOptions::compute_hess_dyn` /
 ///   `compute_hess_constr` (mirroring acados' `exact_hess_dyn` /
 ///   `exact_hess_constr`), that drop the multiplier-weighted dynamics /
 ///   constraint Hessian terms at runtime without recompiling.
@@ -464,7 +464,7 @@ public:
     // (acados hessian_approx = GAUSS_NEWTON; the two models coincide for a
     // linear dynamics map, where the dynamics Hessian term is zero anyway).
     // The term may additionally be dropped at runtime via
-    // SqpOptions::compute_hess_dyn (acados exact_hess_dyn).
+    // AcadosOptions::compute_hess_dyn (acados exact_hess_dyn).
     static constexpr bool has_dynamics_hess = Dims::has_dynamics_hess;
 
     // true: the constraint *_value_jac_hess methods are implemented; the
@@ -472,7 +472,7 @@ public:
     // Hessian (EXACT). false: no constraint Hessians; the constraint
     // Hessian terms are omitted (identically zero when the constraint maps
     // are linear). The terms may additionally be dropped at runtime via
-    // SqpOptions::compute_hess_constr (acados exact_hess_constr).
+    // AcadosOptions::compute_hess_constr (acados exact_hess_constr).
     static constexpr bool has_constr_hess = Dims::has_constr_hess;
 
     // active box-constraint rows: the const index sets select which

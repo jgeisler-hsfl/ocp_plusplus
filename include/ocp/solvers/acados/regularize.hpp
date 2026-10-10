@@ -5,7 +5,7 @@
 // (acados/ocp_nlp/ocp_nlp_reg_glm.c) and the no-regularization strategy
 // (acados/ocp_nlp/ocp_nlp_reg_noreg.c).
 //
-// The regularizer is a duck-typed component of the SqpSolver (SQP_PLAN.md
+// The regularizer is a duck-typed component of the AcadosSolver (SQP_PLAN.md
 // sec. 7; the two-method contract of SQP_PHASE2_PLAN.md sec. 2a):
 //     void regularize(Qp<P, NH>&) const;
 //     void correct_dual_sol(Qp<P, NH>&, QpSol<P, NH>&) const;

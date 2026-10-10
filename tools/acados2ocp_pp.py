@@ -2226,7 +2226,7 @@ def emit_main(spec, name, json_path):
 
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 #include "{name}.hpp"
 
 using namespace ocp;
@@ -2235,7 +2235,7 @@ int main()
 {{
     {name} problem;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
     opts.max_iter = {spec['max_iter']};
     opts.tol_stat = {cnum(spec['tol_stat'])};
@@ -2243,7 +2243,7 @@ int main()
     opts.tol_ineq = {cnum(spec['tol_ineq'])};
     opts.tol_comp = {cnum(spec['tol_comp'])};
 
-    SqpSolver<{name}> solver(opts);
+    AcadosSolver<{name}> solver(opts);
     Solution<{name}> sol({N});
 {x0_assign}
     for (int k = 0; k < {N}; ++k)

@@ -1,5 +1,5 @@
-// Phase 2 sub-step 2g test: SQP driver (SqpSolver::solve,
-// SqpSolver::check_termination) from include/ocp/solvers/acados/sqp.hpp.
+// Phase 2 sub-step 2g test: SQP driver (AcadosSolver::solve,
+// AcadosSolver::check_termination) from include/ocp/solvers/acados/acados.hpp.
 //
 // Checks (SQP_PHASE2_PLAN.md sec. 2g; acados ocp_nlp_sqp.c:351-430,
 // :538-800):
@@ -24,7 +24,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -59,8 +59,8 @@ void check_close(double a, double b, double tol, const char* msg)
 
 void test_check_termination()
 {
-    SqpSolver<DoubleIntegrator> solver;
-    const SqpOptions& o = solver.options();
+    AcadosSolver<DoubleIntegrator> solver;
+    const AcadosOptions& o = solver.options();
 
     NlpResiduals res;
     res.res_stat = 1.0;
@@ -107,9 +107,9 @@ void test_check_termination()
     // 6. iter >= max_iter with eval_residual_at_max_iter = true and
     //    residuals above tolerance: still kMaxIterations (last branch)
     {
-        SqpOptions o2 = o;
+        AcadosOptions o2 = o;
         o2.eval_residual_at_max_iter = true;
-        SqpSolver<DoubleIntegrator> s2(o2);
+        AcadosSolver<DoubleIntegrator> s2(o2);
         check(s2.check_termination(o2.max_iter, res, 1.0, 0.0)
                   == Status::kMaxIterations,
               "check_termination: eval_residual_at_max_iter -> "
@@ -168,10 +168,10 @@ void test_solve_double_integrator()
     // it feasible.
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
 
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosSolver<DoubleIntegrator> solver(opts);
     Solution<DoubleIntegrator> sol =
         make_warm_start(prob, N, terminal_eq_feasible_control(prob, N));
 
@@ -242,10 +242,10 @@ void test_solve_warm_start()
     DoubleIntegrator prob;
     const int N = 10;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
 
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosSolver<DoubleIntegrator> solver(opts);
     Solution<DoubleIntegrator> sol =
         make_warm_start(prob, N, terminal_eq_feasible_control(prob, N));
     check(solver.solve(prob, sol) == Status::kSolved,
@@ -271,11 +271,11 @@ void test_solve_max_iter_zero()
     DoubleIntegrator prob;
     const int N = 5;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 0;
     opts.print_level = 0;
 
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosSolver<DoubleIntegrator> solver(opts);
     Solution<DoubleIntegrator> sol = make_warm_start(prob, N);
 
     const Status st = solver.solve(prob, sol);
@@ -404,10 +404,10 @@ void test_solve_infeasible()
     DegProbe prob;
     const int N = 2;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 0;
 
-    SqpSolver<DegProbe> solver(opts);
+    AcadosSolver<DegProbe> solver(opts);
     Solution<DegProbe> sol(N);
     sol.x[0] = prob.initial_state();
     for (int k = 0; k < N; ++k)
@@ -486,11 +486,11 @@ void test_solve_qp_failure()
     DoubleIntegrator prob;
     const int N = 5;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 3;
     opts.print_level = 0;
 
-    SqpSolver<DoubleIntegrator, Eigen::Dynamic, FailQp> solver(opts);
+    AcadosSolver<DoubleIntegrator, Eigen::Dynamic, FailQp> solver(opts);
     Solution<DoubleIntegrator> sol = make_warm_start(prob, N);
 
     const Status st = solver.solve(prob, sol);
@@ -507,11 +507,11 @@ void test_solve_min_step()
     DoubleIntegrator prob;
     const int N = 5;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.max_iter = 3;
     opts.print_level = 0;
 
-    SqpSolver<DoubleIntegrator, Eigen::Dynamic, ZeroStepQp> solver(opts);
+    AcadosSolver<DoubleIntegrator, Eigen::Dynamic, ZeroStepQp> solver(opts);
     Solution<DoubleIntegrator> sol = make_warm_start(prob, N);
 
     const Status st = solver.solve(prob, sol);

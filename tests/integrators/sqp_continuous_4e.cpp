@@ -1,7 +1,7 @@
 // Phase 4e: end-to-end continuous SQP + regression.
 //
 // A continuous double-integrator OCP (qdot = v, vdot = a) with terminal
-// equality q_N + v_N = 1 and box-bounded control is solved by SqpSolver.
+// equality q_N + v_N = 1 and box-bounded control is solved by AcadosSolver.
 // The ODE is linear so both ERK (K4) and IRK (Radau IIA 2) give the exact
 // discrete map; the achieved cost must match the discrete DoubleIntegrator
 // reference (same horizon, same step size, same cost weights).
@@ -11,7 +11,7 @@
 
 #include "ocp/integrators/continuous_problem.hpp"
 #include "ocp/integrators/rk_implicit.hpp"
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 
@@ -346,8 +346,8 @@ struct IrkOcp : IrkBase
 double solve_discrete_reference()
 {
     DoubleIntegrator p;
-    SqpOptions opts;
-    SqpSolver<DoubleIntegrator> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<DoubleIntegrator> solver(opts);
 
     Solution<DoubleIntegrator> sol(N);
     // Warm start: constant control that satisfies terminal equality
@@ -371,8 +371,8 @@ double solve_discrete_reference()
 template <class Problem>
 double solve_continuous(const Problem& p, const char* label)
 {
-    SqpOptions opts;
-    SqpSolver<Problem> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<Problem> solver(opts);
 
     Solution<Problem> sol(N);
     sol.x[0] = p.initial_state();

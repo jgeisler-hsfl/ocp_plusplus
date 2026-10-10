@@ -1,6 +1,6 @@
 // Phase 2 sub-step 2c test: NLP residuals
 // (NlpResiduals, compute_nlp_residuals) from
-// include/ocp/solvers/acados/sqp.hpp.
+// include/ocp/solvers/acados/acados.hpp.
 //
 // Checks (SQP_PHASE2_PLAN.md sec. 2c, ocp_nlp_common.c:3743-3846
 // ocp_nlp_res_compute):
@@ -17,7 +17,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
 

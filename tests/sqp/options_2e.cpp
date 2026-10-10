@@ -1,12 +1,12 @@
-// Phase 2 sub-step 2e test: SqpOptions, SqpIteration, SqpStatistics,
-// print_sqp_iteration from include/ocp/solvers/acados/sqp.hpp.
+// Phase 2 sub-step 2e test: AcadosOptions, SqpIteration, AcadosStatistics,
+// print_sqp_iteration from include/ocp/solvers/acados/acados.hpp.
 //
 // Checks (SQP_PHASE2_PLAN.md sec. 2e):
-//   - SqpOptions defaults match the acados defaults verified at 2e
+//   - AcadosOptions defaults match the acados defaults verified at 2e
 //     (ocp_nlp_common.c:1215,1276,1282-1287, ocp_nlp_sqp.c:114-117,
 //     GlobOptions per ocp_nlp_globalization_common.h:82-90)
-//   - SqpStatistics::record appends rows and increments the counter
-//   - SqpStatistics::write_csv writes the planned header and one row per
+//   - AcadosStatistics::record appends rows and increments the counter
+//   - AcadosStatistics::write_csv writes the planned header and one row per
 //     iteration with all nine values round-tripping through the file
 //   - print_sqp_iteration prints the header at iterations 0 and 10 but not
 //     in between (acados print_iteration, ocp_nlp_sqp.c:449-466)
@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 namespace
 {
@@ -48,12 +48,12 @@ void check_close(double a, double b, const std::string& msg)
 }
 
 // ---------------------------------------------------------------------
-// SqpOptions defaults
+// AcadosOptions defaults
 // ---------------------------------------------------------------------
 
 void test_options_defaults()
 {
-    SqpOptions o;
+    AcadosOptions o;
 
     check(o.max_iter == 20, "max_iter default 20");
     check_close(o.tol_stat, 1e-8, "tol_stat default 1e-8");
@@ -85,12 +85,12 @@ void test_options_defaults()
 }
 
 // ---------------------------------------------------------------------
-// SqpStatistics::record
+// AcadosStatistics::record
 // ---------------------------------------------------------------------
 
 void test_statistics_record()
 {
-    SqpStatistics stat;
+    AcadosStatistics stat;
     check(stat.iter == 0, "initial iter is 0");
     check(stat.rows.empty(), "initially no rows");
     check(stat.status == Status::kUnset, "initial status kUnset");
@@ -120,14 +120,14 @@ void test_statistics_record()
 }
 
 // ---------------------------------------------------------------------
-// SqpStatistics::write_csv
+// AcadosStatistics::write_csv
 // ---------------------------------------------------------------------
 
 void test_statistics_csv()
 {
     const char* path = "sqp_stats_2e_test.csv";
 
-    SqpStatistics stat;
+    AcadosStatistics stat;
     SqpIteration r;
     r.res_stat = 1.5e-3;
     r.res_eq = 2.5e-4;

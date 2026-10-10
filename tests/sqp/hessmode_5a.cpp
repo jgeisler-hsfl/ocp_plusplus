@@ -27,7 +27,7 @@
 #include <cstdio>
 #include <string>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 namespace
 {
@@ -419,8 +419,8 @@ void check_assembly(const std::string& tag)
     sol.lambda_ineq_stage[0] << lam_ineq;
     sol.lambda_eq_term << lam_eq_t;
 
-    SqpOptions opts;
-    SqpSolver<HessModeProb<Dims>> solver(opts);
+    AcadosOptions opts;
+    AcadosSolver<HessModeProb<Dims>> solver(opts);
     solver.resize(N);
 
     const Status st = solver.assemble_qp(prob, sol);
@@ -486,7 +486,7 @@ void check_fd_exact()
     sol.lambda_ineq_stage[0] << lam_ineq;
     sol.lambda_eq_term << lam_eq_t;
 
-    SqpSolver<HessModeProb<ExactDims>> solver;
+    AcadosSolver<HessModeProb<ExactDims>> solver;
     solver.resize(1);
     if (solver.assemble_qp(prob, sol) != Status::kSolved)
     {
@@ -534,7 +534,7 @@ void check_softlin()
     sol.lambda_ineq_stage[1] << lam_ineq;
     sol.lambda_eq_term << lam_eq_t;
 
-    SqpSolver<Prob> solver;
+    AcadosSolver<Prob> solver;
     solver.resize(N);
     if (solver.assemble_qp(prob, sol) != Status::kSolved)
     {
@@ -612,10 +612,10 @@ int run_hessmode_5a_tests()
         sol.lambda_ineq_stage[0] << lam_ineq;
         sol.lambda_eq_term << lam_eq_t;
 
-        SqpOptions opts;
+        AcadosOptions opts;
         opts.compute_hess_dyn = false;
         opts.compute_hess_constr = false;
-        SqpSolver<HessModeProb<ExactDims>> solver(opts);
+        AcadosSolver<HessModeProb<ExactDims>> solver(opts);
         solver.resize(1);
         if (solver.assemble_qp(prob, sol) != Status::kSolved)
         {
@@ -645,9 +645,9 @@ int run_hessmode_5a_tests()
         sol.lambda_ineq_stage[0] << lam_ineq;
         sol.lambda_eq_term << lam_eq_t;
 
-        SqpOptions opts;
+        AcadosOptions opts;
         opts.compute_hess_dyn = false;
-        SqpSolver<HessModeProb<ExactDims>> solver(opts);
+        AcadosSolver<HessModeProb<ExactDims>> solver(opts);
         solver.resize(1);
         if (solver.assemble_qp(prob, sol) != Status::kSolved)
         {
@@ -679,9 +679,9 @@ int run_hessmode_5a_tests()
         sol.lambda_ineq_stage[0] << lam_ineq;
         sol.lambda_eq_term << lam_eq_t;
 
-        SqpOptions opts;
+        AcadosOptions opts;
         opts.compute_hess_constr = false;
-        SqpSolver<HessModeProb<ExactDims>> solver(opts);
+        AcadosSolver<HessModeProb<ExactDims>> solver(opts);
         solver.resize(1);
         if (solver.assemble_qp(prob, sol) != Status::kSolved)
         {

@@ -1,7 +1,7 @@
 // main.cpp
 //
 // Phase-1 hand-written ocp++ port of the acados masses_chain OCP. Solves the
-// problem with the default SqpSolver (HPIPM QP + GLM regularizer + merit
+// problem with the default AcadosSolver (HPIPM QP + GLM regularizer + merit
 // backtracking) and writes ocp_pp.csv in the same layout as the acados
 // reference (ref_acados.csv) for side-by-side comparison.
 //
@@ -11,7 +11,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include "ocp/solvers/acados/sqp.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "masses_chain.hpp"
 
@@ -37,7 +37,7 @@ int main()
 {
     MassesChain problem;
 
-    SqpOptions opts;
+    AcadosOptions opts;
     opts.print_level = 1;
     // Mirror the acados codegen settings (acados_ocp_nlp.json,
     // nlp_solver_tol_* = 1e-6): with the default 1e-8 tolerances the SQP
@@ -47,7 +47,7 @@ int main()
     opts.tol_ineq = 1e-6;
     opts.tol_comp = 1e-6;
 
-    SqpSolver<MassesChain> solver(opts);
+    AcadosSolver<MassesChain> solver(opts);
     Solution<MassesChain> sol = warm_start(problem);
 
     const Status st = solver.solve(problem, sol);
