@@ -275,7 +275,8 @@ add_executable(integrators_unit
                  tests/integrators/rk_multistep_4g.cpp
                  tests/integrators/time_varying_4h.cpp
                  tests/integrators/cstr_4i.cpp
-                 tests/integrators/ode_autodiff_4j.cpp)
+                 tests/integrators/ode_autodiff_4j.cpp
+                 tests/integrators/dae_model_4k.cpp)
 target_include_directories(integrators_unit
                            PRIVATE include examples
                            ${CMAKE_SOURCE_DIR}/thirdparty/cppduals

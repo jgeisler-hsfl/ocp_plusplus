@@ -9,10 +9,11 @@
 //
 //   dynamics: nonlinear spring-chain ODE, integrated with the acados-matching
 //             implicit-RK collocation scheme (Gauss-Legendre, 4 stages,
-//             2 sub-steps per shooting interval).  The ODE right-hand side and
-//             its Jacobian are the CasADi-generated residual
-//             masses_chain_impl_dae_fun (see masses_chain_capi.hpp); the
-//             Jacobian is obtained by central finite differences (phase-1).
+//             2 sub-steps per shooting interval).  The dynamics are the
+//             CasADi-generated DAE residual masses_chain_impl_dae_fun
+//             (see masses_chain_capi.hpp), consumed in its native implicit
+//             form; the Jacobian blocks are central finite differences
+//             (phase-1).
 //
 //   stage cost    L_k(x,u) = 0.5 [ 10 ||x - x_ref||^2 + 1e-2 ||u||^2 ]
 //   terminal cost L_N(x)    = 0.5 * 10 ||x - x_ref||^2
@@ -89,10 +90,10 @@ struct MassesChainDims
 };
 
 // =========================================================================
-//  ODE model (explicit RHS + finite-difference Jacobian from the residual)
+//  DAE model (residual + finite-difference Jacobian blocks)
 // =========================================================================
 
-struct MassesChainOde
+struct MassesChainDae
 {
     using P = ocp::Problem<MassesChainDims>;
     using state_t = typename P::state_t;
@@ -102,19 +103,24 @@ struct MassesChainOde
 
     double h_ = 0.2;  // OCP step (forwarded to the C residual as p; unused)
 
-    // xdot = f(x, u, t): the residual with xdot = 0 equals f_expl(x, u).
-    state_t f(const state_t& x, const control_t& u, double /*t*/) const
+    // DAE residual F(x, xdot, u, t) = 0, directly from the CasADi-generated
+    // residual (masses_chain_impl_dae_fun).  For this spring-chain ODE the
+    // residual is linear in xdot (an ODE in residual form), so the
+    // DAE-native implicit integrator is exact.
+    state_t F(const state_t& x, const state_t& xdot, const control_t& u,
+              double /*t*/) const
     {
         state_t F;
-        state_t xdot = state_t::Zero();
         detail::masses_chain_residual(x.data(), xdot.data(), u.data(), h_,
                                       F.data());
         return F;
     }
 
-    // Central finite differences of f(x, u) w.r.t. x and u.
-    void jacobian(const state_t& x, const control_t& u, double t,
-                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    // Central finite differences of the residual w.r.t. x, xdot and u
+    // (the three DAE Jacobian blocks).
+    void F_jac(const state_t& x, const state_t& xdot, const control_t& u,
+               double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
+               dyn_df_du_t& dFdu) const
     {
         const double h = 1.0e-6;
         for (int j = 0; j < P::nx; ++j)
@@ -122,20 +128,26 @@ struct MassesChainOde
             state_t xp = x, xm = x;
             xp(j) += h;
             xm(j) -= h;
-            df_dx.col(j) = (f(xp, u, t) - f(xm, u, t)) / (2.0 * h);
+            dFdx.col(j) = (F(xp, xdot, u, t) - F(xm, xdot, u, t)) / (2.0 * h);
+        }
+        for (int j = 0; j < P::nx; ++j)
+        {
+            state_t dp = xdot, dm = xdot;
+            dp(j) += h;
+            dm(j) -= h;
+            dFxdot.col(j) = (F(x, dp, u, t) - F(x, dm, u, t)) / (2.0 * h);
         }
         for (int j = 0; j < P::nu; ++j)
         {
             control_t up = u, um = u;
             up(j) += h;
             um(j) -= h;
-            df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
+            dFdu.col(j) = (F(x, xdot, up, t) - F(x, xdot, um, t)) / (2.0 * h);
         }
     }
 
-    // No hess_prod: a nonlinear ODE whose composed-Hessian HVP the phase-1
-    // wrapper does not supply (the solver therefore uses the Gauss-Newton /
-    // cost-only QP Hessian via has_dynamics_hess = false).
+    // No F_hess_prod: the solver uses the Gauss-Newton / cost-only QP
+    // Hessian via has_dynamics_hess = false (the integrator's zero-HVP path).
 };
 
 // =========================================================================
@@ -143,18 +155,18 @@ struct MassesChainOde
 // =========================================================================
 
 using MassesChainInteg =
-    ocp::ImplicitRkIntegrator<MassesChainDims, MassesChainOde, 4,
+    ocp::ImplicitRkIntegrator<MassesChainDims, MassesChainDae, 4,
                               ocp::GaussLegendre4Tag, 2>;
 
 class MassesChain
-    : public ocp::ContinuousProblem<MassesChainDims, MassesChainOde,
+    : public ocp::ContinuousProblem<MassesChainDims, MassesChainDae,
                                     MassesChainInteg>
 {
     using Base =
-        ocp::ContinuousProblem<MassesChainDims, MassesChainOde, MassesChainInteg>;
+        ocp::ContinuousProblem<MassesChainDims, MassesChainDae, MassesChainInteg>;
 
 public:
-    MassesChain() : Base(MassesChainOde{}, /*h=*/0.2)
+    MassesChain() : Base(MassesChainDae{}, /*h=*/0.2)
     {
         // x_ref: the "spread" rest configuration (acados yref / x_ref).
         x_ref_ << 0.2437127723791751, 0.0, -0.4707556301562673, 0.0, 0.0, 0.0,

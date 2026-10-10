@@ -1123,9 +1123,7 @@ def emit_header(spec, name, json_path):
     pval = cnum(spec["parameter_values"][0])
     integ_inc = ("rk_explicit" if spec["integ_kind"] == "ERK"
                   else "rk_implicit")
-    # IRK Ode uses assert (calib) + std::abs; ERK needs neither.
-    std_inc = ("#include <cassert>\n#include <cmath>\n"
-               if spec["integ_kind"] == "IRK" else "")
+    std_inc = ""
 
     ng = len(spec["h"]["ineq"]) if spec["h"] else 0
     ne = len(spec["h"]["eq"]) if spec["h"] else 0
@@ -1177,22 +1175,42 @@ struct {name}Dims
 }};
 """
 
-    # ------------------------------------------------------------------ Ode
+    # ------------------------------------------------------------------ Model
     p_use = "p_"
-    # The Ode struct always carries a p_ member; the problem-class helpers
+    # The model struct always carries a p_ member; the problem-class helpers
     # only do when np > 0 (otherwise they pass 0.0).
     p_cls = "p_" if spec["np"] > 0 else "0.0"
+    # IRK adapters expose the DAE residual F(x, xdot, u, t) directly (DAE
+    # duck type, dae_model.hpp); ERK adapters expose the explicit ODE
+    # right-hand side f(x, u, t) (ODE duck type, ode_model.hpp).
+    model_name = f"{name}Dae" if spec["integ_kind"] == "IRK" else f"{name}Ode"
     if spec["integ_kind"] == "IRK":
-        f_body = f"""    // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
-    // xdot; the c_ calibration makes this exact for either residual sign).
-    state_t f(const state_t& x, const control_t& u, double t) const
+        model_body = f"""    // DAE residual F(x, xdot, u, t) = 0, directly from the generated
+    // CasADi residual code (no pseudo-ODE, no coefficient calibration).
+    state_t F(const state_t& x, const state_t& xdot, const control_t& u,
+              double t) const
     {{
-        state_t F;
-        const state_t zero = state_t::Zero();
-        dyn_.eval(x.data(), u.data(), zero.data(), {p_use}, t, F.data());
         state_t r;
-        for (int i = 0; i < P::nx; ++i) r(i) = -F(i) / c_(i);
+        dyn_.eval(x.data(), u.data(), xdot.data(), {p_use}, t, r.data());
         return r;
+    }}
+
+    // Analytic residual Jacobian blocks (dF/dx, dF/dxdot, dF/du) from the
+    // generated DAE Jacobian (column-major C arrays).
+    void F_jac(const state_t& x, const state_t& xdot, const control_t& u,
+               double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
+               dyn_df_du_t& dFdu) const
+    {{
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), {p_use}, t);
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                dFxdot(i, j) = dyn_j_.dFxdot_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nu; ++j)
+                dFdu(i, j) = dyn_j_.dFdu_[j * P::nx + i];
     }}"""
     else:
         f_body = f"""    // xdot = f_expl(x, u, t) directly from the explicit ODE function.
@@ -1202,53 +1220,8 @@ struct {name}Dims
         dyn_.eval(x.data(), u.data(), nullptr, {p_use}, t, r.data());
         return r;
     }}"""
-
-    calib = ""
-    if spec["integ_kind"] == "IRK":
-        calib = f"""
-    // Per-component coefficient c_i of xdot in the implicit-DAE residual
-    // F(x, xdot, u). For an ODE the residual is linear in xdot with a
-    // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
-    // construction; the diagonal entries carry ulp-level noise, so each
-    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
-    // DAE row (|c_i| < 0.5) is not supported and aborts here.
-    state_t c_ = state_t::Zero();
-
-    {name}Ode()
-    {{
-        state_t xref, xdot_one;
-        control_t uref;
-        for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
-        uref.setConstant(0.05);
-        xdot_one.setConstant(1.0);
-        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), {p_use}, 0.0);
-        for (int i = 0; i < P::nx; ++i)
-        {{
-            const double c = dyn_j_.dFxdot_[i * P::nx + i];
-            assert(std::abs(c) >= 0.5);
-            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
-        }}
-    }}
-"""
-
-    if spec["integ_kind"] == "IRK":
-        jac_body = f"""    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
-    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
-    void jacobian(const state_t& x, const control_t& u, double t,
-                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
-    {{
-        const state_t zero = state_t::Zero();
-        dyn_j_.eval(x.data(), u.data(), zero.data(), {p_use}, t);
-        for (int i = 0; i < P::nx; ++i)
-            for (int j = 0; j < P::nx; ++j)
-                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
-        for (int i = 0; i < P::nx; ++i)
-            for (int j = 0; j < P::nu; ++j)
-                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
-    }}"""
-    elif spec.get("ode_jac_c"):
-        jac_body = f"""    // Analytic dynamics Jacobian from the explicit-ODE forward VDE:
+        if spec.get("ode_jac_c"):
+            jac_body = f"""    // Analytic dynamics Jacobian from the explicit-ODE forward VDE:
     // vde_forw(x, I, 0, u) -> (f, df/dx, df/du).
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
@@ -1261,8 +1234,8 @@ struct {name}Dims
             for (int j = 0; j < P::nu; ++j)
                 df_du(i, j) = dyn_vde_.Su_[j * P::nx + i];
     }}"""
-    else:
-        jac_body = f"""    // Central finite differences of f(x, u, t) w.r.t. x and u.
+        else:
+            jac_body = f"""    // Central finite differences of f(x, u, t) w.r.t. x and u.
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {{
@@ -1282,6 +1255,7 @@ struct {name}Dims
             df_du.col(j) = (f(x, up, t) - f(x, um, t)) / (2.0 * h);
         }}
     }}"""
+        model_body = f"{f_body}\n\n{jac_body}"
 
     dyn_jac_mem = ""
     if spec["integ_kind"] == "IRK":
@@ -1289,8 +1263,8 @@ struct {name}Dims
     elif spec.get("ode_jac_c"):
         dyn_jac_mem = f"    detail::{name}OdeJac dyn_vde_;\n"
 
-    ode = f"""
-struct {name}Ode
+    model = f"""
+struct {model_name}
 {{
     using P = ocp::Problem<{name}Dims>;
     using state_t   = typename P::state_t;
@@ -1300,16 +1274,14 @@ struct {name}Ode
 
     detail::{name}Dyn dyn_;
 {dyn_jac_mem}    double {p_use} = {pval};
-{calib}
-    {f_body}
 
-{jac_body}
+{model_body}
 }};
 """
 
     integ = f"""
 using {name}Integ =
-    ocp::{spec['integ_class']}<{name}Dims, {name}Ode, {nst},
+    ocp::{spec['integ_class']}<{name}Dims, {model_name}, {nst},
                               ocp::{spec['gl_tag']}, {nstep}>;
 """
 
@@ -2163,13 +2135,13 @@ using {name}Integ =
 
     class_block = f"""
 class {name}
-    : public ocp::ContinuousProblem<{name}Dims, {name}Ode, {name}Integ>
+    : public ocp::ContinuousProblem<{name}Dims, {model_name}, {name}Integ>
 {{
     using Base =
-        ocp::ContinuousProblem<{name}Dims, {name}Ode, {name}Integ>;
+        ocp::ContinuousProblem<{name}Dims, {model_name}, {name}Integ>;
 
 public:
-    {name}() : Base({name}Ode{{}}, {dt})
+    {name}() : Base({model_name}{{}}, {dt})
     {{
 {ctor_body}
     }}
@@ -2218,7 +2190,7 @@ private:
 
 namespace ocp
 {{
-{dims}{ode}{integ}{class_block}
+{dims}{model}{integ}{class_block}
 }}  // namespace ocp
 """
 

@@ -146,7 +146,7 @@ static_assert(
         supports_value_jac_hess_prod,
     "explicit integrator over a hand-written ODE must not");
 static_assert(
-    !ocp::ImplicitRkIntegrator<Dims, OdeXsqUAd, 2, ocp::RadauIia2Tag>::
+    !ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqUAd, Dims>, 2, ocp::RadauIia2Tag>::
         supports_value_jac_hess_prod,
     "implicit integrator has no dual-Newton fused entry");
 
@@ -601,9 +601,9 @@ int run_autodiff_4j_tests()
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag> erk(ad, 0.1);
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag, 2> erk2(ad, 0.1);
     ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, 4, ocp::K4Tag> erk_ref(ref, 0.1);
-    ocp::ImplicitRkIntegrator<Dims, OdeXsqUAd, 2, ocp::RadauIia2Tag> irk(
+    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqUAd, Dims>, 2, ocp::RadauIia2Tag> irk(
         ad, 0.1, 8);
-    ocp::ImplicitRkIntegrator<Dims, OdeXsqURef, 2, ocp::RadauIia2Tag> irk_ref(
+    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>, 2, ocp::RadauIia2Tag> irk_ref(
         ref, 0.1, 8);
 
     check_integ_value_jac(erk, "K4-AD");

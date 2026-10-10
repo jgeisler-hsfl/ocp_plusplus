@@ -12,6 +12,7 @@ int run_multistep_4g_tests();
 int run_time_varying_4h_tests();
 int run_cstr_4i_tests();
 int run_autodiff_4j_tests();
+int run_dae_4k_tests();
 
 int main()
 {
@@ -24,6 +25,7 @@ int main()
     failures += run_time_varying_4h_tests();
     failures += run_cstr_4i_tests();
     failures += run_autodiff_4j_tests();
+    failures += run_dae_4k_tests();
 
     if (failures == 0)
     {

@@ -1,0 +1,174 @@
+DAE integrator refactor — Phase 0 baseline (2026-10-10T15:45:30Z)
+
+===== double_integrator =====
+All interface checks passed.
+rc=0
+
+===== integrators_unit =====
+K1 (NS=1): row-sum==c, sum(b)==1  OK
+K2 (NS=2): row-sum==c, sum(b)==1  OK
+K3 (NS=3): row-sum==c, sum(b)==1  OK
+K4 (NS=4): row-sum==c, sum(b)==1  OK
+RadauIia2 (NS=2): row-sum==c, sum(b)==1  OK
+RadauIia2 (NS=2): last-row==b, order conditions  OK
+RadauIia3 (NS=3): row-sum==c, sum(b)==1  OK
+RadauIia3 (NS=3): last-row==b, order conditions  OK
+RadauIia4 (NS=4): row-sum==c, sum(b)==1  OK
+RadauIia4 (NS=4): last-row==b, order conditions  OK
+GaussLegendre4 (NS=4): row-sum==c, sum(b)==1  OK
+GaussLegendre4 (NS=4): order conditions  OK
+rc=0
+
+===== masses_chain =====
+ocp++ masses_chain: status=1  cost=254.409461761917  (6 SQP iters)
+rc=0
+
+===== mass_spring =====
+ok   map q(0) vs RK4: 0.485426
+ok   map v(0) vs RK4: -0.00527605
+ok   map q(1) vs RK4: -0.200596
+ok   map v(1) vs RK4: 0.493932
+ok   map q(2) vs RK4: 0.871366
+ok   map v(2) vs RK4: -1.02402
+ok   map q(3) vs RK4: 0.781147
+ok   map v(3) vs RK4: 0.508407
+ok   stage cost grad max |fd - g|: 1.40653e-10
+ok   stage cost hess max err (I, 2I blocks): 0
+ok   term cost grad max |fd - g|: 6.9889e-11
+ok   term cost hess == I: 0
+rc=0
+
+===== pendulum_on_cart =====
+PendulumGen (generated): status=5 cost=44834.137167430446 (9 SQP iters)
+PendulumGen (generated): did not reach kSolved (status=5)
+rc=0
+
+===== qp_dim =====
+DoubleIntegrator: nvar(first/path/term)=4/4/2  nrow=5/5/3  nside=10/10/6  nslack=1/1/0  OK
+MassSpring: nvar(first/path/term)=11/11/8  nrow=11/11/8  nside=22/22/16  nslack=0/0/0  OK
+RichSoft (synthetic, all soft groups): nvar(first/path/term)=12/16/12  nrow=8/7/5  nside=21/23/18  nslack=7/11/9  OK
+All QpDim checks passed.
+rc=0
+
+===== qp_unit =====
+DoubleIntegrator (N dynamic): nvar(first/path/term)=4/4/2  nside=10/10/6  OK
+MassSpring (N dynamic): nvar(first/path/term)=11/11/8  nside=22/22/16  OK
+MassSpring (NH = 5, fixed-extent): nvar(first/path/term)=11/11/8  nside=22/22/16  OK
+All compute_residuals (1b) checks passed.
+All init_point (1c) checks passed.
+All KKT solve (1e) checks passed.
+All compute_alpha / update_vars (1f) checks passed.
+All centering (1g) checks passed.
+All solve (1h) checks passed.
+  DI infeasible: status = 5
+  DI non-PSD: status = 5
+  DI maxiter: status = 2 iter = 1
+rc=0
+
+===== sqp_acados_ref =====
+boxonly: cost = 5.141449027095729e+01 (ref 5.141449027091608e+01, rel err 8.016e-13, 2 iters)
+termeq: cost = 5.726180903829000e+01 (ref 5.726180903827694e+01, rel err 2.281e-13, 2 iters)
+sqp_acados_ref: OK
+rc=0
+
+===== sqp_continuous =====
+discrete reference cost = 17.8142031617
+ERK K4    cost = 17.0621417000
+IRK Rad2  cost = 17.0621417000
+sqp_continuous: OK
+rc=0
+
+===== sqp_double_integrator =====
+sqp_double_integrator: OK (2 SQP iterations, cost = 1.7814203162e+01)
+rc=0
+
+===== sqp_masses_chain =====
+  (A) integrator map  max|Phi - x_{k+1}| = 1.901e-13
+  (E) QP-level GN     |H-H_cost| = 0.000e+00  |g-g| = 0.000e+00  |BA| = 0.000e+00  |b| = 0.000e+00
+  (B) cost = 254.409461761917 (ref 254.409567053206, rel 4.139e-07, 6 iters, status=1)
+sqp_masses_chain: OK
+rc=0
+
+===== sqp_masses_chain_gen_equiv =====
+hand-written : cost=254.409461761917  iters=7  status=5
+generated    : cost=254.409461761917  iters=7  status=1
+|dx|max = 6.293e-11  |du|max = 2.298e-10  cost rel diff = 1.117e-16
+gen_equivalence: OK
+rc=0
+
+===== sqp_mass_spring =====
+sqp_mass_spring: OK (2 SQP iterations, cost = 8.4865915027e+01)
+rc=0
+
+===== sqp_p5probe =====
+sqp_p5probe: cost=0.771744 iters=36 status=1
+sqp_p5probe: OK
+rc=0
+
+===== sqp_p5probe_b =====
+sqp_p5probe_b: cost=0.000000 iters=2 status=1
+sqp_p5probe_b: OK
+rc=0
+
+===== sqp_pendulum =====
+  (A) integrator map  max|Phi - x_{k+1}| = 2.309e-14
+  (B) cost = 44834.137167430446 (ref 44841.678214165499, rel 1.682e-04, 9 iters, status=5)
+sqp_pendulum: OK
+rc=0
+
+===== sqp_unicycle =====
+  (A) integrator map  max|Phi - x_{k+1}| = 1.243e-14
+  (B) cost = 16992.519921393501 (ref 16992.567947519801, rel 2.826e-06, 30 iters, status=5)
+sqp_unicycle: OK
+rc=0
+
+===== sqp_unit =====
+All options/statistics (2e) checks passed.
+  driver cold: total_ipm=26 cost=17.814203
+  driver warm: total_ipm=26 cost=17.814203
+All warm_start (3c) checks passed.
+All timeout (3f) checks passed.
+All adaptive LM (3g) checks passed.
+All QP scaling (3h) checks passed.
+All funnel globalization (3i) checks passed.
+All second-order-correction (3j) checks passed.
+All sqp unit checks passed.
+rc=0
+
+===== unicycle =====
+UnicycleGen (generated): status=5 cost=16992.519921393501 (30 SQP iters)
+UnicycleGen (generated): did not reach kSolved (status=5)
+rc=0
+
+===== compare.sh masses_chain =====
+==> acados reference
+==> ocp++
+==> comparison
+acados cost : 254.409567
+ocp++  cost : 254.409462
+cost rel diff : 4.139e-07
+max |dx|      : 1.096e-03
+max |du|      : 8.137e-03
+RESULT: PASS
+===== compare.sh pendulum_on_cart =====
+===== compare.sh unicycle =====
+==> acados reference
+==> ocp++
+==> comparison
+acados cost : 44841.678214
+ocp++  cost : 44834.137167
+cost rel diff : 1.682e-04
+max |dx|      : 9.666e-02
+max |du|      : 7.760e-01
+RESULT: PASS
+pend rc=0
+==> acados reference
+==> ocp++
+==> comparison
+acados cost : 16992.567948
+ocp++  cost : 16992.519921
+cost rel diff : 2.826e-06
+max |dx|      : 4.494e-02
+max |du|      : 1.134e-01
+RESULT: PASS
+unicy rc=0

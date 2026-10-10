@@ -16,8 +16,6 @@
 
 #include "P5probeB_capi.hpp"
 
-#include <cassert>
-#include <cmath>
 #include <Eigen/Dense>
 #include <limits>
 
@@ -57,7 +55,7 @@ struct P5probeBDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {  };
 };
 
-struct P5probeBOde
+struct P5probeBDae
 {
     using P = ocp::Problem<P5probeBDims>;
     using state_t   = typename P::state_t;
@@ -69,71 +67,47 @@ struct P5probeBOde
     detail::P5probeBDynJac dyn_j_;
     double p_ = 0.0;
 
-    // Per-component coefficient c_i of xdot in the implicit-DAE residual
-    // F(x, xdot, u). For an ODE the residual is linear in xdot with a
-    // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
-    // construction; the diagonal entries carry ulp-level noise, so each
-    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
-    // DAE row (|c_i| < 0.5) is not supported and aborts here.
-    state_t c_ = state_t::Zero();
-
-    P5probeBOde()
+    // DAE residual F(x, xdot, u, t) = 0, directly from the generated
+    // CasADi residual code (no pseudo-ODE, no coefficient calibration).
+    state_t F(const state_t& x, const state_t& xdot, const control_t& u,
+              double t) const
     {
-        state_t xref, xdot_one;
-        control_t uref;
-        for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
-        uref.setConstant(0.05);
-        xdot_one.setConstant(1.0);
-        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), p_, 0.0);
-        for (int i = 0; i < P::nx; ++i)
-        {
-            const double c = dyn_j_.dFxdot_[i * P::nx + i];
-            assert(std::abs(c) >= 0.5);
-            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
-        }
-    }
-
-        // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
-    // xdot; the c_ calibration makes this exact for either residual sign).
-    state_t f(const state_t& x, const control_t& u, double t) const
-    {
-        state_t F;
-        const state_t zero = state_t::Zero();
-        dyn_.eval(x.data(), u.data(), zero.data(), p_, t, F.data());
         state_t r;
-        for (int i = 0; i < P::nx; ++i) r(i) = -F(i) / c_(i);
+        dyn_.eval(x.data(), u.data(), xdot.data(), p_, t, r.data());
         return r;
     }
 
-    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
-    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
-    void jacobian(const state_t& x, const control_t& u, double t,
-                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    // Analytic residual Jacobian blocks (dF/dx, dF/dxdot, dF/du) from the
+    // generated DAE Jacobian (column-major C arrays).
+    void F_jac(const state_t& x, const state_t& xdot, const control_t& u,
+               double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
+               dyn_df_du_t& dFdu) const
     {
-        const state_t zero = state_t::Zero();
-        dyn_j_.eval(x.data(), u.data(), zero.data(), p_, t);
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), p_, t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
-                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
+                dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                dFxdot(i, j) = dyn_j_.dFxdot_[j * P::nx + i];
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nu; ++j)
-                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
+                dFdu(i, j) = dyn_j_.dFdu_[j * P::nx + i];
     }
 };
 
 using P5probeBInteg =
-    ocp::ImplicitRkIntegrator<P5probeBDims, P5probeBOde, 2,
+    ocp::ImplicitRkIntegrator<P5probeBDims, P5probeBDae, 2,
                               ocp::GaussLegendre2Tag, 1>;
 
 class P5probeB
-    : public ocp::ContinuousProblem<P5probeBDims, P5probeBOde, P5probeBInteg>
+    : public ocp::ContinuousProblem<P5probeBDims, P5probeBDae, P5probeBInteg>
 {
     using Base =
-        ocp::ContinuousProblem<P5probeBDims, P5probeBOde, P5probeBInteg>;
+        ocp::ContinuousProblem<P5probeBDims, P5probeBDae, P5probeBInteg>;
 
 public:
-    P5probeB() : Base(P5probeBOde{}, 0.09999999999999999)
+    P5probeB() : Base(P5probeBDae{}, 0.09999999999999999)
     {
         x0_ << 0.0, 0.0;
     }

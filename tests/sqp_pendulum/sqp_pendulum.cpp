@@ -54,7 +54,7 @@ void check(bool ok, const char* msg)
     }
 }
 
-using Ode = PendulumGenOde;
+using Ode = PendulumGenDae;
 using Dim = PendulumGenDims;
 
 // (A) feed each reference (x_k, u_k) through the ocp++ collocation map and

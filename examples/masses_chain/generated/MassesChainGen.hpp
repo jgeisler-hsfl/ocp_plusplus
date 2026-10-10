@@ -16,8 +16,6 @@
 
 #include "MassesChainGen_capi.hpp"
 
-#include <cassert>
-#include <cmath>
 #include <Eigen/Dense>
 #include <limits>
 
@@ -57,7 +55,7 @@ struct MassesChainGenDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {  };
 };
 
-struct MassesChainGenOde
+struct MassesChainGenDae
 {
     using P = ocp::Problem<MassesChainGenDims>;
     using state_t   = typename P::state_t;
@@ -69,71 +67,47 @@ struct MassesChainGenOde
     detail::MassesChainGenDynJac dyn_j_;
     double p_ = 0.0;
 
-    // Per-component coefficient c_i of xdot in the implicit-DAE residual
-    // F(x, xdot, u). For an ODE the residual is linear in xdot with a
-    // constant diagonal dF/dxdot = c_i * I; c_i = +1 (CasADi "xdot - f") or
-    // -1 (acados "f - xdot"). Read once from the generated DAE Jacobian at
-    // construction; the diagonal entries carry ulp-level noise, so each
-    // c_i is snapped to exactly +/-1 (exact for ODE residuals). A genuine
-    // DAE row (|c_i| < 0.5) is not supported and aborts here.
-    state_t c_ = state_t::Zero();
-
-    MassesChainGenOde()
+    // DAE residual F(x, xdot, u, t) = 0, directly from the generated
+    // CasADi residual code (no pseudo-ODE, no coefficient calibration).
+    state_t F(const state_t& x, const state_t& xdot, const control_t& u,
+              double t) const
     {
-        state_t xref, xdot_one;
-        control_t uref;
-        for (int i = 0; i < P::nx; ++i) xref(i) = 0.05 * (i + 1);
-        uref.setConstant(0.05);
-        xdot_one.setConstant(1.0);
-        dyn_j_.eval(xref.data(), uref.data(), xdot_one.data(), p_, 0.0);
-        for (int i = 0; i < P::nx; ++i)
-        {
-            const double c = dyn_j_.dFxdot_[i * P::nx + i];
-            assert(std::abs(c) >= 0.5);
-            c_(i) = (c >= 0.0) ? 1.0 : -1.0;
-        }
-    }
-
-        // xdot = f(x, u, t) = -c^(-1) * F(x, 0, u)  (solve the residual for
-    // xdot; the c_ calibration makes this exact for either residual sign).
-    state_t f(const state_t& x, const control_t& u, double t) const
-    {
-        state_t F;
-        const state_t zero = state_t::Zero();
-        dyn_.eval(x.data(), u.data(), zero.data(), p_, t, F.data());
         state_t r;
-        for (int i = 0; i < P::nx; ++i) r(i) = -F(i) / c_(i);
+        dyn_.eval(x.data(), u.data(), xdot.data(), p_, t, r.data());
         return r;
     }
 
-    // Analytic dynamics Jacobian from the generated DAE Jacobian: with
-    // F = c*xdot - f(x, u),  df/dz = -dF/dz / c  (row-wise scaling by c).
-    void jacobian(const state_t& x, const control_t& u, double t,
-                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
+    // Analytic residual Jacobian blocks (dF/dx, dF/dxdot, dF/du) from the
+    // generated DAE Jacobian (column-major C arrays).
+    void F_jac(const state_t& x, const state_t& xdot, const control_t& u,
+               double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
+               dyn_df_du_t& dFdu) const
     {
-        const state_t zero = state_t::Zero();
-        dyn_j_.eval(x.data(), u.data(), zero.data(), p_, t);
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), p_, t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
-                df_dx(i, j) = -dyn_j_.dFdx_[j * P::nx + i] / c_(i);
+                dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
+        for (int i = 0; i < P::nx; ++i)
+            for (int j = 0; j < P::nx; ++j)
+                dFxdot(i, j) = dyn_j_.dFxdot_[j * P::nx + i];
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nu; ++j)
-                df_du(i, j) = -dyn_j_.dFdu_[j * P::nx + i] / c_(i);
+                dFdu(i, j) = dyn_j_.dFdu_[j * P::nx + i];
     }
 };
 
 using MassesChainGenInteg =
-    ocp::ImplicitRkIntegrator<MassesChainGenDims, MassesChainGenOde, 4,
+    ocp::ImplicitRkIntegrator<MassesChainGenDims, MassesChainGenDae, 4,
                               ocp::GaussLegendre4Tag, 2>;
 
 class MassesChainGen
-    : public ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenOde, MassesChainGenInteg>
+    : public ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenDae, MassesChainGenInteg>
 {
     using Base =
-        ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenOde, MassesChainGenInteg>;
+        ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenDae, MassesChainGenInteg>;
 
 public:
-    MassesChainGen() : Base(MassesChainGenOde{}, 0.2)
+    MassesChainGen() : Base(MassesChainGenDae{}, 0.2)
     {
         x0_ << -1.36855384628859e-22, 0.3740500601637552, -0.344560900973575, 5.321708456004501e-20, 4.100526712310663e-20, 1.242120869798635e-21, -5.556669042482574e-23, 0.7567239589410515, -0.3750878206748779, -5.814483335766596e-21, -1.118556560067962e-20, 1.172129048303988e-32, 5.198662563491591e-23, 1.132755245684027, -0.08869592957430722, 1.277784264617406e-32, -2.619900470717379e-32, -7.912381613475523e-33, 0.0, 1.5, 0.5, 0.0, 0.0, 0.0;
         cpVx_ = Eigen::Map<const Eigen::Matrix<double, 27, 24>>(cpVx_data);

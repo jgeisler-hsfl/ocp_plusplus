@@ -50,7 +50,7 @@ void check(bool ok, const char* msg)
     }
 }
 
-using Ode = UnicycleGenOde;
+using Ode = UnicycleGenDae;
 using Dim = UnicycleGenDims;
 
 // (A) feed each reference (x_k, u_k) through the ocp++ collocation map and

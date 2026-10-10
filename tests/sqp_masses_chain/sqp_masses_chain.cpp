@@ -62,7 +62,7 @@ void check(bool ok, const char* msg)
     }
 }
 
-using Ode = MassesChainOde;
+using Dae = MassesChainDae;
 using Dim = MassesChainDims;
 
 // (E) QP-level Gauss-Newton check (GN_HESSIAN_PLAN.md sec. 3a.2, ocp++ side).
@@ -249,8 +249,8 @@ void check_qp_gn()
 // compare to x_{k+1}; the max gap must be ~machine precision.
 void check_integrator_map()
 {
-    Ode ode;
-    MassesChainInteg integ(ode, 0.2);
+    Dae dae;
+    MassesChainInteg integ(dae, 0.2);
     Eigen::Matrix<double, Dim::nx, 1> x, x_next;
     Eigen::Matrix<double, Dim::nu, 1> u;
     double max_gap = 0.0;

@@ -67,7 +67,7 @@ struct P5probeOde
     detail::P5probeOdeJac dyn_vde_;
     double p_ = 0.0;
 
-        // xdot = f_expl(x, u, t) directly from the explicit ODE function.
+    // xdot = f_expl(x, u, t) directly from the explicit ODE function.
     state_t f(const state_t& x, const control_t& u, double t) const
     {
         state_t r;

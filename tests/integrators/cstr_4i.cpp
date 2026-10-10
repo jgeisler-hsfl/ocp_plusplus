@@ -720,7 +720,7 @@ int run_cstr_4i_tests()
         check_jacobian_fd_impl(k4, "K4");
     }
     {
-        ocp::ImplicitRkIntegrator<CstrDims, CstrOde, 2, ocp::RadauIia2Tag> rk(
+        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, 2, ocp::RadauIia2Tag> rk(
             ode, 0.1, 10);
         check_jacobian_fd_impl(rk, "Radau2");
     }
@@ -729,7 +729,7 @@ int run_cstr_4i_tests()
         check_hess_prod_fd(k4, "K4");
     }
     {
-        ocp::ImplicitRkIntegrator<CstrDims, CstrOde, 2, ocp::RadauIia2Tag> rk(
+        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, 2, ocp::RadauIia2Tag> rk(
             ode, 0.1, 12);
         check_hess_prod_fd(rk, "Radau2");
     }

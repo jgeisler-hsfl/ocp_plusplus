@@ -216,7 +216,7 @@ struct ErkOcp : ErkBase
 
 // --- IRK variant --------------------------------------------------------
 
-using IrkInteg = ocp::ImplicitRkIntegrator<ContOcpDims, DoubleIntegratorOde, 2,
+using IrkInteg = ocp::ImplicitRkIntegrator<ContOcpDims, ocp::OdeToDae<DoubleIntegratorOde, ContOcpDims>, 2,
                                              ocp::RadauIia2Tag>;
 using IrkBase = ocp::ContinuousProblem<ContOcpDims, DoubleIntegratorOde, IrkInteg>;
 

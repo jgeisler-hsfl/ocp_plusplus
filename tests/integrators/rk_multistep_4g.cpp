@@ -294,7 +294,7 @@ template <int NumSteps>
 void check_value_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
                                   NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1, 8);
     state_t cur;
@@ -316,7 +316,7 @@ template <int NumSteps>
 void check_jacobian_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
                                   NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1, 8);
     const state_t x(0.3, -0.7);
@@ -376,7 +376,7 @@ template <int NumSteps>
 void check_hess_prod_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
                                   NumSteps>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
 
