@@ -725,12 +725,14 @@ struct SqpOptions
     double tol_stat = 1e-8, tol_eq = 1e-8, tol_ineq = 1e-8, tol_comp = 1e-8;
     double tol_min_step_norm = 1e-12;
     double tol_unbounded = -1e10;
-    // Runtime gate for the multiplier-weighted Hessian terms in the QP
-    // Hessian (dynamics Hessian when has_dynamics_hess, constraint
-    // Hessians when has_constr_hess); mirrors acados' per-iteration
-    // `exact_hess` / `compute_hess` gate. When false the QP Hessian is
-    // the pure cost Hessian (Gauss-Newton), regardless of the Dims flags.
-    bool compute_hess = true;
+    // Per-source runtime gates for the multiplier-weighted Hessian terms
+    // in the QP Hessian; mirror acados' `exact_hess_dyn` /
+    // `exact_hess_constr`. Each is additionally gated by the Dims
+    // capability flag (has_dynamics_hess / has_constr_hess). When a gate
+    // is false the corresponding term is dropped from the QP Hessian
+    // (Gauss-Newton for that source), regardless of the Dims flag.
+    bool compute_hess_dyn = true;
+    bool compute_hess_constr = true;
     double levenberg_marquardt = 0.0;
     bool with_adaptive_lm = false;        // 3g: adaptive LM (gates the mu schedule)
     double adaptive_lm_mu0 = 1e-3;        // 3g: mu / mu_bar init (ocp_nlp_common.c:1265)
@@ -927,13 +929,14 @@ public:
 
     /// Add Levenberg-Marquardt damping: mu*I to the (u;x) Hessian block of
     /// every stage (first/path: leading (nu+nx) diagonal; term: full nx
-    /// diagonal). No-op when compute_hess is false or mu <= 0.
+    /// diagonal). No-op when both compute_hess_dyn and compute_hess_constr
+    /// are false or mu <= 0.
     /// (acados ocp_nlp_add_levenberg_marquardt_term, ocp_nlp_common.c:3034;
     /// deviation: the acados cost-module `scaling` factor has no
     /// counterpart in our interface, the examples use scaling = 1.)
     void add_lm_term(Qp<P, NH>& qp, double mu) const
     {
-        if (!opts_.compute_hess || mu <= 0.0)
+        if ((!opts_.compute_hess_dyn && !opts_.compute_hess_constr) || mu <= 0.0)
         {
             return;
         }
@@ -1901,7 +1904,7 @@ private:
         typename P::dyn_hess_t M_dyn;
         if constexpr (P::has_dynamics_hess)
         {
-            if (opts_.compute_hess)
+            if (opts_.compute_hess_dyn)
                 problem.dynamics_value_jac_hess(0, x, u, sol.lambda_dyn[0],
                                                 f, A, B, M_dyn);
             else
@@ -1921,7 +1924,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.stage_inequality_value_jac_hess(
                         0, x, u, sol.lambda_ineq_stage[0],
                         c.g, c.g_dx, c.g_du, M_ineq);
@@ -1939,7 +1942,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.stage_equality_value_jac_hess(
                         0, x, u, sol.lambda_eq_stage[0],
                         c.e, c.e_dx, c.e_du, M_eq);
@@ -1968,10 +1971,13 @@ private:
                 }
             }
 
-            if (opts_.compute_hess)
+            if (opts_.compute_hess_dyn)
             {
                 if constexpr (P::has_dynamics_hess)
                     add_permuted_hess(st.hess, M_dyn, -1.0);
+            }
+            if (opts_.compute_hess_constr)
+            {
                 if constexpr (P::has_constr_hess)
                 {
                     if constexpr (D::ng > 0)
@@ -2046,7 +2052,7 @@ private:
         typename P::dyn_hess_t M_dyn;
         if constexpr (P::has_dynamics_hess)
         {
-            if (opts_.compute_hess)
+            if (opts_.compute_hess_dyn)
                 problem.dynamics_value_jac_hess(k, x, u, sol.lambda_dyn[k],
                                                 f, A, B, M_dyn);
             else
@@ -2066,7 +2072,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.stage_inequality_value_jac_hess(
                         k, x, u, sol.lambda_ineq_stage[k],
                         c.g, c.g_dx, c.g_du, M_ineq);
@@ -2084,7 +2090,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.stage_equality_value_jac_hess(
                         k, x, u, sol.lambda_eq_stage[k],
                         c.e, c.e_dx, c.e_du, M_eq);
@@ -2111,10 +2117,13 @@ private:
                 }
             }
 
-            if (opts_.compute_hess)
+            if (opts_.compute_hess_dyn)
             {
                 if constexpr (P::has_dynamics_hess)
                     add_permuted_hess(st.hess, M_dyn, -1.0);
+            }
+            if (opts_.compute_hess_constr)
+            {
                 if constexpr (P::has_constr_hess)
                 {
                     if constexpr (D::ng > 0)
@@ -2180,7 +2189,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.terminal_inequality_value_jac_hess(
                         x, sol.lambda_ineq_term, tc.g, tc.g_dx, M_ineq);
                 else
@@ -2195,7 +2204,7 @@ private:
         {
             if constexpr (P::has_constr_hess)
             {
-                if (opts_.compute_hess)
+                if (opts_.compute_hess_constr)
                     problem.terminal_equality_value_jac_hess(
                         x, sol.lambda_eq_term, tc.e, tc.e_dx, M_eq);
                 else
@@ -2217,7 +2226,7 @@ private:
                     st.hess(i, j) = Ht(i, j);
                 }
             }
-            if (opts_.compute_hess)
+            if (opts_.compute_hess_constr)
             {
                 if constexpr (P::has_constr_hess)
                 {

@@ -13,7 +13,7 @@
 //   - DegProbe (fixed x_0, hard ineq violated at the pinned state):
 //     assemble_qp returns kInfeasible.
 //   - add_lm_term: mu*I on the (u;x) diagonal of every stage, no-op when
-//     compute_hess = false or mu <= 0.
+//     all Hessian gates are off or mu <= 0.
 
 #include <cmath>
 #include <cstdio>
@@ -689,9 +689,10 @@ void check_double_integrator()
             solver_no.last_qp());
         solver_no.add_lm_term(q2, 0.0);
         check_close(q2.first.hess(0, 0), 0.01, "DI LM no-op (mu=0)");
-        // no-op: compute_hess = false leaves the Hessian untouched
+        // no-op: all Hessian gates off leaves the Hessian untouched
         SqpOptions opts_no;
-        opts_no.compute_hess = false;
+        opts_no.compute_hess_dyn = false;
+        opts_no.compute_hess_constr = false;
         SqpSolver<DoubleIntegrator> solver_off(opts_no);
         solver_off.resize(N);
         solver_off.assemble_qp(prob, sol);

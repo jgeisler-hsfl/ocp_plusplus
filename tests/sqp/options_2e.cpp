@@ -62,7 +62,8 @@ void test_options_defaults()
     check_close(o.tol_comp, 1e-8, "tol_comp default 1e-8");
     check_close(o.tol_min_step_norm, 1e-12, "tol_min_step_norm default 1e-12");
     check_close(o.tol_unbounded, -1e10, "tol_unbounded default -1e10");
-    check(o.compute_hess, "compute_hess default true");
+    check(o.compute_hess_dyn, "compute_hess_dyn default true");
+    check(o.compute_hess_constr, "compute_hess_constr default true");
     check_close(o.levenberg_marquardt, 0.0, "levenberg_marquardt default 0");
     check(!o.with_adaptive_lm, "with_adaptive_lm default false");
     check(o.print_level == 0, "print_level default 0");

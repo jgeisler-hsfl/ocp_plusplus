@@ -11,13 +11,17 @@
 //   2. EXACT mode: hess == H_cost - M_dyn + M_ineq (the hand-computed
 //      composition also covered by assemble_2f, here for the same problem
 //      so the GN/EXACT delta is exactly -M_dyn + M_ineq).
-//   3. EXACT Dims with the runtime gate compute_hess = false: hess == GN.
+//   3. EXACT Dims with both runtime gates (compute_hess_dyn /
+//      compute_hess_constr) off: hess == GN.
 //   4. FD cross-check of the EXACT first-stage hess: central finite
 //      differences of the stage Lagrangian
 //          L_cost(x,u) + lam_dyn (x1_bar - f(x,u)) + lam_ineq g(x,u)
 //      w.r.t. (u, x) at the fixed iterate.  This verifies the HVP call
 //      convention (multiplier w, v_x/v_u split), the minus sign of the
 //      dynamics term, and the (u;x) layout end-to-end.
+//   5. Independent runtime gates (acados exact_hess_dyn / exact_hess_constr):
+//      dyn off + constr on  -> hess = H_cost + M_ineq  (no M_dyn);
+//      dyn on  + constr off -> hess = H_cost - M_dyn   (no M_ineq / M_eq).
 
 #include <cmath>
 #include <cstdio>
@@ -467,8 +471,8 @@ int run_hessmode_5a_tests()
     check_assembly<ExactDims>("exact");
     check_assembly<GnDims>("gn");
 
-    // check 3: runtime gate -- EXACT Dims but compute_hess = false behaves
-    // like GN (HVP terms dropped).
+    // check 3: runtime gates -- EXACT Dims but both compute_hess_dyn and
+    // compute_hess_constr = false behaves like GN (HVP terms dropped).
     {
         HessModeProb<ExactDims> prob;
         Solution<HessModeProb<ExactDims>> sol(1);
@@ -480,7 +484,8 @@ int run_hessmode_5a_tests()
         sol.lambda_eq_term << lam_eq_t;
 
         SqpOptions opts;
-        opts.compute_hess = false;
+        opts.compute_hess_dyn = false;
+        opts.compute_hess_constr = false;
         SqpSolver<HessModeProb<ExactDims>> solver(opts);
         solver.resize(1);
         if (solver.assemble_qp(prob, sol) != Status::kSolved)
@@ -496,6 +501,74 @@ int run_hessmode_5a_tests()
             check_close(s.hess(1, 1), 2.0, "gate-off hess(x,x)");
             check_close(solver.last_qp().term.hess(0, 0), 8.0,
                         "gate-off term hess");
+        }
+    }
+
+    // check 5: independent gates -- dyn off, constr on: the dynamics HVP
+    // term is dropped, the ineq HVP (+ terminal eq HVP) is kept.
+    {
+        HessModeProb<ExactDims> prob;
+        Solution<HessModeProb<ExactDims>> sol(1);
+        sol.x[0] << x0;
+        sol.x[1] << x1b;
+        sol.u[0] << u0;
+        sol.lambda_dyn[0] << lam_dyn;
+        sol.lambda_ineq_stage[0] << lam_ineq;
+        sol.lambda_eq_term << lam_eq_t;
+
+        SqpOptions opts;
+        opts.compute_hess_dyn = false;
+        SqpSolver<HessModeProb<ExactDims>> solver(opts);
+        solver.resize(1);
+        if (solver.assemble_qp(prob, sol) != Status::kSolved)
+        {
+            std::fprintf(stderr, "FAIL: dyn-off assemble status\n");
+            ++failures;
+        }
+        else
+        {
+            const auto& qp = solver.last_qp();
+            // (u;x): H_cost + M_ineq (no M_dyn): hux = 0.5 + 0.4
+            check_close(qp.first.hess(0, 0), 0.5, "dyn-off hess(u,u)");
+            check_close(qp.first.hess(0, 1), 0.9, "dyn-off hess(u,x)");
+            check_close(qp.first.hess(1, 1), 2.0, "dyn-off hess(x,x)");
+            check_close(qp.first.hess(2, 2), 7.0, "dyn-off slack diag");
+            // terminal: H_cost_term + 2 * lam_eq_t (constr kept)
+            check_close(qp.term.hess(0, 0), 3.0, "dyn-off term hess");
+        }
+    }
+
+    // check 6: independent gates -- dyn on, constr off: the dynamics HVP
+    // term is kept, all constraint HVP terms are dropped.
+    {
+        HessModeProb<ExactDims> prob;
+        Solution<HessModeProb<ExactDims>> sol(1);
+        sol.x[0] << x0;
+        sol.x[1] << x1b;
+        sol.u[0] << u0;
+        sol.lambda_dyn[0] << lam_dyn;
+        sol.lambda_ineq_stage[0] << lam_ineq;
+        sol.lambda_eq_term << lam_eq_t;
+
+        SqpOptions opts;
+        opts.compute_hess_constr = false;
+        SqpSolver<HessModeProb<ExactDims>> solver(opts);
+        solver.resize(1);
+        if (solver.assemble_qp(prob, sol) != Status::kSolved)
+        {
+            std::fprintf(stderr, "FAIL: constr-off assemble status\n");
+            ++failures;
+        }
+        else
+        {
+            const auto& qp = solver.last_qp();
+            // (u;x): H_cost - M_dyn (no M_ineq): hux = 0.5 - 0.3
+            check_close(qp.first.hess(0, 0), 0.5, "constr-off hess(u,u)");
+            check_close(qp.first.hess(0, 1), 0.2, "constr-off hess(u,x)");
+            check_close(qp.first.hess(1, 1), 2.0, "constr-off hess(x,x)");
+            check_close(qp.first.hess(2, 2), 7.0, "constr-off slack diag");
+            // terminal: H_cost_term only (no eq HVP)
+            check_close(qp.term.hess(0, 0), 8.0, "constr-off term hess");
         }
     }
 
