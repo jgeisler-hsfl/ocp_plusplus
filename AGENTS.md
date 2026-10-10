@@ -1,9 +1,11 @@
 # AGENTS.md
 ## Core Operational Protocol (Mandatory)
-1. **Task Breakdown:** Before executing any significant chunk of work, break the task down into distinct execution blocks.
-2. **Intermediate Summaries:** After finishing a major sub-task, output a short summary note (e.g., `Checkpoint: [Sub-task] completed. Result: [Key outcome]`). This preserves state and ensures easy recovery if interrupted.
-3. **Loop Prevention:** If you repeat reasoning without progress or hit a dead end, STOP immediately. State `[STUCK]`, briefly explain the roadblock, and adjust your strategy before continuing.
-4. **When updating tasks or resuming after a long/interrupted/compacted session:** Always call `todoread` first to verify the current state of the panel.
+1. **Ask for clarification** when requirements are ambiguous and
+  different interpretations would lead to materially different implementations.
+2. **Task Breakdown:** Before executing any significant chunk of work, break the task down into distinct execution blocks.
+3. **Intermediate Summaries:** After finishing a major sub-task, output a short summary note (e.g., `Checkpoint: [Sub-task] completed. Result: [Key outcome]`). This preserves state and ensures easy recovery if interrupted.
+4. **Loop Prevention:** If you repeat reasoning without progress or hit a dead end, STOP immediately. State `[STUCK]`, briefly explain the roadblock, and adjust your strategy before continuing.
+5. **When updating tasks or resuming after a long/interrupted/compacted session:** Always call `todoread` first to verify the current state of the panel.
 
 ## Project
 C++17 framework for numerical optimal control problems (OCP). Strict separation of:
@@ -25,6 +27,13 @@ cmake --build build
 ```
 Eigen3 is header-only (found at `/usr/local/include/eigen3` or `/usr/local/include`).
 No other dependencies. C++17 required.
+
+- Run the tests relevant to the changes.
+- Do not suppress compiler warnings merely to obtain a successful build.
+- Add tests for new functionality.
+- Update tests when changing behavior.
+- Do not silently weaken tests to make a change pass.
+- Report tests that could not be run and explain why.
 
 ## Layout
 - `include/ocp/problem.hpp` — the problem interface (central contract): `Problem<Dims, Scalar>`,
@@ -84,6 +93,9 @@ No other dependencies. C++17 required.
 - Solver-internal state (slacks, barrier/regularization params, multiplier
   orderings) stays inside each solver; only shared solution quantities
   (x, u, KKT multipliers, cost, status) go into `ocp::Solution`.
+- Further information can be found in the ARCHITECTURE.md file.
+- Current development plans live in docs/plans. Finished developments are documented 
+  in docs/plans/finished.
 
 ## Style
 - C++17, Allman braces, 4-space indent, no tabs, ≤ 100 chars per line.
@@ -104,6 +116,18 @@ No other dependencies. C++17 required.
   interface contract in `problem.hpp`.
 - `//` for non-obvious local decisions only ("why", not "what").
 - No comments that restate the code; section banners only in files > 150 lines.
+
+## Documentation 
+- Document new dependencies and any additional setup requirements.
+- Update documentation when behavior or public interfaces change.
+- Explain relevant design decisions when they are not obvious from the code.
+
+## Portability and Safety
+- Do not include absolute, machine-specific filesystem paths in documentation,
+  source code, or configuration files.
+- Do not document usernames, home directories, or local installation paths.
+- Never commit credentials, access tokens, passwords, or private keys.
+- Do not copy secrets into documentation, source code, or configuration.
 
 ## Commits
 - Imperative subject, ≤ 72 chars, optional scope prefix matching the layout:
