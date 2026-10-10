@@ -10,9 +10,12 @@ C++17 framework for numerical optimal control problems (OCP). Strict separation 
 1. the mathematical problem definition (user-implemented, `include/ocp/problem.hpp`), and
 2. solver algorithms (templates over the concrete problem type).
 
-`acados/` is a read-only reference (symlink to the acados repo) used to guide the
-SQP/HPIPM reimplementation. Do not modify it; do not copy its structure or naming.
-Its algorithm documentation lives in `acados/docs/algorithm/`.
+The acados repo is expected as a sibling directory (`../acados/` relative to
+this repo). It is a read-only reference used to guide the SQP/HPIPM
+reimplementation. Do not modify it; do not copy its structure or naming.
+Its algorithm documentation lives in `../acados/docs/algorithm/`.
+Scripts reference it via the `ACADOS_SOURCE_DIR` environment variable
+(defaults to `${ROOT}/../acados`).
 
 ## Build & test
 ```bash
@@ -34,7 +37,7 @@ No other dependencies. C++17 required.
 - `docs/plans/` — working plan docs; `docs/plans/finished/` holds completed
   plans/worklogs (SQP phases 1–4, GN-Hessian, model API, generator,
   phase-1 worklog).
-- `acados/` — reference only.
+- `../acados/` — sibling repo, reference only (see `ACADOS_SOURCE_DIR`).
 
 ## Conventions
 - Structural dimensions (`nx, nu, ng, ne, nl, ng_t, ne_t, nl_t`) and the const

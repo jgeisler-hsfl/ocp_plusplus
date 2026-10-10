@@ -2,8 +2,8 @@
 //
 // The acados mass_spring QP example (acados/examples/c/
 // no_interface_examples/mass_spring_model/mass_spring_qp.c) is solved by
-// acados FULL_CONDENSING_HPIPM in a standalone C driver (see
-// /tmp/opencode/acados_ref/ms_ref.c) and the full-precision (x, u, cost)
+// acados FULL_CONDENSING_HPIPM in a standalone C driver and the
+// full-precision (x, u, cost)
 // output is embedded in ref_boxonly.h / ref_termeq.h. This test solves the
 // same QP with our SqpSolver and compares:
 //   - cost:       relative error < 1e-4

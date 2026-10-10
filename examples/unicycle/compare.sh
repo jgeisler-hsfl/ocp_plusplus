@@ -17,7 +17,9 @@ ROOT="$(cd "${HERE}/../.." && pwd)"
 cd "${HERE}"
 
 # acados runtime libraries (the codegen links against a prebuilt acados).
-ACADOS_LIB="${ACADOS_LIB:-/home/jgeisler/repos/acados/lib}"
+ACADOS_SOURCE_DIR="${ACADOS_SOURCE_DIR:-${ROOT}/../acados}"
+export ACADOS_SOURCE_DIR
+ACADOS_LIB="${ACADOS_LIB:-${ACADOS_SOURCE_DIR}/lib}"
 export LD_LIBRARY_PATH="${ACADOS_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 echo "==> acados reference"

@@ -982,11 +982,11 @@ written; §1 conventions signed off in the checkpoints.
   ### 2i — acados reference diff + sign-off
 
   - **Acados build (feasible).** Configured out-of-tree and built the core:
-    `cmake -B /tmp/opencode/acados_build -S acados -DCMAKE_BUILD_TYPE=Release
-    -DACADOS_EXAMPLES=ON`; `libacados.so` / `libblasfeo.so` / `libhpipm.so`
-    in `/tmp/opencode/acados_build/{acados,external/blasfeo,external/hpipm}`.
-  - **Full-precision reference driver** (`/tmp/opencode/acados_ref/ms_ref.c`,
-    built against the above via `build.sh`): reuses the `create_*_mass_spring*`
+     `cmake -B <acados_build> -S acados -DCMAKE_BUILD_TYPE=Release
+     -DACADOS_EXAMPLES=ON`; `libacados.so` / `libblasfeo.so` / `libhpipm.so`
+     in `<acados_build>/{acados,external/blasfeo,external/hpipm}`.
+   - **Full-precision reference driver** (a standalone C driver
+     built against the above via `build.sh`): reuses the `create_*_mass_spring*`
     helpers from `mass_spring_qp.c` (T-diag −2, `b = 0.1·ones`,
     `Q=I`, `R=2I`, `q=0.1`, `r=0.2`), solves with `FULL_CONDENSING_HPIPM`,
     and dumps `x_k` / `u_k` per stage at `%.17e` plus the QP objective in the

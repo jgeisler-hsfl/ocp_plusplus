@@ -16,10 +16,10 @@ ocp++ wrapper (UnicycleGen.hpp + _capi.hpp + driver).
 Run from the repo root (needs casadi <= 3.8.1 + the acados python interface on
 PYTHONPATH, plus ACADOS_SOURCE_DIR / ACADOS_INSTALL_DIR):
 
-    PYTHONPATH=/home/jgeisler/repos/acados/interfaces/acados_template \
-              /home/jgeisler/repos/acados/examples/acados_python/unicycle \
-    ACADOS_SOURCE_DIR=/home/jgeisler/repos/acados \
-    ACADOS_INSTALL_DIR=/home/jgeisler/repos/acados \
+    PYTHONPATH=$ACADOS/interfaces/acados_template \
+              $ACADOS/examples/acados_python/unicycle \
+    ACADOS_SOURCE_DIR=$ACADOS \
+    ACADOS_INSTALL_DIR=$ACADOS \
     python3 examples/unicycle/example_ocp.py
 """
 

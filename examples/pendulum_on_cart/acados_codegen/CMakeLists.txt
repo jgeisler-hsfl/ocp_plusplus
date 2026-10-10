@@ -57,9 +57,9 @@ endif()
 
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE /home/jgeisler/repos/ocp++/examples/pendulum_on_cart/acados_codegen)
-    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE /home/jgeisler/repos/ocp++/examples/pendulum_on_cart/acados_codegen)
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE /home/jgeisler/repos/ocp++/examples/pendulum_on_cart/acados_codegen)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR})
+    set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR})
+    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 
@@ -99,8 +99,8 @@ set(EXTERNAL_DIR)
 set(EXTERNAL_LIB)
 
 # set some search paths for preprocessor and linker
-set(ACADOS_INCLUDE_PATH /home/jgeisler/repos/acados/include CACHE PATH "Define the path which contains the include directory for acados.")
-set(ACADOS_LIB_PATH /home/jgeisler/repos/acados/lib CACHE PATH "Define the path which contains the lib directory for acados.")
+set(ACADOS_INCLUDE_PATH $ENV{ACADOS_SOURCE_DIR}/include CACHE PATH "Define the path which contains the include directory for acados.")
+set(ACADOS_LIB_PATH $ENV{ACADOS_SOURCE_DIR}/lib CACHE PATH "Define the path which contains the lib directory for acados.")
 
 # c-compiler flags for debugging
 set(CMAKE_C_FLAGS_DEBUG "-O0 -ggdb")

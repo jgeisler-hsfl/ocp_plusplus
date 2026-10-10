@@ -35,7 +35,7 @@ Two deliverables:
 
 | Component | Status |
 |---|---|
-| acados C lib | **built** (`/home/jgeisler/repos/acados/lib`: libacados, hpipm, blasfeo) |
+| acados C lib | **built** (`acados/lib`: libacados, hpipm, blasfeo) |
 | acados Python (`acados_toolbox` + casadi 3.8.1) | **available** — `example_ocp.py` codegen verified (pendulum_on_cart, unicycle, p5probe, p5probe_b) |
 | ocp++ | builds clean (`cmake -B build && cmake --build build`) |
 

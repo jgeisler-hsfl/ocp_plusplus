@@ -5,7 +5,7 @@
 >
 > Companion to MATLAB_GENERATOR_PLAN.md §5.3 / §7 / §12 (row 19). This plan
 > records what acados's `hessian_approx` actually does (verified against the
-> acados source at `/home/jgeisler/repos/acados`), what ocp++ already does,
+> acados source at the local `acados/` symlink), what ocp++ already does,
 > and the remaining work (QP-level verification + interface docs).
 
 ## 1. What acados `hessian_approx` actually does (source-verified)
