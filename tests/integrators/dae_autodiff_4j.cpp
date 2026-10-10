@@ -7,6 +7,9 @@
 //                the finite-difference ground truth.
 //   OdeXsqUAd    plain ODE struct with ONLY the scalar-templated `f` —
 //                drives the explicit integrator's dual-evaluability path.
+//   OdeXsqUAdNoHess  same ODE with `ad_hess_prod = false` — the
+//                compile-time opt-out of the integrator's nested-dual (Dual2)
+//                HVP pass (paired with a has_dynamics_hess = false Dims).
 //   DaeXsqUAd    AutoDiffDae (WithHess = true) with the residual
 //                F = xdot - f — the AD-under-test (full-Newton Hessian).
 //   DaeXsqUGn    AutoDiffDae (WithHess = false) — same residual, F_hess_prod
@@ -131,6 +134,29 @@ struct OdeXsqUAd
     }
 };
 
+/// Dims variant with the dynamics Hessian model disabled (Gauss-Newton),
+/// for the ad_hess_prod opt-out check.
+struct GnDims : Dims
+{
+    static constexpr bool has_dynamics_hess = false;
+};
+
+/// Same ODE as OdeXsqUAd but with the integrator's nested-dual (Dual2) HVP
+/// pass opted out at compile time; must be paired with
+/// Dims::has_dynamics_hess = false.
+struct OdeXsqUAdNoHess
+{
+    static constexpr bool ad_hess_prod = false;
+
+    template <class D>
+    Eigen::Matrix<D, nx, 1> f(const Eigen::Matrix<D, nx, 1>& x,
+                              const Eigen::Matrix<D, nu, 1>& u, double t) const
+    {
+        return x.cwiseProduct(x) * u(0) + x
+             + Eigen::Matrix<D, nx, 1>(D(std::sin(t)), D(std::cos(t)));
+    }
+};
+
 /// The DAE AD-under-test (WithHess = true): ONLY the scalar-templated
 /// residual is written; F_jac / F_hess_prod come from the AutoDiffDae base.
 struct DaeXsqUAd : ocp::AutoDiffDae<DaeXsqUAd, Dims>
@@ -193,6 +219,15 @@ static_assert(
     !ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2, ocp::RadauIia2Tag>::
         supports_value_jac_hess_prod,
     "implicit integrator has no dual-Newton fused entry");
+static_assert(ocp::ode_ad_hess_prod_enabled<OdeXsqUAd>,
+              "AD ODE without an ad_hess_prod member keeps the HVP pass");
+static_assert(!ocp::ode_ad_hess_prod_enabled<OdeXsqUAdNoHess>,
+              "ad_hess_prod = false must disable the AD HVP pass");
+static_assert(
+    !ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, 4, ocp::K4Tag>::
+        supports_value_jac_hess_prod,
+    "opted-out AD ODE must not flag the fused HVP");
+
 // ---------------------------------------------------------------------------
 //  Finite-difference reference: HVP of g(z) = w^T map(z)
 // ---------------------------------------------------------------------------
@@ -699,6 +734,47 @@ void check_cross_backend(IntegAd& ig_ad, IntegRef& ig_ref, const char* name)
 }
 
 // ---------------------------------------------------------------------------
+//  AD HVP opt-out: ad_hess_prod = false
+// ---------------------------------------------------------------------------
+
+void check_ad_hess_opt_out()
+{
+    // The Dual1 value_jac path is unaffected by the opt-out.
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, 4, ocp::K4Tag> erk_no(
+        OdeXsqUAdNoHess{}, 0.1);
+    check_integ_value_jac(erk_no, "K4-AD-NoHess");
+
+    // The consistent pair (opt-out + has_dynamics_hess = false) goes through
+    // the problem adapter with the Dual1 Jacobian only; value + Jacobian must
+    // match the enabled ODE at the same point.
+    static_assert(!GnDims::has_dynamics_hess, "GN dims variant");
+    using ErkNoHess =
+        ocp::ExplicitRkIntegrator<GnDims, OdeXsqUAdNoHess, 4, ocp::K4Tag>;
+    ocp::ContinuousProblem<GnDims, OdeXsqUAdNoHess, ErkNoHess> prob(
+        OdeXsqUAdNoHess{}, 0.1);
+    const state_t x(0.3, -0.7);
+    const control_t u(0.4);
+    state_t x_next;
+    df_dx_t Jx;
+    df_du_t Ju;
+    prob.dynamics_value_jac(0, x, u, x_next, Jx, Ju);
+
+    state_t x_next_ad;
+    df_dx_t Jx_ad;
+    df_du_t Ju_ad;
+    OdeXsqUAd ad;
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag> erk_ad(ad, 0.1);
+    erk_ad.value_jac(x, u, 0.0, x_next_ad, Jx_ad, Ju_ad);
+    check((x_next - x_next_ad).cwiseAbs().maxCoeff() < 1e-12,
+          "ad opt-out: dynamics value == enabled ODE");
+    check((Jx - Jx_ad).cwiseAbs().maxCoeff() < 1e-12,
+          "ad opt-out: dynamics df/dx == enabled ODE");
+    check((Ju - Ju_ad).cwiseAbs().maxCoeff() < 1e-12,
+          "ad opt-out: dynamics df/du == enabled ODE");
+    std::printf("  4j ad opt-out  K4-NoHess OK  (value_jac Dual1, GN dims)\n");
+}
+
+// ---------------------------------------------------------------------------
 //  Problem level: ContinuousProblem dynamics Hessian assembly vs the switch
 // ---------------------------------------------------------------------------
 
@@ -800,6 +876,8 @@ int run_autodiff_4j_tests()
 
     check_cross_backend(erk, erk_ref, "K4");
     check_cross_backend(irk, irk_ref, "Rad2");
+
+    check_ad_hess_opt_out();
 
     check_problem_hess();
 

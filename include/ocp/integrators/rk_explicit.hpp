@@ -50,6 +50,14 @@
 //   by this integrator, even if it provides them; the legacy (user-derivative)
 //   paths are taken iff f is defined at scalar_t only (see ode_model.hpp).
 //
+//   Compile-time opt-out: a dual-evaluable ODE may define
+//   `static constexpr bool ad_hess_prod = false;` (detected by
+//   ode_ad_hess_prod_enabled, ode_model.hpp) to skip the nested-dual (Dual2)
+//   HVP codegen. Then `hess_prod` / `value_jac_hess_prod` are ill-formed and
+//   `supports_value_jac_hess_prod` is false; pair the flag with
+//   `Dims::has_dynamics_hess = false` (Gauss-Newton dynamics Hessian).
+//   The Dual1 `value_jac` path is unaffected.
+//
 // Forward cache: the v-independent forward state of the hand-written-ODE
 // paths (stage states, stage derivatives K, raw stage Jacobians in the
 // workspace) is keyed on (x, u, t_k). A second call with the same key
@@ -151,11 +159,13 @@ public:
 
     /// True when the composed map's value + Jacobian + HVP can be produced
     /// by a single forward pass in a nested dual scalar (i.e. the ODE's `f`
-    /// is scalar-templated and dual-evaluable). Lets
+    /// is scalar-templated and dual-evaluable, and the ODE has not opted
+    /// out of the AD HVP pass via `ad_hess_prod = false`). Lets
     /// ContinuousProblem dispatch its fused problem entries to one pass
     /// instead of 1 + nIn separate HVP calls.
     static constexpr bool supports_value_jac_hess_prod =
-        ode_f_evaluable_at<Ode, Dims, Dual2>;
+        ode_f_evaluable_at<Ode, Dims, Dual2> &&
+        ode_ad_hess_prod_enabled<Ode>;
 
     /// @param ode the ODE model (held by const reference; must outlive this).
     /// @param h fixed step size for the full OCP interval (h/NumSteps per
@@ -238,16 +248,18 @@ public:
 
     /// x_next, the Jacobian (df_dx, df_du) and the multiplier-contracted
     /// Hessian-vector product (hv_x, hv_u) of the composed map in one call.
-    /// For an AD-capable ODE this is a single nested-dual forward pass (the
-    /// value, Jacobian and the HVP all come out of the same pass, with `w`
-    /// contracted only at extraction); otherwise it is value_jac + hess_prod.
+    /// For a dual-evaluable ODE (with `ad_hess_prod` enabled) this is a
+    /// single nested-dual forward pass (the value, Jacobian and the HVP all
+    /// come out of the same pass, with `w` contracted only at extraction);
+    /// otherwise it is value_jac + hess_prod.
     void value_jac_hess_prod(const state_t& x, const control_t& u, double t_k,
                              state_t& x_next, df_dx_t& df_dx, df_du_t& df_du,
                              const state_t& w, const state_t& v_x,
                              const control_t& v_u, state_t& hv_x,
                              control_t& hv_u) const
     {
-        if constexpr (ode_f_evaluable_at<Ode, Dims, Dual2>)
+        if constexpr (ode_f_evaluable_at<Ode, Dims, Dual2>
+                      && ode_ad_hess_prod_enabled<Ode>)
         {
             Eigen::Matrix<Dual2, nx, 1> xd;
             Eigen::Matrix<Dual2, nu, 1> ud;
@@ -267,9 +279,9 @@ public:
     /// with `w` (state; e.g. the dynamics multiplier) and input direction
     /// `v = (v_x, v_u)`; returns (hv_x, hv_u).
     ///
-    /// For an AD-capable ODE: a single forward pass in
-    /// dual<dual<scalar_t, nIn>, 1>; the multiplier `w` is contracted only
-    /// at extraction.
+    /// For a dual-evaluable ODE (with `ad_hess_prod` enabled): a single
+    /// forward pass in dual<dual<scalar_t, nIn>, 1>; the multiplier `w` is
+    /// contracted only at extraction.
     ///
     /// For a hand-written nonlinear ODE: one forward pass (reused from the
     /// cache when a prior call used the same (x, u, t_k)) stores the
@@ -284,7 +296,8 @@ public:
                    const state_t& w, const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
-        if constexpr (ode_f_evaluable_at<Ode, Dims, Dual2>)
+        if constexpr (ode_f_evaluable_at<Ode, Dims, Dual2>
+                      && ode_ad_hess_prod_enabled<Ode>)
         {
             state_t   x_next;
             df_dx_t   df_dx;
@@ -312,8 +325,13 @@ public:
         }
         else
         {
-            static_assert(!ode_f_evaluable_at<Ode, Dims, Dual2>,
-                "unreachable: AD path handled above");
+            static_assert(
+                !ode_f_evaluable_at<Ode, Dims, Dual2>
+                    || ode_ad_hess_prod_enabled<Ode>,
+                "ExplicitRkIntegrator::hess_prod: the ODE is dual-evaluable "
+                "but opted out of the AD HVP pass (ad_hess_prod = false). "
+                "Set Dims::has_dynamics_hess = false (Gauss-Newton dynamics "
+                "Hessian) or remove the opt-out.");
             static_assert(ode_supports_hess_prod<Ode, Dims>,
                 "ExplicitRkIntegrator::hess_prod: the ODE must provide a "
                 "'hess_prod' method (nonlinear ODE). A linear ODE has a zero "
