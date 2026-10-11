@@ -30,11 +30,13 @@ the first (reference) solver implementations.
 - `include/ocp/integrators/` — continuous-time support: ODE models and a
   continuous-problem interface wrapped by explicit, implicit and multistep
   Runge-Kutta integrators to produce a discrete-time problem.
-- `include/ocp/solvers/hpipm/` — the HPIPM QP solver, the first (reference)
-  QP solver implementation.
+- `include/ocp/solvers/hpipm/` — the HPIPM QP solvers: a staged QP solver and
+  a dense QP solver (used by the SQP full-condensed mode), the first
+  (reference) QP solver implementations.
 - `include/ocp/solvers/acados/` — the acados-style SQP outer loop (line
   search, regularization, merit function), the first (reference) SQP solver
-  implementation.
+  implementation. Its QP subproblem is solved either staged (default) or as a
+  single full-condensed dense QP, selected by `AcadosOptions.qp_mode`.
 - `tools/acados2ocp_pp.py` — generator that ports an acados OCP (from its
   CasADi-generated `acados_ocp_nlp.json` + C model files) into an ocp++
   problem class.
