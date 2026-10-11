@@ -22,6 +22,8 @@ int run_qpscaling_3h_tests();
 int run_funnel_3i_tests();
 int run_soc_3j_tests();
 int run_hessmode_5a_tests();
+int run_qpmode_1e_tests();
+int run_e2e_1f_tests();
 
 int main()
 {
@@ -39,6 +41,8 @@ int main()
     failures += run_funnel_3i_tests();
     failures += run_soc_3j_tests();
     failures += run_hessmode_5a_tests();
+    failures += run_qpmode_1e_tests();
+    failures += run_e2e_1f_tests();
 
     if (failures == 0)
     {

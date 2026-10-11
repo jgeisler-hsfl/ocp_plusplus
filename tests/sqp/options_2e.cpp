@@ -69,6 +69,7 @@ void test_options_defaults()
     check(o.print_level == 0, "print_level default 0");
     check(o.qp_warm_start == 0, "qp_warm_start default 0");
     check(!o.warm_start_first_qp, "warm_start_first_qp default false");
+    check(o.qp_mode == QpMode::kStaged, "qp_mode default kStaged");
     check(!o.eval_residual_at_max_iter,
           "eval_residual_at_max_iter default false");
     check_close(o.timeout_max_time, 0.0, "timeout_max_time default 0");
@@ -117,6 +118,7 @@ void test_statistics_record()
     check(stat.rows[0].qp_iter == 2, "row 0 qp_iter");
     check_close(stat.rows[1].res_stat, 1e-3, "row 1 res_stat");
     check(stat.rows[1].qp_status == 0, "row 1 default qp_status");
+    check(stat.rows[0].cond_time == 0.0, "row 0 default cond_time 0");
 }
 
 // ---------------------------------------------------------------------

@@ -252,14 +252,28 @@ add_executable(qp_unit tests/hpipm/qp_unit.cpp tests/hpipm/residuals_1b.cpp
 target_include_directories(qp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(dense_qp_dim tests/hpipm/dense_qp_dim.cpp)
+target_include_directories(dense_qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(dense_qp_dim PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(condense_full tests/hpipm/condense_full.cpp)
+target_include_directories(condense_full PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(condense_full PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(dense_unit tests/hpipm/dense_unit.cpp)
+target_include_directories(dense_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(dense_unit PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
                         tests/sqp/apply_step_2b.cpp tests/sqp/residuals_2c.cpp
                         tests/sqp/merit_2d.cpp tests/sqp/options_2e.cpp
-                          tests/sqp/assemble_2f.cpp tests/sqp/driver_2g.cpp
-                          tests/sqp/warm_start_3c.cpp tests/sqp/timeout_3f.cpp
-                          tests/sqp/adaptive_lm_3g.cpp
-                           tests/sqp/qpscaling_3h.cpp tests/sqp/funnel_3i.cpp
-                           tests/sqp/soc_3j.cpp tests/sqp/hessmode_5a.cpp)
+                        tests/sqp/assemble_2f.cpp tests/sqp/driver_2g.cpp
+                        tests/sqp/warm_start_3c.cpp tests/sqp/timeout_3f.cpp
+                        tests/sqp/adaptive_lm_3g.cpp
+                        tests/sqp/qpscaling_3h.cpp tests/sqp/funnel_3i.cpp
+                        tests/sqp/soc_3j.cpp tests/sqp/hessmode_5a.cpp
+                        tests/sqp/qpmode_1e.cpp tests/sqp/e2e_1f.cpp
+                        ${MC_MODEL_C})
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE ${OCP_WARN_FLAGS})
 

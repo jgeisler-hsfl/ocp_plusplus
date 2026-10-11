@@ -241,6 +241,11 @@ struct QpLayout
         }
         return lo_size() + r;
     }
+
+    bool operator==(const QpLayout& o) const
+    {
+        return rows == o.rows && nslack == o.nslack;
+    }
 };
 
 }  // namespace detail

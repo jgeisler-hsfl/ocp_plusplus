@@ -30,6 +30,12 @@
 // parameter (as for Qp / QpSol / QpRes): path-wise workspace storage uses the
 // Trajectory mechanism, runtime-extent (sized at solve()) for
 // NH = Eigen::Dynamic, fixed-extent (std::array) for a compile-time NH.
+//
+// HpipmDenseQpSolver (parity plan Phase 1, block 1c) is the dense
+// counterpart for the fully condensed QP of dense_qp.hpp
+// (HPIPM x_dense_qp_ipm.c / x_dense_qp_kkt.c, adapted to ocp++'s
+// convention of folding the slacks into the variable vector): no
+// equality rows, single Newton system, Cholesky only.
 
 #pragma once
 
@@ -42,6 +48,7 @@
 
 #include <Eigen/Dense>
 
+#include "dense_qp.hpp"
 #include "qp.hpp"
 
 namespace ocp
@@ -3271,6 +3278,906 @@ private:
 
     // Remaining HPIPM flow, owned by later sub-steps (worklog sec. 4):
     //   OCP_QP_IPM_DELTA_STEP + main IPM loop   -> 1h (solve())
+};
+
+// =========================================================================
+//  HpipmDenseQpSolver: IPM for the fully condensed dense QP (block 1c)
+// =========================================================================
+
+/// HPIPM-style primal-dual interior-point solver for the fully condensed
+/// dense QP of dense_qp.hpp.  Follows HPIPM's x_dense_qp_ipm.c /
+/// x_dense_qp_kkt.c (relative formulation, Mehrotra predictor-corrector),
+/// adapted to ocp++'s convention of folding the slacks into the variable
+/// vector, so there is no separate Z / idxs / idxs_rev machinery and the
+/// condensed problem has NO equality rows (the dynamics were eliminated by
+/// substitution).
+///
+/// Newton system (side layout [lo; hi], signed side matrix A with A_lo =
+/// +row and A_hi = -row; res_d = d + t - A v, res_m = d_mask . (lam*t - m)):
+///
+///   [ W   -A' ] [dv]   [ -res_g - A' gamma ]
+///   [ A     0 ] [dt] = [     -res_d        ]
+///
+/// with  gamma = (res_m - lam . res_d) ./ t,  Gamma = lam ./ t (both masked),
+/// W = H + reg * I_(x0;u) + A' diag(Gamma) A  (reg on the (x0;u) part only,
+/// matching the staged solver's per-stage regularization), and the HPIPM
+/// closed-form slack / multiplier update
+///
+///   dt   = A dv - res_d
+///   dlam = d_mask . ( -res_m - (d_mask . lam) . dt ) ./ t
+///
+/// The same iteration scheme as HpipmQpSolver (relative formulation,
+/// conditional pure centering, reg-primal growth ladder, damped steps);
+/// v1: Cholesky only, no LQ / iterative refinement / split steps.
+template <class P, int NH = Eigen::Dynamic>
+class HpipmDenseQpSolver
+{
+    static_assert(NH == Eigen::Dynamic || NH >= 1,
+        "ocp::HpipmDenseQpSolver: the horizon must be at least 1 (one "
+        "dynamics step) or Eigen::Dynamic.");
+
+public:
+    using D = DenseQpDim<P>;
+    using S = typename P::scalar_t;
+    static constexpr bool kDyn = (NH == Eigen::Dynamic);
+
+    /// Hessian-sized square matrix over v (nv x nv, nv = D::nv_total(NH)).
+    using Mat_t = typename detail::DenseMat<
+        S, kDyn, (NH >= 1) ? D::nv_total(NH) : 0,
+        (NH >= 1) ? D::nv_total(NH) : 0>::type;
+    /// Vector over v.
+    using Vec_t = typename detail::DenseVec<
+        S, kDyn, (NH >= 1) ? D::nv_total(NH) : 0>::type;
+    /// Signed side matrix (nside x nv).
+    using A_t = typename detail::DenseMat<
+        S, kDyn, (NH >= 1) ? D::nside_total(NH) : 0,
+        (NH >= 1) ? D::nv_total(NH) : 0>::type;
+    /// Vector over sides.
+    using Side_t = typename detail::DenseVec<
+        S, kDyn, (NH >= 1) ? D::nside_total(NH) : 0>::type;
+
+    /// Per-solve scratch (sized in solve() for the runtime horizon).
+    struct Workspace
+    {
+        int N = (NH == Eigen::Dynamic) ? 0 : NH;
+
+        A_t A{};
+        Mat_t W{};
+        Eigen::LLT<Mat_t> llt;
+        Vec_t rhs{};
+        Side_t gamma{};
+        Side_t Gamma{};
+        Side_t t_inv{};
+        Side_t lam_m{};
+        Side_t dt{};
+
+        DenseQpRes<P, NH> res{};
+        DenseQpRes<P, NH> res_bkp{};
+
+        S mu_aff = S(0);
+        S sigma = S(0);
+        S alpha_prim = S(1);
+        S alpha_dual = S(1);
+        // reg-primal growth ladder (HPIPM compute_preg): the last
+        // successfully used reg, persistent across IPM iterations within
+        // a solve (reset in solve()).
+        S preg_last = S(0);
+        bool npd_reg_hess = false;
+
+        /// (Re)allocate the runtime-extent storage for a horizon of `n`.
+        /// Fixed-extent NH: only a consistency check.
+        void resize(int n)
+        {
+            if constexpr (kDyn)
+            {
+                assert(n >= 1);
+                N = n;
+                const int nv = D::nv_total(n);
+                const int nside = D::nside_total(n);
+                A.resize(nside, nv);
+                W.resize(nv, nv);
+                rhs.resize(nv);
+                gamma.resize(nside);
+                Gamma.resize(nside);
+                t_inv.resize(nside);
+                lam_m.resize(nside);
+                dt.resize(nside);
+                res.resize(n);
+                res_bkp.resize(n);
+            }
+            else
+            {
+                assert(n == NH);
+                N = n;
+                res.resize(n);
+                res_bkp.resize(n);
+            }
+        }
+    };
+
+    /// Solve the dense QP (relative-formulation IPM).  `in` must be sized
+    /// for horizon N; `out` is sized and filled (mixed convention: v is the
+    /// primal step, lam / t are absolute).
+    ///
+    /// Fast path: when no side is active (all d_mask = 0) the QP is
+    /// unconstrained, so a single factorization of (H + reg * I) yields the
+    /// solution in one shot (HPIPM DENSE_QP_IPM_SOLVE unconstr branch;
+    /// stat iter = 0).
+    Status solve(const DenseQp<P, NH>& in, DenseQpSol<P, NH>& out)
+    {
+        assert(out.N == in.N);
+        stat_.init(opts_.stat_max);
+        ws_.resize(in.N);
+
+        if (!has_active_side(in))
+        {
+            return solve_unconstr(in, out);
+        }
+
+        init_point(in, out);
+        // HPIPM masks qp_sol->lam after init (staged parity: mask_abs_lam):
+        // masked sides have no constraint, so their multiplier stays zero for
+        // the whole solve (the steps are masked and never move them).
+        out.lam = in.d_mask.cwiseProduct(out.lam);
+        compute_residuals(in, out, ws_.res);
+        S rm_tau = res_m_tau(in, ws_.res);
+        fill_stat_residuals(stat_.row(0), ws_.res);
+        ws_.preg_last = S(opts_.reg_prim);
+        ws_.npd_reg_hess = false;
+
+        DenseQpSol<P, NH> step;
+        step.resize(in.N);
+        for (int kk = 0; kk < opts_.iter_max; ++kk)
+        {
+            // exit test: both step lengths above alpha_min, then residuals
+            // within tolerance (mirrors the staged loop).
+            if (ws_.alpha_prim <= S(opts_.alpha_min)
+                    or ws_.alpha_dual <= S(opts_.alpha_min))
+            {
+                break;
+            }
+            const bool converged =
+                (ws_.res.res_g_max <= S(opts_.res_g_max) &&
+                 ws_.res.res_d_max <= S(opts_.res_d_max) &&
+                 rm_tau <= S(opts_.res_m_max) &&
+                 ws_.res.dual_gap <= S(opts_.dual_gap_max));
+            if (converged)
+            {
+                break;
+            }
+
+            // --- delta step ---
+            // 1) BACKUP_RES_M + COMPUTE_TAU_MIN (predictor shift)
+            ws_.res_bkp = ws_.res;
+            shift_res_m(in, ws_.res, S(opts_.tau_min));
+
+            // 2) predictor: factorize + solve (reg-primal ladder on
+            //    Cholesky failure)
+            const Status fs = kkt_step(in, out, ws_.res, step,
+                                       S(opts_.reg_prim));
+            if (fs != Status::kSolved)
+            {
+                stat_.iter = kk;
+                stat_.status = Status::kQpFailure;
+                return Status::kQpFailure;
+            }
+            mask_step(in, step);
+
+            // 3) predictor step length
+            compute_alpha(in, out, step);
+            HpipmIteration* row = stat_row(kk);
+            if (row)
+            {
+                row->alpha_prim_aff = ws_.alpha_prim;
+                row->alpha_dual_aff = ws_.alpha_dual;
+            }
+
+            // 4) Mehrotra predictor-corrector
+            if (opts_.pred_corr)
+            {
+                const S mu_aff_pred = compute_mu_aff(in, out, step);
+                if (row)
+                {
+                    row->mu_aff = mu_aff_pred;
+                }
+                // corrector: centering target, reuse the stored factor
+                apply_centering(in, ws_.res_bkp, step, /*correction=*/true,
+                                ws_.res);
+                solve_kkt(in, out, ws_.res, step);
+                mask_step(in, step);
+                compute_alpha(in, out, step);
+                if (row)
+                {
+                    row->sigma = ws_.sigma;
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
+                }
+                // conditional pure centering
+                if (opts_.cond_pred_corr)
+                {
+                    const S mu_aff_corr = compute_mu_aff(in, out, step);
+                    if (mu_aff_corr > S(2) * mu_aff_pred)
+                    {
+                        apply_centering(in, ws_.res_bkp, step,
+                                        /*correction=*/false, ws_.res);
+                        solve_kkt(in, out, ws_.res, step);
+                        mask_step(in, step);
+                        compute_alpha(in, out, step);
+                        if (row)
+                        {
+                            row->alpha_prim = ws_.alpha_prim;
+                            row->alpha_dual = ws_.alpha_dual;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (row)
+                {
+                    row->alpha_prim = ws_.alpha_prim;
+                    row->alpha_dual = ws_.alpha_dual;
+                }
+            }
+
+            // 5) update the iterate
+            update_vars(out, step);
+
+            // 6) fresh residuals + stat row kk+1
+            compute_residuals(in, out, ws_.res);
+            rm_tau = res_m_tau(in, ws_.res);
+            if (row)
+            {
+                row->mu = ws_.res.res_mu;
+                fill_stat_residuals(*row, ws_.res);
+                row->npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
+            }
+            stat_.iter = kk + 1;
+        }
+
+        // status mapping (mirrors the staged solver)
+        if (stat_.iter == opts_.iter_max)
+        {
+            stat_.status = Status::kMaxIterations;
+            return Status::kMaxIterations;
+        }
+        if (ws_.alpha_prim <= S(opts_.alpha_min)
+                or ws_.alpha_dual <= S(opts_.alpha_min))
+        {
+            stat_.status = Status::kMinStep;
+            return Status::kMinStep;
+        }
+        if (std::isnan(ws_.res.res_mu))
+        {
+            stat_.status = Status::kNanDetected;
+            return Status::kNanDetected;
+        }
+        stat_.status = Status::kSolved;
+        return Status::kSolved;
+    }
+
+    /// KKT residuals of a primal-dual iterate (HPIPM DENSE_QP_RES_COMPUTE
+    /// without the equality residual).  Pure function of the QP data and
+    /// the solution.
+    ///
+    /// Residual conventions (match the staged solver and HPIPM):
+    ///   res_g = H v + g - A'(d_mask .* lam)
+    ///   res_d = d + t - A v                 (masked by d_mask)
+    ///   res_m = d_mask . (lam * t - m)      (masked by d_mask)
+    ///   obj = 0.5 v'Hv + g'v
+    ///   dual_gap = v'(Hv + g) - d'(d_mask .* lam)
+    void compute_residuals(const DenseQp<P, NH>& in,
+                           const DenseQpSol<P, NH>& sol,
+                           DenseQpRes<P, NH>& res) const
+    {
+        assert(sol.N == in.N && res.N == in.N);
+        const int nside = in.nside;
+
+        A_t A;
+        A.resize(in.nside, in.nv);
+        build_side_matrix(in, A);
+        const auto lam_m = in.d_mask.cwiseProduct(sol.lam);
+
+        const auto Hz = in.H * sol.v;
+        S obj = S(0.5) * sol.v.dot(Hz) + sol.v.dot(in.g);
+        S dual_gap = sol.v.dot(Hz) + sol.v.dot(in.g);
+        dual_gap -= in.d.transpose() * lam_m;
+
+        res.res_g = Hz + in.g - A.transpose() * lam_m;
+        res.res_d = in.d + sol.t - A * sol.v;
+        res.res_d = in.d_mask.cwiseProduct(res.res_d);
+        res.res_m = in.d_mask.cwiseProduct(
+            sol.lam.cwiseProduct(sol.t) - in.m);
+
+        res.res_g_max = inf_norm(res.res_g);
+        res.res_d_max = inf_norm(res.res_d);
+        res.res_m_max = inf_norm(res.res_m);
+
+        // res_mu = masked mean of |res_m| (HPIPM x_dense_qp_res.c:393)
+        res.res_mu_sum = res.res_m.cwiseAbs().sum();
+        int nc_mask = 0;
+        for (int i = 0; i < nside; ++i)
+        {
+            nc_mask += (in.d_mask(i) > S(0.5)) ? 1 : 0;
+        }
+        res.res_mu = (nc_mask > 0) ? res.res_mu_sum / nc_mask : S(0);
+        res.obj = obj;
+        res.dual_gap = dual_gap;
+    }
+
+    /// One Newton (KKT) solve with an explicit reg-primal start: factorize
+    /// W = H + reg * I_(x0;u) + A' diag(Gamma) A (Cholesky, reg-primal
+    /// growth ladder on failure) and solve for dv, then the closed-form
+    /// dt / dlam.  Public for the phase-1 cross-check tests.
+    ///
+    /// @param in     dense QP data
+    /// @param iter   primal-dual iterate (absolute lam / t)
+    /// @param res    KKT residuals at `iter` (res_m must already carry the
+    ///               predictor / centering shift)
+    /// @param[out] step  Newton step: step.v = dv, step.t = dt,
+    ///               step.lam = dlam
+    /// @param reg    starting reg-primal (ws_.preg_last is the persistent
+    ///               start when it is larger)
+    /// @return kSolved, kQpFailure if the ladder is exhausted
+    Status kkt_step(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& iter,
+                    const DenseQpRes<P, NH>& res, DenseQpSol<P, NH>& step,
+                    S reg)
+    {
+        ensure_sized(in);
+        build_side_matrix(in, ws_.A);
+        compute_gamma(in, iter, res);
+
+        ws_.rhs = -res.res_g - ws_.A.transpose() * ws_.gamma;
+
+        const S base = S(opts_.reg_prim);
+        S preg = (ws_.preg_last > S(0)) ? ws_.preg_last : reg;
+        bool preg_first = true;
+        ws_.npd_reg_hess = false;
+        for (int attempt = 0; attempt < 15; ++attempt)
+        {
+            if (factor_solve(in, preg, step.v))
+            {
+                ws_.preg_last = preg;
+                closed_form_step(in, iter, res, step);
+                return Status::kSolved;
+            }
+            ws_.npd_reg_hess = true;
+            // growth schedule (HPIPM compute_preg): first growth additive,
+            // subsequent multiplicative; a reg that has been used before
+            // (preg_last != base) grows from there.
+            if (preg_first)
+            {
+                preg = (ws_.preg_last == base) ? preg + S(1e-4)
+                                               : preg / S(3.0);
+            }
+            else
+            {
+                preg = (ws_.preg_last == base) ? preg * S(100.0)
+                                               : preg * S(8.0);
+            }
+            preg_first = false;
+        }
+        return Status::kQpFailure;
+    }
+
+    /// Re-solve the KKT system reusing the stored factorization (the
+    /// Mehrotra corrector / pure-centering path).  Gamma / gamma are
+    /// recomputed from the (centered) res_m before the solve, as in HPIPM's
+    /// leading COMPUTE_GAMMA of DENSE_QP_SOLVE_KKT_STEP.
+    void solve_kkt(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& iter,
+                   const DenseQpRes<P, NH>& res, DenseQpSol<P, NH>& step)
+    {
+        ensure_sized(in);
+        compute_gamma(in, iter, res);
+        ws_.rhs = -res.res_g - ws_.A.transpose() * ws_.gamma;
+        step.v = ws_.llt.solve(ws_.rhs);
+        closed_form_step(in, iter, res, step);
+    }
+
+    const HpipmStatistics& statistics() const { return stat_; }
+    const HpipmOptions& options() const { return opts_; }
+
+    /// Override the warm-start mode for subsequent solve() calls. 0: cold,
+    /// 2: primal+dual, 3: hot (same mapping as the staged solver).
+    void set_warm_start(int ws) { opts_.warm_start = ws; }
+
+    /// Override the per-residual exit tolerances for subsequent solve()
+    /// calls (the SQP driver sets these per QP solve when an adaptive
+    /// tolerance strategy is active).  Same signature as the staged
+    /// solver; the dense QP has no separate box residual (box rows are
+    /// side rows), so res_b_max bounds res_d_max as well.
+    void set_residual_tolerances(double res_g_max, double res_b_max,
+                                 double res_d_max, double res_m_max)
+    {
+        opts_.res_g_max = res_g_max;
+        opts_.res_d_max = std::min(res_b_max, res_d_max);
+        opts_.res_m_max = res_m_max;
+    }
+
+private:
+    HpipmOptions opts_;
+    HpipmStatistics stat_;
+    Workspace ws_;
+
+    template <class V>
+    static S inf_norm(const V& v)
+    {
+        return v.size() > 0 ? v.cwiseAbs().maxCoeff() : S(0);
+    }
+
+    /// Assemble the signed side matrix A (nside x nv): box row r ->
+    /// A(r, idxb[r]) = +1, A(hi(r), idxb[r]) = -1; general row r ->
+    /// A(lo(r), :) = +C_lo(r, :), A(hi(r), :) = -C_hi(r, :).  C_lo carries
+    /// only the +1 s_lo slack column, C_hi only the -1 s_hi column, matching
+    /// the staged OCP's per-side slack coupling (HPIPM x_ocp_qp_res.c).  The
+    /// slack non-negativity rows are box rows like any other (idxb into the
+    /// slack variables); their hi side carries d_mask = 0.
+    static void build_side_matrix(const DenseQp<P, NH>& in, A_t& A)
+    {
+        A.setZero();
+        const int nb = in.nb;
+        const int ng = in.ng;
+        for (int r = 0; r < nb; ++r)
+        {
+            const int j = in.idxb[r];
+            A(r, j) = S(1);
+            A(nb + ng + r, j) = S(-1);
+        }
+        for (int r = 0; r < ng; ++r)
+        {
+            A.row(nb + r) = in.C_lo.row(r);
+            A.row(nb + ng + nb + r) = -in.C_hi.row(r);
+        }
+    }
+
+    /// Per-side gamma / Gamma / t_inv (HPIPM COMPUTE_GGAMMA):
+    /// gamma_i = (res_m_i - lam_i res_d_i)/t_i, Gamma_i = lam_i/t_i, both
+    /// masked by d_mask (absent sides -> 0).
+    void compute_gamma(const DenseQp<P, NH>& in,
+                       const DenseQpSol<P, NH>& iter,
+                       const DenseQpRes<P, NH>& res)
+    {
+        const int nside = in.nside;
+        for (int i = 0; i < nside; ++i)
+        {
+            ws_.t_inv(i) = S(1.0) / iter.t(i);
+            if (in.d_mask(i) > S(0.5))
+            {
+                ws_.Gamma(i) = iter.lam(i) * ws_.t_inv(i);
+                ws_.gamma(i) =
+                    ws_.t_inv(i) * (res.res_m(i) - iter.lam(i) * res.res_d(i));
+            }
+            else
+            {
+                ws_.Gamma(i) = S(0.0);
+                ws_.gamma(i) = S(0.0);
+            }
+        }
+    }
+
+    /// Build and Cholesky-factor W, solve W dv = rhs into `dv`.  Returns
+    /// false when the factorization is singular.
+    bool factor_solve(const DenseQp<P, NH>& in, S reg, Vec_t& dv)
+    {
+        ws_.W = in.H;
+        const int nvh = D::nx + in.N * D::nu;
+        for (int j = 0; j < nvh; ++j)
+        {
+            ws_.W(j, j) += reg;
+        }
+        if (in.nside > 0)
+        {
+            ws_.W += ws_.A.transpose() * (ws_.Gamma.asDiagonal() * ws_.A);
+        }
+        Eigen::LLT<Mat_t> llt(ws_.W);
+        if (llt.info() != Eigen::Success)
+        {
+            return false;
+        }
+        ws_.llt = llt;
+        dv = llt.solve(ws_.rhs);
+        return true;
+    }
+
+    /// HPIPM closed-form slack / multiplier update
+    /// (x_dense_qp_kkt.c, closed form of the DENSE_QP_KKT_STEP solve):
+    ///   dt   = A dv - res_d
+    ///   dlam = d_mask . ( -res_m - (d_mask . lam) . dt ) ./ t
+    void closed_form_step(const DenseQp<P, NH>& in,
+                          const DenseQpSol<P, NH>& iter,
+                          const DenseQpRes<P, NH>& res,
+                          DenseQpSol<P, NH>& step)
+    {
+        const int nside = in.nside;
+        ws_.lam_m = in.d_mask.cwiseProduct(iter.lam);
+        ws_.dt = ws_.A * step.v - res.res_d;
+        for (int i = 0; i < nside; ++i)
+        {
+            step.t(i) = ws_.dt(i);
+            step.lam(i) = (in.d_mask(i) > S(0.5))
+                ? (-res.res_m(i) - ws_.lam_m(i) * ws_.dt(i)) * ws_.t_inv(i)
+                : S(0.0);
+        }
+    }
+
+    /// Zero the step on absent sides (HPIPM masks lam / t after each KKT
+    /// solve).
+    void mask_step(const DenseQp<P, NH>& in, DenseQpSol<P, NH>& step) const
+    {
+        step.lam = step.lam.cwiseProduct(in.d_mask);
+        step.t = step.t.cwiseProduct(in.d_mask);
+    }
+
+    /// Size the runtime-extent workspace on first use (no-op once sized for
+    /// the current horizon).
+    void ensure_sized(const DenseQp<P, NH>& in)
+    {
+        if (ws_.N != in.N)
+        {
+            ws_.resize(in.N);
+        }
+    }
+
+    /// True when at least one side is active (drives the fast-path branch).
+    bool has_active_side(const DenseQp<P, NH>& in) const
+    {
+        for (int i = 0; i < in.nside; ++i)
+        {
+            if (in.d_mask(i) > S(0.5))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Interior-point initialization (HPIPM DENSE_QP_IPM_INIT_VAR,
+    /// var_init_scheme = 1 / t0_init = 2), dense analogue of the staged
+    /// init_stage:
+    ///   hot (warm_start >= 3): keep the whole iterate, clip lam / t to
+    ///     lam0_min / t0_min.
+    ///   primal+dual (== 2): keep lam / t, clip to 1e-1; leave v as handed
+    ///     in (the driver zeroes it for a cold primal).
+    ///   cold (<= 1): zero v / lam / t; for every box row set t from the
+    ///     distance of v to the bound (clipped to thr0, repairing the
+    ///     variable when a bound pair is both violated); for general rows
+    ///     only clip; finally lam = mu0 / t on every side.
+    void init_point(const DenseQp<P, NH>& in, DenseQpSol<P, NH>& out)
+    {
+        const int nside = in.nside;
+        if (opts_.warm_start >= 3)
+        {
+            for (int i = 0; i < nside; ++i)
+            {
+                if (out.lam(i) < S(opts_.lam0_min))
+                {
+                    out.lam(i) = S(opts_.lam0_min);
+                }
+                if (out.t(i) < S(opts_.t0_min))
+                {
+                    out.t(i) = S(opts_.t0_min);
+                }
+            }
+            return;
+        }
+        if (opts_.warm_start == 2)
+        {
+            const S thr = S(1e-1);
+            for (int i = 0; i < nside; ++i)
+            {
+                if (out.lam(i) < thr)
+                {
+                    out.lam(i) = thr;
+                }
+                if (out.t(i) < thr)
+                {
+                    out.t(i) = thr;
+                }
+            }
+            return;
+        }
+
+        // cold start
+        out.v.setZero();
+        out.lam.setZero();
+        out.t.setZero();
+        const S thr0 = S(1e-1);
+        const S mu0 = S(opts_.mu0);
+        const int nb = in.nb;
+        const int ng = in.ng;
+
+        // box rows (stage-0 pin/bx/bu, path bu, slack non-negativity)
+        for (int r = 0; r < nb; ++r)
+        {
+            const int j = in.idxb[r];
+            const int sh = nb + ng + r;
+            const bool lo_act = in.d_mask(r) > S(0.5);
+            const bool hi_act = in.d_mask(sh) > S(0.5);
+            S val = out.v(j);
+            S tl = lo_act ? (val - in.d(r)) : thr0;
+            S th = hi_act ? (-val - in.d(sh)) : thr0;
+            if (lo_act && tl < thr0)
+            {
+                if (hi_act && th < thr0)
+                {
+                    val = S(0.5) * (in.d(r) - in.d(sh));
+                    tl = thr0;
+                    th = thr0;
+                }
+                else
+                {
+                    tl = thr0;
+                    val = in.d(r) + thr0;
+                }
+            }
+            else if (hi_act && th < thr0)
+            {
+                th = thr0;
+                val = -in.d(sh) - thr0;
+            }
+            out.v(j) = val;
+            out.t(r) = tl;
+            out.t(sh) = th;
+        }
+
+        // general rows (ineq / eq / lin; the lo side may be absent or
+        // masked)
+        for (int r = 0; r < ng; ++r)
+        {
+            const S valh = in.C_hi.row(r).dot(out.v);
+            const int sh = nb + ng + nb + r;
+            S th = -valh - in.d(sh);
+            out.t(sh) = (th < thr0) ? thr0 : th;
+            const int sl = nb + r;
+            if (in.d_mask(sl) > S(0.5))
+            {
+                const S vall = in.C_lo.row(r).dot(out.v);
+                S tl = vall - in.d(sl);
+                out.t(sl) = (tl < thr0) ? thr0 : tl;
+            }
+        }
+
+        // floor t on every side (masked sides were never assigned) so that
+        // lam = mu0 / t stays finite; masked sides are ignored by the
+        // residuals anyway
+        for (int i = 0; i < nside; ++i)
+        {
+            if (out.t(i) < thr0)
+            {
+                out.t(i) = thr0;
+            }
+        }
+        for (int i = 0; i < nside; ++i)
+        {
+            out.lam(i) = mu0 / out.t(i);
+        }
+    }
+
+    /// Maximum step length keeping lam >= 0 and t >= 0 (HPIPM
+    /// COMPUTE_ALPHA_QP with split_step = 0 and m_safe handling; a single
+    /// alpha drives lam and t).
+    void compute_alpha(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& iter,
+                       const DenseQpSol<P, NH>& step)
+    {
+        const bool m_zero = (inf_norm(in.m) == S(0));
+        const S m_safe = std::min(std::max(S(opts_.m_safe), S(0)), S(1));
+        S alpha = S(1);
+        for (int i = 0; i < in.nside; ++i)
+        {
+            S lam1 = iter.lam(i) + alpha * step.lam(i);
+            S t1 = iter.t(i) + alpha * step.t(i);
+            if (lam1 < S(0))
+            {
+                alpha = -iter.lam(i) / step.lam(i);
+                lam1 = iter.lam(i) + alpha * step.lam(i);
+            }
+            if (t1 < S(0))
+            {
+                alpha = -iter.t(i) / step.t(i);
+                t1 = iter.t(i) + alpha * step.t(i);
+            }
+            if (!m_zero)
+            {
+                const S m1 = m_safe * (in.m(i) * in.d_mask(i));
+                if (lam1 * t1 - m1 < S(-1e-12))
+                {
+                    const S c = iter.lam(i) * iter.t(i) - m1;
+                    if (c > S(0))
+                    {
+                        const S a = step.lam(i) * step.t(i);
+                        const S b = step.lam(i) * iter.t(i)
+                                  + iter.lam(i) * step.t(i);
+                        const S d = b * b - S(4) * a * c;
+                        alpha = (-b - std::sqrt(d)) * (S(0.5) / a);
+                    }
+                    else
+                    {
+                        alpha = S(0);
+                    }
+                }
+            }
+        }
+        ws_.alpha_prim = alpha;
+        ws_.alpha_dual = alpha;
+    }
+
+    /// Barrier parameter of the affine (predictor) iterate (HPIPM
+    /// COMPUTE_MU_AFF_QP): mean over active sides of
+    /// | -m + (lam + a_d dlam) (t + a_p dt) |.  Must be called after
+    /// compute_alpha.  Stores the result in ws_.mu_aff and returns it.
+    S compute_mu_aff(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& iter,
+                     const DenseQpSol<P, NH>& step)
+    {
+        const S a_d = ws_.alpha_dual;
+        const S a_p = ws_.alpha_prim;
+        S sum = S(0);
+        int nc_mask = 0;
+        for (int i = 0; i < in.nside; ++i)
+        {
+            if (in.d_mask(i) > S(0.5))
+            {
+                const S lam1 = iter.lam(i) + a_d * step.lam(i);
+                const S t1 = iter.t(i) + a_p * step.t(i);
+                sum += std::fabs(-in.m(i) + lam1 * t1);
+                ++nc_mask;
+            }
+        }
+        const S mu_aff = (nc_mask > 0) ? sum / nc_mask : S(0);
+        ws_.mu_aff = mu_aff;
+        return mu_aff;
+    }
+
+    /// Set the complementarity target res_m for the corrector (or pure-
+    /// centering) KKT solve (HPIPM COMPUTE_CENTERING(_CORRECTION)_QP):
+    ///   sigma = (mu_aff / mu)^3,  sigma_mu = max(sigma * mu, tau_min)
+    ///   correction: res_m = d_mask . (res_m_bkp + dt .* dlam - sigma_mu)
+    ///   centering:  res_m = d_mask . (res_m_bkp - sigma_mu)
+    /// where mu = res_bkp.res_mu.  Writes only res_m of res_out (res_g /
+    /// res_d must already hold the current residuals).  Stores the
+    /// (unfloored) sigma in ws_.sigma.
+    void apply_centering(const DenseQp<P, NH>& in,
+                         const DenseQpRes<P, NH>& res_bkp,
+                         const DenseQpSol<P, NH>& step, bool correction,
+                         DenseQpRes<P, NH>& res_out)
+    {
+        const S mu = res_bkp.res_mu;
+        const S ratio = ws_.mu_aff / mu;
+        const S sigma = ratio * ratio * ratio;
+        ws_.sigma = sigma;
+        S sigma_mu = sigma * mu;
+        if (sigma_mu < S(opts_.tau_min))
+        {
+            sigma_mu = S(opts_.tau_min);
+        }
+        for (int i = 0; i < in.nside; ++i)
+        {
+            S v = res_bkp.res_m(i) - sigma_mu;
+            if (correction)
+            {
+                v += step.t(i) * step.lam(i);
+            }
+            res_out.res_m(i) = (in.d_mask(i) > S(0.5)) ? v : S(0);
+        }
+    }
+
+    /// Apply the Newton step to the iterate (HPIPM UPDATE_VAR_QP,
+    /// t_lam_min = 2): damping alpha' = alpha * (0.99 (1 - alpha) +
+    /// 0.9999999 alpha) when min(alpha_p, alpha_d) < 1; then
+    /// v += a_p dv, lam += a_d dlam (clip >= lam_min),
+    /// t += a_p dt (clip >= t_min).
+    void update_vars(DenseQpSol<P, NH>& iter,
+                     const DenseQpSol<P, NH>& step) const
+    {
+        S alpha_p = ws_.alpha_prim;
+        S alpha_d = ws_.alpha_dual;
+        if (std::min(alpha_p, alpha_d) < S(1))
+        {
+            alpha_p = alpha_p * (S(0.99) * (S(1) - alpha_p)
+                                 + S(0.9999999) * alpha_p);
+            alpha_d = alpha_d * (S(0.99) * (S(1) - alpha_d)
+                                 + S(0.9999999) * alpha_d);
+        }
+        iter.v += alpha_p * step.v;
+        iter.lam += alpha_d * step.lam;
+        iter.t += alpha_p * step.t;
+        if (opts_.t_lam_min == 2)
+        {
+            for (int i = 0; i < iter.nside; ++i)
+            {
+                if (iter.lam(i) <= S(opts_.lam_min))
+                {
+                    iter.lam(i) = S(opts_.lam_min);
+                }
+                if (iter.t(i) <= S(opts_.t_min))
+                {
+                    iter.t(i) = S(opts_.t_min);
+                }
+            }
+        }
+    }
+
+    /// res_m -= tau * d_mask (COMPUTE_TAU_MIN: predictor complementarity
+    /// shift).
+    void shift_res_m(const DenseQp<P, NH>& in, DenseQpRes<P, NH>& res,
+                     S tau) const
+    {
+        for (int i = 0; i < in.nside; ++i)
+        {
+            res.res_m(i) -= tau * in.d_mask(i);
+        }
+    }
+
+    /// ||res_m - tau_min . d_mask||_inf (HPIPM res_m_tau exit-test
+    /// quantity).
+    S res_m_tau(const DenseQp<P, NH>& in,
+                const DenseQpRes<P, NH>& res) const
+    {
+        S m = S(0);
+        for (int i = 0; i < in.nside; ++i)
+        {
+            m = std::max(m,
+                         std::fabs(res.res_m(i) - S(opts_.tau_min) *
+                                          in.d_mask(i)));
+        }
+        return m;
+    }
+
+    /// Fill the residual / objective fields of a stat row.
+    static void fill_stat_residuals(HpipmIteration& row,
+                                    const DenseQpRes<P, NH>& res)
+    {
+        row.res_stat = res.res_g_max;
+        row.res_eq = 0.0;  // condensed problem has no equality rows
+        row.res_ineq = res.res_d_max;
+        row.res_comp = res.res_m_max;
+        row.dual_gap = res.dual_gap;
+        row.obj = res.obj;
+    }
+
+    /// Pointer to the stat row for iteration kk (row index kk+1), or null
+    /// when beyond the stat_max storage.
+    HpipmIteration* stat_row(int kk)
+    {
+        return (kk + 1 < stat_.stat_max) ? &stat_.row(kk + 1) : nullptr;
+    }
+
+    /// Unconstrained fast path (HPIPM DENSE_QP_IPM_SOLVE unconstr branch):
+    /// zero the iterate, solve (H + reg * I_(x0;u)) v = -g once, stat iter =
+    /// 0.
+    Status solve_unconstr(const DenseQp<P, NH>& in, DenseQpSol<P, NH>& out)
+    {
+        out.v.setZero();
+        out.lam.setZero();
+        out.t.setZero();
+
+        compute_residuals(in, out, ws_.res);
+        const S reg = S(opts_.reg_prim);
+        Mat_t W = in.H;
+        const int nvh = D::nx + in.N * D::nu;
+        for (int j = 0; j < nvh; ++j)
+        {
+            W(j, j) += reg;
+        }
+        Eigen::LLT<Mat_t> llt(W);
+        if (llt.info() != Eigen::Success)
+        {
+            stat_.iter = 0;
+            stat_.status = Status::kQpFailure;
+            return Status::kQpFailure;
+        }
+        out.v = llt.solve(-in.g);
+
+        stat_.iter = 0;
+        compute_residuals(in, out, ws_.res);
+        fill_stat_residuals(stat_.row(0), ws_.res);
+        if (!out.v.allFinite())
+        {
+            stat_.status = Status::kNanDetected;
+            return Status::kNanDetected;
+        }
+        stat_.status = Status::kSolved;
+        return Status::kSolved;
+    }
 };
 
 }  // namespace ocp

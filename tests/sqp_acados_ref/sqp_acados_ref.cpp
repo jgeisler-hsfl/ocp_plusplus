@@ -49,7 +49,8 @@ constexpr int N = 15;
 
 template <class P>
 void run_variant(const char* name, const double ref_x[16][8],
-                 const double ref_u[15][3], double ref_cost, P& p)
+                 const double ref_u[15][3], double ref_cost, P& p,
+                 QpMode mode = QpMode::kStaged)
 {
     Solution<P> sol(N);
     sol.x[0] = p.initial_state();
@@ -60,6 +61,7 @@ void run_variant(const char* name, const double ref_x[16][8],
     }
 
     AcadosOptions opts;
+    opts.qp_mode = mode;
     AcadosSolver<P> solver(opts);
     const Status st = solver.solve(p, sol);
     check(st == Status::kSolved, (std::string(name) + " solve kSolved").c_str());
@@ -103,10 +105,16 @@ void run_variant(const char* name, const double ref_x[16][8],
 int main()
 {
     MassSpringRefBox p_box;
-    run_variant("boxonly", ref_x_boxonly, ref_u_boxonly, ref_cost_boxonly, p_box);
+    run_variant("boxonly staged", ref_x_boxonly, ref_u_boxonly,
+                ref_cost_boxonly, p_box);
+    run_variant("boxonly condensed", ref_x_boxonly, ref_u_boxonly,
+                ref_cost_boxonly, p_box, QpMode::kFullCondensed);
 
     MassSpringRefTerm p_term;
-    run_variant("termeq", ref_x_termeq, ref_u_termeq, ref_cost_termeq, p_term);
+    run_variant("termeq staged", ref_x_termeq, ref_u_termeq,
+                ref_cost_termeq, p_term);
+    run_variant("termeq condensed", ref_x_termeq, ref_u_termeq,
+                ref_cost_termeq, p_term, QpMode::kFullCondensed);
 
     if (failures > 0)
     {

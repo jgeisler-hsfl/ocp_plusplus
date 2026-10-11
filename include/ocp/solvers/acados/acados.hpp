@@ -38,6 +38,7 @@
 
 #include "../hpipm/qp.hpp"
 #include "../hpipm/hpipm.hpp"
+#include "../hpipm/condense.hpp"
 #include "globalize.hpp"
 #include "qpscaling.hpp"
 #include "regularize.hpp"
@@ -719,6 +720,19 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 ///
 /// `tau_min` follows HPIPM's IPM convention (x_ocp_qp_ipm.c:95); the acados
 /// NLP-level default is 0 (zero-initialized struct).
+/// QP solve mode of the SQP driver (parity plan Phase 1).
+///
+/// kStaged solves the staged OCP QP with the HPIPM staged solver (default;
+/// mirrors acados `SQP_RTI_HPIPM`). kFullCondensed first condenses the staged
+/// QP to a dense QP on (x_0, u_0..u_{N-1}, slacks), solves it with the dense
+/// HPIPM IPM, then expands the solution back to the staged layout (mirrors
+/// acados `FULL_CONDENSING_HPIPM`).
+enum class QpMode
+{
+    kStaged,
+    kFullCondensed
+};
+
 struct AcadosOptions
 {
     int max_iter = 20;
@@ -742,6 +756,7 @@ struct AcadosOptions
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
     int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
+    QpMode qp_mode = QpMode::kStaged;     // kStaged | kFullCondensed (Phase 1)
     bool eval_residual_at_max_iter = false;
     int timeout_heuristic = 0;            // 3f: 0 = ZERO, 1 = LAST, 2 = MAX,
                                           // 3 = AVERAGE (acados
@@ -783,6 +798,9 @@ struct SqpIteration
     // active globalizer is not a funnel (SQP_PHASE3_PLAN sec. 3i).
     int funnel_iter_type = -1;
     double funnel_width = 0.0;
+    /// Wall-clock seconds spent in condense + expand for this iteration's QP
+    /// (kFullCondensed mode only; 0 in kStaged mode).
+    double cond_time = 0.0;
 };
 
 /// Per-iteration records of a SQP solve (acados `stat` matrix analogue).
@@ -990,6 +1008,8 @@ public:
         scaler_.resize(n_stages);
         trial_.resize(n_stages);
         slacks_.resize(n_stages);
+        dense_qp_in_.resize(n_stages);
+        dense_qp_out_.resize(n_stages);
     }
 
     const AcadosOptions& options() const { return opts_; }
@@ -1104,6 +1124,8 @@ public:
         lm_mu_ = 0.0;
         lm_mu_bar_ = 0.0;
         soc_count_ = 0;
+        cond_time_ = 0.0;
+        qp_ws_ = 0;
 
         // 3j: hand the globalization options to the active globalizer.
         glob_.opts = opts_.glob;
@@ -1220,29 +1242,23 @@ public:
 
             // QP warm start (phase 3c, acados ocp_qp_hpipm.c:327-336 +
             // ocp_nlp_sqp.c:660-691): the primal step is always cold; only
-            // the duals (pi / lam / t) carried in the scaled-space output
-            // from the previous QP are reused (acados warm-starts the scaled
-            // QP with the previous scaled_qp_out). The first QP is cold
-            // unless warm_start_first_qp is set.
+            // the duals (pi / lam / t) carried in the output from the
+            // previous QP are reused (acados warm-starts the scaled QP with
+            // the previous scaled_qp_out). The first QP is cold unless
+            // warm_start_first_qp is set.
+            int ws = opts_.qp_warm_start;
+            if (iter == 0 && !opts_.warm_start_first_qp)
             {
-                scaler_.scaled_out().ux_first.setZero();
-                for (int k = 1; k < N; ++k)
-                {
-                    scaler_.scaled_out().ux_path[k - 1].setZero();
-                }
-                scaler_.scaled_out().ux_term.setZero();
-                int ws = opts_.qp_warm_start;
-                if (iter == 0 && !opts_.warm_start_first_qp)
-                {
-                    ws = 0;
-                }
-                qp_.set_warm_start(ws);
+                ws = 0;
             }
+            qp_ws_ = ws;
 
             const Status qp_st =
-                qp_.solve(scaler_.scaled_in(), scaler_.scaled_out());
+                solve_qp(scaler_.scaled_in(), scaler_.scaled_out(), ws);
             qp_status_ = static_cast<int>(qp_st);
-            qp_iter_ = qp_.statistics().iter;
+            qp_iter_ = (opts_.qp_mode == QpMode::kFullCondensed)
+                        ? qp_dense_.statistics().iter
+                        : qp_.statistics().iter;
             if (qp_st != Status::kSolved &&
                 qp_st != Status::kMaxIterations)
             {
@@ -1345,6 +1361,7 @@ private:
         row.qp_iter = qp_iter_;
         row.step_norm = step_norm_;
         row.alpha = alpha_;
+        row.cond_time = cond_time_;
         if constexpr (detail::has_iter_type<Globalizer>::value)
         {
             row.funnel_iter_type = glob_.last_iter_type();
@@ -1397,6 +1414,55 @@ private:
             tc = std::max(tc, opts_.nlp_qp_tol_min_comp);
         }
         qp_.set_residual_tolerances(ts, te, ti, tc);
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            qp_dense_.set_residual_tolerances(ts, te, ti, tc);
+        }
+    }
+
+    /// Solve the QP of the current SQP iteration, dispatching on
+    /// opts_.qp_mode (phase 1e).  kStaged: the plain staged HPIPM solve.
+    /// kFullCondensed: condense the staged QP to the dense workspace, solve
+    /// with the dense HPIPM IPM, expand the solution back into the staged
+    /// `out` layout (acados FULL_CONDENSING_HPIPM).
+    ///
+    /// The primal step is always cold (zeroed before the solve); the duals
+    /// warm-start through the persistent workspaces (same convention as the
+    /// staged path, phase 3c).
+    Status solve_qp(const Qp<P, NH>& in, QpSol<P, NH>& out, int ws)
+    {
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            return solve_qp_full_condensed(in, out, ws);
+        }
+        out.ux_first.setZero();
+        for (int k = 1; k < out.N; ++k)
+        {
+            out.ux_path[k - 1].setZero();
+        }
+        out.ux_term.setZero();
+        qp_.set_warm_start(ws);
+        return qp_.solve(in, out);
+    }
+
+    /// Full-condensing QP solve (phase 1e).  `in` is the (regularized,
+    /// scaled) staged QP; `out` receives the staged-layout solution.  The
+    /// dense primal v is zeroed (cold primal); lam / t warm-start from the
+    /// persistent dense_qp_out_.  cond_time_ accumulates the wall clock of
+    /// condense + expand (the dense IPM iterations show up in qp_iter_).
+    Status solve_qp_full_condensed(const Qp<P, NH>& in, QpSol<P, NH>& out,
+                                   int ws)
+    {
+        const auto t0 = std::chrono::steady_clock::now();
+        condense_full(in, dense_qp_in_);
+        dense_qp_out_.v.setZero();
+        qp_dense_.set_warm_start(ws);
+        const Status st = qp_dense_.solve(dense_qp_in_, dense_qp_out_);
+        expand_full_sol(in, dense_qp_in_, dense_qp_out_, out);
+        cond_time_ += std::chrono::duration<double>(
+                          std::chrono::steady_clock::now() - t0)
+                          .count();
+        return st;
     }
 
     /// Inf-norm of the primal step, max over stages (acados
@@ -1650,7 +1716,7 @@ private:
     {
         soc_rewrite_rhs(problem, sol);
         reg_.regularize(qp_in_);
-        const Status st = qp_.solve(qp_in_, qp_out_);
+        const Status st = solve_qp(qp_in_, qp_out_, qp_ws_);
         if (st != Status::kSolved && st != Status::kMaxIterations)
         {
             return Status::kQpFailure;
@@ -3285,6 +3351,11 @@ private:
     QpSolver qp_;
     Regularizer reg_;
     Globalizer glob_;
+    // Phase 1 (full condensing): dense QP workspace + solver, used when
+    // opts_.qp_mode == QpMode::kFullCondensed.
+    HpipmDenseQpSolver<P, NH> qp_dense_;
+    DenseQp<P, NH> dense_qp_in_;
+    DenseQpSol<P, NH> dense_qp_out_;
     AcadosStatistics stat_;
     Qp<P, NH> qp_in_;
     QpSol<P, NH> qp_out_;
@@ -3300,6 +3371,8 @@ private:
     double lm_mu_ = 0.0;     // 3g: adaptive LM mu
     double lm_mu_bar_ = 0.0; // 3g: adaptive LM mu_bar (previous mu)
     int soc_count_ = 0;      // 3j: number of SOC re-solves performed
+    double cond_time_ = 0.0; // 1e: total condense + expand wall clock
+    int qp_ws_ = 0;          // 1e: warm-start mode of the last QP solve
 };
 
 }  // namespace ocp
