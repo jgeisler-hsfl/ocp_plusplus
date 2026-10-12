@@ -404,3 +404,7 @@ Item 11 then reduces to: a root `ValueRegistry` per solver (a few
   matters.
 - **Enums:** registered through their underlying integer type
   (`reinterpret_cast<int&>`); documented at the call site.
+- **QpSeed (Phase 4):** the QP sensitivity seeds
+  (`solvers/hpipm/seed.hpp`) are plain data — no registry, no options
+  struct, and the sensitivity API added no `HpipmOptions` fields (the
+  KKT reg ladder reuses `reg_prim`).

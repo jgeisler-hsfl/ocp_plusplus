@@ -190,3 +190,17 @@ full primal step (alpha = 1) with a full-step dual update — no line search,
 no convergence test. The shared LHS/RHS stage assembly lives in
 `solvers/acados/assemble.hpp` (used by both `AcadosSolver` and
 `RtiSolver`); cost and slack-penalty helpers are shared via `cost.hpp`.
+
+The staged HPIPM QP solver also exposes a QP-level sensitivity layer
+(`HpipmQpSolver::sens_forward` / `sens_adj`, seeds in
+`solvers/hpipm/seed.hpp`): given a converged solution and a `QpSeed` of
+right-hand-side perturbations (grad / b / d / m per stage), it returns the
+linearized response of the full QP solution (u, x, pi, lam, t) to that seed,
+mirroring HPIPM's `OCP_QP_IPM_SENS_FRW` / `SENS_ADJ` (seed module,
+`x_ocp_qp_seed.c`). The first call lazily re-factors the KKT system at the
+final iterate (HPIPM `update_fact_exit`); subsequent seeds reuse the cached
+P-chain / L factors and only recompute the constraint-force term (gamma) and
+run the forward/backward sweeps, so repeated seeds cost one O(N) pass.
+Hessian perturbations are expressed as the equivalent grad seed
+`grad = E z*`; the returned response carries the KKT's internal negative
+sign, i.e. dz/dH = -K^{-1} (E z*).

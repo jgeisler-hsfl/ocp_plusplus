@@ -99,7 +99,7 @@ struct QpSeed
     // rqz seeds: linear cost term over (u;x;s) / (x;s), per stage type
     grad_first / grad_path (N-1) / grad_term
     // dynamics offset seeds (k = 0..N-1)
-    b_first / b_path (N-1)
+    b (N entries)
     // constraint offset seeds (side layout, same as Qp::d)
     d_first / d_path (N-1) / d_term
     // complementarity RHS seeds (side layout, same as Qp::m)
@@ -154,8 +154,11 @@ Contract:
        (fresh solver), compare `sens.ux` / `sens.pi`.
      - `grad` (rqz) seed vs perturb `in.grad` ± h.
      - Hessian seed: perturb `in.hess` ± h E by a symmetric direction E;
-       central difference must match `-sens_forward(grad_k = E_k * sol.ux_k)`
-       (dK/dH = -E, so d(sol)/d(h) = -K^{-1} E v* — one seed solve).
+       central difference must match `sens_forward(grad_k = E_k * sol.ux_k)`
+       directly: d(sol)/d(H) = -K^{-1} (E z*) and the seed machinery
+       applies the same internal negative sign to a grad seed as a grad
+       perturbation (d(sol)/d(g) = -K^{-1} e_g), so both are
+       -K^{-1} (E z*) with no extra flip.
      - `d` seed: perturb a box lower bound ± h (seed = +e_j on the lo
        side) and an upper bound ± h (seed = -e_j on the hi side).
    - Adjoint: for the same seeds as above, `sens_adj(...).ux ==

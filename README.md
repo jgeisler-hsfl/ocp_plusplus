@@ -32,7 +32,9 @@ the first (reference) solver implementations.
   Runge-Kutta integrators to produce a discrete-time problem.
 - `include/ocp/solvers/hpipm/` — the HPIPM QP solvers: a staged QP solver and
   a dense QP solver (used by the SQP full-condensed mode), the first
-  (reference) QP solver implementations.
+  (reference) QP solver implementations. The staged solver also supports
+  QP-level forward/adjoint sensitivities (`sens_forward` / `sens_adj`,
+  HPIPM seed module, `seed.hpp`).
 - `include/ocp/solvers/acados/` — the acados-style SQP outer loop (line
   search, regularization, merit function), the first (reference) SQP solver
   implementation. Its QP subproblem is solved staged (default), as a single
