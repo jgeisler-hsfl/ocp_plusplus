@@ -115,10 +115,31 @@ Decisions:
    s, x_N) ≤1e-5, true OCP cost agreement, and N2=1 vs the Phase-1
    `condense_full` dense pipeline. All checks pass; 21 pre-existing
    targets unchanged (sqp_unit differs only in printed timing).
-4. **2d — `expand_block_sol`.** Map the block-solver solution back to the
-   staged `QpSol`: internal states by forward dynamics, u/s by slicing,
-   π by per-stage stationarity, lam/t by row-group remap. Gate:
-   N2=1 expansion matches `expand_full_sol` (≤1e-9, dual-normalized).
+4. **2d — `expand_block_sol`. ✅**
+   In `solvers/hpipm/block_condense.hpp` (inverse of `condense_block`):
+   u/s sliced from the block stage vectors, x_k0 read from the block,
+   internal states x_{k0+1}...x_{k0+NB-1} by forward simulation of the
+   staged dynamics; lam/t copied row-group by row-group (inverse of the
+   row-emit order, including the slack-side entries); pi_blk[ii] seeds
+   the staged pi at k0+NB-1 (the composite-constraint multiplier carries
+   the last stage of the dynamics chain) and the internal pi's come from
+   the per-stage stationarity backward sweep (same sweep as
+   `expand_full_sol`). Note: r_st must be the absolute row index in the
+   staged stage layout (`lay.row_off(g) + local`), not the group-local
+   index — a local index silently clobbers earlier groups (e.g. control
+   box rows overwriting the pin rows of a fixed-x_0 first stage).
+   Test `tests/hpipm/condense_block.cpp` Part 4: the expanded solution
+   must (a) satisfy the staged QP KKT residuals (res_g ≤1e-5,
+   res_b ≤1e-9, res_d ≤1e-7, res_m ≤1e-5 — verifies the dual mapping and
+   the pi sweep without a second solve) and (b) match a direct staged
+   solve on the primal (≤1e-5). For N2=1 it also matches the Phase-1
+   `expand_full_sol` output: primal/pi ≤1e-5, and the duals compared as
+   their unique parts only (per-row effective multiplier
+   dm_hi·lam_hi − dm_lo·lam_lo and t on active sides ≤1e-4; individual
+   two-sided lam entries are not unique for rows with both sides active,
+   e.g. pins, and masked sides are unconstrained). All checks pass; the
+   21 pre-existing targets are unchanged (sqp_unit differs only in
+   printed timing).
 5. **2e — driver hook.** `QpMode::kPartialCondensed`,
    `AcadosOptions.qp_cond_N`, `AcadosSolver<P, NH, NB>` member
    `block_qp_solver_` (`HpipmQpSolver<P, NH2, BlockQpDim<P,NB>>`) +
