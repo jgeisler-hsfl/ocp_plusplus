@@ -39,6 +39,7 @@
 #include "../hpipm/qp.hpp"
 #include "../hpipm/hpipm.hpp"
 #include "../hpipm/condense.hpp"
+#include "../hpipm/block_condense.hpp"
 #include "globalize.hpp"
 #include "qpscaling.hpp"
 #include "regularize.hpp"
@@ -720,17 +721,23 @@ NlpResiduals compute_nlp_residuals(const P& problem,
 ///
 /// `tau_min` follows HPIPM's IPM convention (x_ocp_qp_ipm.c:95); the acados
 /// NLP-level default is 0 (zero-initialized struct).
-/// QP solve mode of the SQP driver (parity plan Phase 1).
+/// QP solve mode of the SQP driver (parity plan Phase 1 / Phase 2).
 ///
 /// kStaged solves the staged OCP QP with the HPIPM staged solver (default;
 /// mirrors acados `SQP_RTI_HPIPM`). kFullCondensed first condenses the staged
 /// QP to a dense QP on (x_0, u_0..u_{N-1}, slacks), solves it with the dense
 /// HPIPM IPM, then expands the solution back to the staged layout (mirrors
-/// acados `FULL_CONDENSING_HPIPM`).
+/// acados `FULL_CONDENSING_HPIPM`). kPartialCondensed condenses the N stages
+/// into N2 = N / NB blocks of NB stages each (the internal states of each
+/// block are eliminated), solves the N2-stage block QP with the staged
+/// HPIPM IPM over BlockQpDim<P, NB>, and expands the solution back (mirrors
+/// acados `PARTIAL_CONDENSING_HPIPM`). NB is the trailing template parameter
+/// of AcadosSolver; when it is 0 this mode falls back to kStaged.
 enum class QpMode
 {
     kStaged,
-    kFullCondensed
+    kFullCondensed,
+    kPartialCondensed
 };
 
 struct AcadosOptions
@@ -756,7 +763,12 @@ struct AcadosOptions
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
     int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
-    QpMode qp_mode = QpMode::kStaged;     // kStaged | kFullCondensed (Phase 1)
+    QpMode qp_mode = QpMode::kStaged;     // kStaged | kFullCondensed | kPartialCondensed
+    /// Phase 2: number of condensation blocks N2 used by kPartialCondensed
+    /// (acados `qp_cond_N`). 0 (default) selects the identity fast path
+    /// (plain staged solve). When > 0 the block size is NB = N / qp_cond_N,
+    /// which must equal the solver's compile-time NB (template parameter).
+    int qp_cond_N = 0;
     bool eval_residual_at_max_iter = false;
     int timeout_heuristic = 0;            // 3f: 0 = ZERO, 1 = LAST, 2 = MAX,
                                           // 3 = AVERAGE (acados
@@ -874,6 +886,24 @@ struct has_iter_type<
     : std::true_type
 {
 };
+
+/// Block-QP workspaces of a SQP driver (phase 2e).  For NB > 0 holds the
+/// block-condensing solver plus its staged-layout data / solution (always
+/// dynamic-horizon: N2 = N / NB is a runtime quantity).  The NB == 0
+/// specialization is empty, so a solver compiled without partial
+/// condensing carries no extra state (and its default-constructed size /
+/// layout are unchanged).
+template <class P, int NB>
+struct BlockQpWorkspaces
+{
+    HpipmQpSolver<P, Eigen::Dynamic, BlockQpDim<P, NB>> solver;
+    Qp<P, Eigen::Dynamic, BlockQpDim<P, NB>> in;
+    QpSol<P, Eigen::Dynamic, BlockQpDim<P, NB>> out;
+};
+template <class P>
+struct BlockQpWorkspaces<P, 0>
+{
+};
 }  // namespace detail
 
 /// SQP driver (phase 2).
@@ -886,7 +916,7 @@ struct has_iter_type<
 template <class P, int NH = Eigen::Dynamic,
           class QpSolver = HpipmQpSolver<P, NH>,
           class Regularizer = GlmRegularizer<P, NH>,
-          class Globalizer = MeritBacktracking<P, NH>>
+          class Globalizer = MeritBacktracking<P, NH>, int NB = 0>
 class AcadosSolver
 {
 public:
@@ -897,6 +927,12 @@ public:
         : opts_(opts)
         , scaler_(make_scaler_opts(opts))
     {
+        if (NB == 0 && opts_.qp_mode == QpMode::kPartialCondensed)
+        {
+            std::fprintf(stderr,
+                "AcadosSolver: kPartialCondensed requested but the solver "
+                "was compiled with NB = 0; falling back to kStaged.\n");
+        }
     }
 
     /// Assemble the staged QP at the current NLP iterate into qp_in_.
@@ -1010,6 +1046,14 @@ public:
         slacks_.resize(n_stages);
         dense_qp_in_.resize(n_stages);
         dense_qp_out_.resize(n_stages);
+        if constexpr (NB > 0)
+        {
+            if (n_stages % NB == 0)
+            {
+                block_qp_.in.resize(n_stages / NB);
+                block_qp_.out.resize(n_stages / NB);
+            }
+        }
     }
 
     const AcadosOptions& options() const { return opts_; }
@@ -1256,9 +1300,6 @@ public:
             const Status qp_st =
                 solve_qp(scaler_.scaled_in(), scaler_.scaled_out(), ws);
             qp_status_ = static_cast<int>(qp_st);
-            qp_iter_ = (opts_.qp_mode == QpMode::kFullCondensed)
-                        ? qp_dense_.statistics().iter
-                        : qp_.statistics().iter;
             if (qp_st != Status::kSolved &&
                 qp_st != Status::kMaxIterations)
             {
@@ -1418,6 +1459,13 @@ private:
         {
             qp_dense_.set_residual_tolerances(ts, te, ti, tc);
         }
+        if constexpr (NB > 0)
+        {
+            if (opts_.qp_mode == QpMode::kPartialCondensed)
+            {
+                block_qp_.solver.set_residual_tolerances(ts, te, ti, tc);
+            }
+        }
     }
 
     /// Solve the QP of the current SQP iteration, dispatching on
@@ -1433,7 +1481,13 @@ private:
     {
         if (opts_.qp_mode == QpMode::kFullCondensed)
         {
-            return solve_qp_full_condensed(in, out, ws);
+            const Status st = solve_qp_full_condensed(in, out, ws);
+            qp_iter_ = qp_dense_.statistics().iter;
+            return st;
+        }
+        if (opts_.qp_mode == QpMode::kPartialCondensed)
+        {
+            return solve_qp_partial_condensed(in, out, ws);
         }
         out.ux_first.setZero();
         for (int k = 1; k < out.N; ++k)
@@ -1442,7 +1496,9 @@ private:
         }
         out.ux_term.setZero();
         qp_.set_warm_start(ws);
-        return qp_.solve(in, out);
+        const Status st = qp_.solve(in, out);
+        qp_iter_ = qp_.statistics().iter;
+        return st;
     }
 
     /// Full-condensing QP solve (phase 1e).  `in` is the (regularized,
@@ -1463,6 +1519,80 @@ private:
                           std::chrono::steady_clock::now() - t0)
                           .count();
         return st;
+    }
+
+    /// Partial-condensing QP solve (phase 2e, acados
+    /// PARTIAL_CONDENSING_HPIPM).  Condenses the staged QP `in` into
+    /// N2 = N / NB blocks (internal states of each block eliminated),
+    /// solves the N2-stage block QP with the staged HPIPM IPM over
+    /// BlockQpDim<P, NB>, and expands the solution back into the staged
+    /// `out` layout.  The primal step is cold (zeroed); the duals
+    /// warm-start through the persistent block_qp_.out (same convention
+    /// as the other modes).  cond_time_ accumulates the wall clock of
+    /// condense + expand (the block IPM iterations count into qp_iter_).
+    ///
+    /// Falls back to the plain staged solve (identity fast path) when the
+    /// block size does not match this solver's compile-time NB:
+    /// NB == 0, qp_cond_N >= N (=> block size 1), or N / qp_cond_N != NB.
+    Status solve_qp_partial_condensed(const Qp<P, NH>& in, QpSol<P, NH>& out,
+                                      int ws)
+    {
+        if constexpr (NB > 0)
+        {
+            const int N = in.N;
+            const int N2 = (opts_.qp_cond_N > 0) ? opts_.qp_cond_N : N;
+            if (N2 >= N || N % N2 != 0 || N / N2 != NB)
+            {
+                // identity fast path / block size mismatch: plain staged
+                // solve
+                out.ux_first.setZero();
+                for (int k = 1; k < out.N; ++k)
+                {
+                    out.ux_path[k - 1].setZero();
+                }
+                out.ux_term.setZero();
+                qp_.set_warm_start(ws);
+                const Status st = qp_.solve(in, out);
+                qp_iter_ = qp_.statistics().iter;
+                return st;
+            }
+            const auto t0 = std::chrono::steady_clock::now();
+            condense_block<P, NH, NB>(in, block_qp_.in);
+            // resize() is a no-op for an unchanged horizon and preserves
+            // the persistent duals (warm start); only the primal is
+            // zeroed.
+            block_qp_.out.resize(N2);
+            block_qp_.out.ux_first.setZero();
+            for (int k = 1; k < N2; ++k)
+            {
+                block_qp_.out.ux_path[k - 1].setZero();
+            }
+            block_qp_.out.ux_term.setZero();
+            block_qp_.solver.set_warm_start(ws);
+            const Status st =
+                block_qp_.solver.solve(block_qp_.in, block_qp_.out);
+            expand_block_sol<P, NH, Eigen::Dynamic, NB>(
+                in, block_qp_.in, block_qp_.out, out);
+            cond_time_ += std::chrono::duration<double>(
+                              std::chrono::steady_clock::now() - t0)
+                              .count();
+            qp_iter_ = block_qp_.solver.statistics().iter;
+            return st;
+        }
+        else
+        {
+            // NB == 0: partial condensing disabled; plain staged solve.
+            out.ux_first.setZero();
+            for (int k = 1; k < out.N; ++k)
+            {
+                out.ux_path[k - 1].setZero();
+            }
+            out.ux_term.setZero();
+            qp_.set_warm_start(ws);
+            const Status st = qp_.solve(in, out);
+            qp_iter_ = qp_.statistics().iter;
+            return st;
+        }
     }
 
     /// Inf-norm of the primal step, max over stages (acados
@@ -3356,6 +3486,11 @@ private:
     HpipmDenseQpSolver<P, NH> qp_dense_;
     DenseQp<P, NH> dense_qp_in_;
     DenseQpSol<P, NH> dense_qp_out_;
+    // Phase 2 (partial condensing): block QP workspace + solver, used when
+    // opts_.qp_mode == QpMode::kPartialCondensed and NB > 0. Always
+    // dynamic-horizon (N2 = N / NB is a runtime quantity); with NB == 0
+    // these fall back to plain staged types and are never used.
+    detail::BlockQpWorkspaces<P, NB> block_qp_;
     AcadosStatistics stat_;
     Qp<P, NH> qp_in_;
     QpSol<P, NH> qp_out_;

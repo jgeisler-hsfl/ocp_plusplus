@@ -70,6 +70,7 @@ void test_options_defaults()
     check(o.qp_warm_start == 0, "qp_warm_start default 0");
     check(!o.warm_start_first_qp, "warm_start_first_qp default false");
     check(o.qp_mode == QpMode::kStaged, "qp_mode default kStaged");
+    check(o.qp_cond_N == 0, "qp_cond_N default 0 (identity fast path)");
     check(!o.eval_residual_at_max_iter,
           "eval_residual_at_max_iter default false");
     check_close(o.timeout_max_time, 0.0, "timeout_max_time default 0");
