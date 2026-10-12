@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 3: RTI SQP (standard real-time iteration)
 
-Status: **active** (block 3a complete; 3b–3e pending). Builds on Phase 1 (full
+Status: **active** (blocks 3a–3b complete; 3c–3e pending). Builds on Phase 1 (full
 condensing) and Phase 2 (partial condensing), both complete. Adds acados'
 `SQP_RTI` solver in its **standard** form (`as_rti_iter = 0`,
 `as_rti_level = STANDARD_RTI`): the QP is assembled and solved **once** per
@@ -25,7 +25,9 @@ Reference files (read at implementation time; do not modify):
     `regularize->correct_dual_sol` + QP-scaling rescale
   - `ocp_nlp_add_levenberg_marquardt_term` (RTI preparation passes
     alpha = 1.0, iter = 0; with `with_adaptive_levenberg_marquardt = 0`
-    this is a fixed mu = 1.0 shift of the (u;x) Hessian)
+    the shift is the fixed `nlp_opts->levenberg_marquardt` (default 0.0)
+    on the (u;x) Hessian — the alpha/iter args only matter for the
+    adaptive scheme)
 - Local algorithm docs: `../acados/docs/algorithm/01-sqp-main-loop.md`,
   `02-qp-approximation.md`, `06-data-flow.md`.
 
@@ -140,7 +142,7 @@ subset):
    (all stage fields, incl. `d_mask`, `m`) against a QP assembled by the
    old code path kept in the test for one problem (DI + a soft-row
    problem); full regression byte-identical (modulo timing prints).
-2. **3b — `RtiOptions` + `RtiSolver` core.** New `solvers/acados/rti.hpp`:
+2. **3b — `RtiOptions` + `RtiSolver` core (done).** New `solvers/acados/rti.hpp`:
    `RtiOptions`, `RtiStatistics` (per-call row: res_stat/eq/ineq/comp,
    qp_status, qp_iter, step_norm, alpha, cond_time), and
    `RtiSolver<P, NH = Dynamic, QpSolver = HpipmQpSolver<P, NH>,
@@ -189,11 +191,16 @@ for the pre-existing targets, modulo wall-clock prints).
 ## Open items (verify during implementation, not design)
 
 1. In-place full-step application (`apply_sqp_step` with `start == dest`):
-   confirm the Eigen temporaries make it element-safe for all stage
-   types; otherwise apply into a `trial_` scratch as `AcadosSolver` does.
+   **resolved (3b)** — `RtiSolver::feedback` applies the full step in
+   place; the `rti_3b` test verifies the result against a manual
+   re-application from a saved start iterate (bit-exact).
 2. Dual warm start across `RtiSolver::solve()` calls with
    `qp_warm_start = 3` (hot) — check the staged solver's hot path accepts
    a cold-primal / warm-dual mix as the QP solver expects.
 3. Whether the shared QP-solve dispatch (3b) can be extracted without
-   duplicating the `cond_time` / `qp_iter_` bookkeeping — if the
-   extraction costs more than a parallel copy, take the copy and note it.
+   duplicating the `cond_time` / `qp_iter_` bookkeeping — **resolved
+   (3b)**: took the parallel copy in `RtiSolver` (`solve_qp` /
+   `solve_qp_full_condensed` / `solve_qp_partial_condensed`); extracting
+   would have required refactoring the tested phase 1/2 driver. The cost
+   / slack-penalty functions were extracted to `cost.hpp` instead, since
+   both drivers need identical cost computation.

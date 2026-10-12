@@ -26,6 +26,7 @@ int run_qpmode_1e_tests();
 int run_e2e_1f_tests();
 int run_e2e_2f_tests();
 int run_assemble_rti_3a_tests();
+int run_rti_3b_tests();
 
 int main()
 {
@@ -47,6 +48,7 @@ int main()
     failures += run_e2e_1f_tests();
     failures += run_e2e_2f_tests();
     failures += run_assemble_rti_3a_tests();
+    failures += run_rti_3b_tests();
 
     if (failures == 0)
     {
