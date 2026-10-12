@@ -18,6 +18,13 @@
 // Part 3 (end-to-end): staged solve vs block solve — same primal (u, x at
 // block starts, x_N, slacks) and objective; for N2 = 1 also against the
 // Phase-1 full-dense pipeline.
+//
+// Part 4 (expand_block_sol): the block-solver solution expanded back to
+// the staged layout must (a) satisfy the staged QP's KKT residuals (the
+// duals are verified by stationarity / complementarity, the internal
+// states by the dynamics residual) and (b) match a direct staged solve
+// on the primal; for N2 = 1 it must also match the Phase-1
+// expand_full_sol output (both expansions of equivalent QP solutions).
 
 #include <cmath>
 #include <cstdio>
@@ -62,6 +69,47 @@ void check_close(const A& a, const B& b, double tol, const std::string& msg)
     {
         std::fprintf(stderr, "FAIL: %s (err = %.3e)\n", msg.c_str(), err);
         ++failures;
+    }
+}
+
+// Compare two sets of multipliers / slacks row by row.  Two-sided rows are
+// compared by their net multiplier (lam_hi - lam_lo) because the individual
+// sides are not unique for rows where both sides are active (e.g. pin rows
+// with d_lo == d_hi == 0); only the net value entering the stationarity
+// condition is well defined.  t values are unique and compared directly.
+template <class L, class T, class D>
+void check_duals(const L& lam_e, const T& t_e, const L& lam_x, const T& t_x,
+                 const D& dm, const detail::QpLayout& lay, const std::string& msg)
+{
+    for (int r = 0; r < lay.nrow(); ++r)
+    {
+        const int hl = lay.side_lo(r);
+        const int hh = lay.side_hi(r);
+        const bool ahi = dm(hh) > 0.5;
+        const bool alo = (hl >= 0) && (dm(hl) > 0.5);
+        // effective (unique) multiplier of the row: only active sides count
+        const double c_e = (ahi ? lam_e(hh) : 0.0) - (alo ? lam_e(hl) : 0.0);
+        const double c_x = (ahi ? lam_x(hh) : 0.0) - (alo ? lam_x(hl) : 0.0);
+        check(std::fabs(c_e - c_x) <= 1e-4,
+              msg + " net row " + std::to_string(r));
+        if (ahi)
+        {
+            check(std::fabs(t_e(hh) - t_x(hh)) <= 1e-4,
+                  msg + " t_hi row " + std::to_string(r));
+        }
+        if (alo)
+        {
+            check(std::fabs(t_e(hl) - t_x(hl)) <= 1e-4,
+                  msg + " t_lo row " + std::to_string(r));
+        }
+    }
+    const int s0 = lay.lo_size() + lay.nrow();
+    for (int i = 0; i < lay.nslack; ++i)
+    {
+        check(std::fabs(lam_e(s0 + i) - lam_x(s0 + i)) <= 1e-4,
+              msg + " lam_slack " + std::to_string(i));
+        check(std::fabs(t_e(s0 + i) - t_x(s0 + i)) <= 1e-4,
+              msg + " t_slack " + std::to_string(i));
     }
 }
 
@@ -899,6 +947,127 @@ void check_block_solve(const char* name, int N)
     }
 }
 
+// ---------------------------------------------------------------------
+// Part 4: expand_block_sol — expanded solution must satisfy the staged
+// QP KKT residuals and match the direct staged solve
+// ---------------------------------------------------------------------
+
+template <class P, int NB>
+void check_expand(const char* name, int N)
+{
+    using B = BlockQpDim<P, NB>;
+    using SD = QpDim<P>;
+    using S = typename P::scalar_t;
+    const std::string p = name;
+    const int N2 = N / NB;
+    const int nx = SD::nx, nu = SD::nu;
+
+    Qp<P, Eigen::Dynamic> qp(N);
+    Rng rng;
+    fill_random_qp(qp, rng);
+    make_feasible(qp, rng);
+
+    // reference: direct staged solve
+    HpipmQpSolver<P, Eigen::Dynamic> s_solver;
+    QpSol<P, Eigen::Dynamic> sol_s(N);
+    check(s_solver.solve(qp, sol_s) == Status::kSolved, p + " staged status");
+
+    // pipeline: condense_block -> block solve -> expand_block_sol
+    Qp<P, Eigen::Dynamic, B> bq;
+    condense_block<P, Eigen::Dynamic, NB>(qp, bq);
+    HpipmQpSolver<P, Eigen::Dynamic, B> b_solver;
+    QpSol<P, Eigen::Dynamic, B> sol_b(N2);
+    check(b_solver.solve(bq, sol_b) == Status::kSolved, p + " block status");
+
+    QpSol<P, Eigen::Dynamic> sol_x(N);
+    expand_block_sol<P, Eigen::Dynamic, Eigen::Dynamic, NB>(qp, bq, sol_b,
+                                                            sol_x);
+
+    // (a) the expanded solution must satisfy the staged QP KKT residuals
+    QpRes<P, Eigen::Dynamic> res(N);
+    s_solver.compute_residuals(qp, sol_x, res);
+    check(res.res_g_max <= S(1e-5), p + " exp res_g_max ("
+          + std::to_string(res.res_g_max) + ")");
+    check(res.res_b_max <= S(1e-9), p + " exp res_b_max ("
+          + std::to_string(res.res_b_max) + ")");
+    check(res.res_d_max <= S(1e-7), p + " exp res_d_max ("
+          + std::to_string(res.res_d_max) + ")");
+    check(res.res_m_max <= S(1e-5), p + " exp res_m_max ("
+          + std::to_string(res.res_m_max) + ")");
+
+    // (b) primal agreement with the direct staged solve
+    for (int k = 0; k < N; ++k)
+    {
+        Eigen::VectorXd us(nu), xs(nx);
+        if (k == 0)
+        {
+            us = sol_s.ux_first.head(nu);
+            xs = sol_s.ux_first.segment(nu, nx);
+        }
+        else
+        {
+            us = sol_s.ux_path[k - 1].head(nu);
+            xs = sol_s.ux_path[k - 1].segment(nu, nx);
+        }
+        Eigen::VectorXd ux(nu + nx);
+        if (k == 0)
+        {
+            ux = sol_x.ux_first.head(nu + nx);
+        }
+        else
+        {
+            ux = sol_x.ux_path[k - 1].head(nu + nx);
+        }
+        check_close(us, ux.head(nu), 1e-5,
+                    p + " u[" + std::to_string(k) + "]");
+        check_close(xs, ux.segment(nu, nx), 1e-5,
+                    p + " x[" + std::to_string(k) + "]");
+    }
+    check_close(sol_s.ux_term, sol_x.ux_term, 1e-5, p + " term ux");
+
+    // N2 = 1: cross-check against the Phase-1 expand_full_sol output
+    if (N2 == 1)
+    {
+        DenseQp<P, Eigen::Dynamic> dq;
+        condense_full<P, Eigen::Dynamic>(qp, dq);
+        HpipmDenseQpSolver<P, Eigen::Dynamic> d_solver;
+        DenseQpSol<P, Eigen::Dynamic> sol_d;
+        sol_d.resize(N);
+        check(d_solver.solve(dq, sol_d) == Status::kSolved,
+              p + " dense status");
+        QpSol<P, Eigen::Dynamic> sol_e(N);
+        expand_full_sol<P, Eigen::Dynamic>(qp, dq, sol_d, sol_e);
+        check_close(sol_e.ux_first, sol_x.ux_first, 1e-5, p + " vs-dense ux_first");
+        for (int k = 1; k < N; ++k)
+        {
+            check_close(sol_e.ux_path[k - 1], sol_x.ux_path[k - 1], 1e-5,
+                        p + " vs-dense ux_path[" + std::to_string(k) + "]");
+        }
+        check_close(sol_e.ux_term, sol_x.ux_term, 1e-5, p + " vs-dense ux_term");
+        for (int k = 0; k < N; ++k)
+        {
+            check_close(sol_e.pi[k], sol_x.pi[k], 1e-5,
+                        p + " vs-dense pi[" + std::to_string(k) + "]");
+        }
+        // Duals: compare the unique parts only (per-row net multiplier
+        // lam_hi - lam_lo and the t values; individual two-sided lam entries
+        // are not unique for rows where both sides are active, e.g. pins)
+        check_duals(sol_e.lam_first, sol_e.t_first, sol_x.lam_first,
+                    sol_x.t_first, qp.first.d_mask, SD::lay_first,
+                    p + " vs-dense first");
+        for (int k = 1; k < N; ++k)
+        {
+            check_duals(sol_e.lam_path[k - 1], sol_e.t_path[k - 1],
+                        sol_x.lam_path[k - 1], sol_x.t_path[k - 1],
+                        qp.path[k - 1].d_mask, SD::lay_path,
+                        p + " vs-dense path[" + std::to_string(k) + "]");
+        }
+        check_duals(sol_e.lam_term, sol_e.t_term, sol_x.lam_term,
+                    sol_x.t_term, qp.term.d_mask, SD::lay_term,
+                    p + " vs-dense term");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -929,6 +1098,16 @@ int main()
     check_block_solve<DoubleIntegrator, 4>("s4 DI    N=4 ", 4);
     check_block_solve<MassSpring, 2>("s2 MS    N=4 ", 4);
     check_block_solve<MassSpring, 4>("s4 MS    N=4 ", 4);
+
+    // Part 4: expand_block_sol
+    check_expand<TinyFree, 1>("x1 free  N=3 ", 3);
+    check_expand<TinyFree, 2>("x2 free  N=4 ", 4);
+    check_expand<TinyFree, 4>("x4 free  N=4 ", 4);   // N2 = 1 (+ dense)
+    check_expand<TinyFixed, 2>("x2 fixed N=4 ", 4);
+    check_expand<DoubleIntegrator, 2>("x2 DI    N=6 ", 6);
+    check_expand<DoubleIntegrator, 3>("x3 DI    N=6 ", 6);
+    check_expand<MassSpring, 2>("x2 MS    N=4 ", 4);
+    check_expand<MassSpring, 4>("x4 MS    N=4 ", 4);   // N2 = 1 (+ dense)
 
     if (failures == 0)
     {

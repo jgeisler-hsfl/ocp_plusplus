@@ -26,6 +26,18 @@
 //
 //   NB == 1 reproduces the staged QP exactly (N2 = N, one stage per block).
 //
+// expand_block_sol(staged, block, bsol, sol):
+//   Inverse mapping for solutions (parity plan block 2d): u / s are sliced
+//   from the block stage vectors, x_{k0} is read from the block, and the
+//   internal states x_{k0+1} ... x_{k0+NB-1} are forward-simulated from
+//   the staged dynamics.  lam / t are copied row group by row group
+//   (inverse of condense_block's row-emit order; the flow map is a
+//   feasible-set bijection, so multipliers and slacks transfer verbatim).
+//   pi_blk[ii] is the staged dynamics multiplier of the block's last
+//   stage (k0 + NB - 1) (the composite-constraint multiplier carries the
+//   last stage of the chain); the internal pi's are recovered by a
+//   per-stage stationarity backward sweep.
+//
 // HPIPM reference: acados/external/hpipm/cond/x_part_cond.c
 // (PART_COND_QP_COND_LHS / _RHS, per-block COND_BAT / COND_RSQ / COND_DCT),
 // reusing the Phase-1 flow-map machinery (condense.hpp).
@@ -418,6 +430,332 @@ void condense_block(const Qp<P, NH>& in,
     out.term.d = in.term.d;
     out.term.d_mask = in.term.d_mask;
     out.term.m = in.term.m;
+}
+
+// =========================================================================
+//  expand_block_sol
+// =========================================================================
+
+/// Expand a block-condensed-QP solution back into the staged `QpSol`
+/// layout.  `staged` must be the staged QP that was passed to
+/// `condense_block` (its dynamics BA / b and the per-stage Hessians /
+/// gradients / Jacobians drive the primal forward simulation and the
+/// dynamics-multiplier recovery); `block` / `bsol` must be the block QP
+/// and the solution of it.
+///
+/// Primal: the controls and slacks are read directly from the block stage
+/// vectors; x_{k0} comes from the block; the internal states
+/// x_{k0+1} ... x_{k0+NB-1} are forward-simulated from the staged
+/// dynamics.
+///
+/// Dual: lam / t are copied row group by row group (inverse of
+/// condense_block's row-emit order; the flow map is a feasible-set
+/// bijection, so multipliers and slacks transfer verbatim).  The block
+/// dynamics multiplier pi_blk[ii] is the staged multiplier of the
+/// block's last stage (k0 + NB - 1) (the composite-constraint multiplier
+/// is the multiplier of the last stage of the chain); the internal
+/// multipliers pi_{k0} ... pi_{k0+NB-2} come from a per-stage
+/// stationarity backward sweep (same sweep as expand_full_sol).
+///
+/// NB == 1 is a trivial mapping (N2 = N).
+template <class P, int NH, int NH2, int NB>
+void expand_block_sol(const Qp<P, NH>& staged,
+                      const Qp<P, NH2, BlockQpDim<P, NB>>& block,
+                      const QpSol<P, NH2, BlockQpDim<P, NB>>& bsol,
+                      QpSol<P, NH>& sol)
+{
+    using B = BlockQpDim<P, NB>;
+    using SD = QpDim<P>;
+    using S = typename P::scalar_t;
+    using M = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+    using V = Eigen::Matrix<S, Eigen::Dynamic, 1>;
+    using namespace ocp::detail;
+
+    const int N = staged.N;
+    assert(NB >= 1);
+    assert(N % NB == 0);
+    const int N2 = block.N;
+    assert(N2 == N / NB && bsol.N == N2);
+    sol.resize(N);
+
+    const int nx = SD::nx;
+    const int nu = SD::nu;
+
+    // ---------------------------------------------------------------
+    // Per original stage: dynamic-Eigen view of the staged data (first /
+    // path stage types differ in size).
+    // ---------------------------------------------------------------
+    struct Stage
+    {
+        M BA, hess, DC;
+        V b, grad, d_mask;
+        QpLayout lay;
+    };
+    auto stage_at = [&](int k) -> Stage
+    {
+        Stage s;
+        if (k == 0)
+        {
+            s.BA = staged.first.BA;
+            s.b = staged.first.b;
+            s.hess = staged.first.hess;
+            s.grad = staged.first.grad;
+            s.DC = staged.first.DC;
+            s.d_mask = staged.first.d_mask;
+            s.lay = SD::lay_first;
+        }
+        else
+        {
+            s.BA = staged.path[k - 1].BA;
+            s.b = staged.path[k - 1].b;
+            s.hess = staged.path[k - 1].hess;
+            s.grad = staged.path[k - 1].grad;
+            s.DC = staged.path[k - 1].DC;
+            s.d_mask = staged.path[k - 1].d_mask;
+            s.lay = SD::lay_path;
+        }
+        return s;
+    };
+
+    // ---------------------------------------------------------------
+    // Primal: u / s sliced from the block vectors; internal states by
+    // forward simulation of the staged dynamics.
+    // ---------------------------------------------------------------
+    for (int ii = 0; ii < N2; ++ii)
+    {
+        const int k0 = ii * NB;
+        const int nvar = (ii == 0) ? B::nvar_first : B::nvar_path;
+        V ub(nvar);
+        if (ii == 0)
+        {
+            ub = bsol.ux_first;
+        }
+        else
+        {
+            ub = bsol.ux_path[ii - 1];
+        }
+
+        std::vector<V> xs(NB + 1);
+        xs[0] = ub.segment(NB * nu, nx);
+        for (int j = 0; j < NB; ++j)
+        {
+            const Stage sj = stage_at(k0 + j);
+            V uz(nu + nx);
+            uz.head(nu) = ub.segment(j * nu, nu);
+            uz.tail(nx) = xs[j];
+            xs[j + 1] = sj.BA * uz + sj.b;
+        }
+
+        for (int j = 0; j < NB; ++j)
+        {
+            const int k = k0 + j;
+            const int nsl = (k == 0) ? SD::nslack_first : SD::nslack_path;
+            const int soff = (ii == 0) ? B::stage_offset_first(j)
+                                       : B::stage_offset_path(j);
+            if (k == 0)
+            {
+                auto& uxf = sol.ux_first;
+                uxf.head(nu) = ub.segment(j * nu, nu);
+                uxf.segment(nu, nx) = xs[j];
+                if (nsl > 0)
+                {
+                    uxf.segment(nu + nx, nsl) =
+                        ub.segment(NB * nu + nx + soff, nsl);
+                }
+            }
+            else
+            {
+                auto& uxp = sol.ux_path[k - 1];
+                uxp.head(nu) = ub.segment(j * nu, nu);
+                uxp.segment(nu, nx) = xs[j];
+                if (nsl > 0)
+                {
+                    uxp.segment(nu + nx, nsl) =
+                        ub.segment(NB * nu + nx + soff, nsl);
+                }
+            }
+        }
+    }
+    sol.ux_term = bsol.ux_term;
+
+    // ---------------------------------------------------------------
+    // lam / t: block rows -> staged rows (inverse of condense_block's
+    // row-emit order)
+    // ---------------------------------------------------------------
+    auto map_row = [&](int br, const QpLayout& blay, auto& lam_b, auto& t_b,
+                       int k, int r_st)
+    {
+        const int bh = blay.side_hi(br);
+        const int bl = blay.side_lo(br);
+        if (k == 0)
+        {
+            const QpLayout& lay = SD::lay_first;
+            auto& lam_st = sol.lam_first;
+            auto& t_st = sol.t_first;
+            lam_st(lay.side_hi(r_st)) = lam_b(bh);
+            t_st(lay.side_hi(r_st)) = t_b(bh);
+            if (bl >= 0)
+            {
+                lam_st(lay.side_lo(r_st)) = lam_b(bl);
+                t_st(lay.side_lo(r_st)) = t_b(bl);
+            }
+        }
+        else
+        {
+            const QpLayout& lay = SD::lay_path;
+            auto& lam_st = sol.lam_path[k - 1];
+            auto& t_st = sol.t_path[k - 1];
+            lam_st(lay.side_hi(r_st)) = lam_b(bh);
+            t_st(lay.side_hi(r_st)) = t_b(bh);
+            if (bl >= 0)
+            {
+                lam_st(lay.side_lo(r_st)) = lam_b(bl);
+                t_st(lay.side_lo(r_st)) = t_b(bl);
+            }
+        }
+    };
+
+    auto map_rows_of = [&](const QpLayout& blay, auto& lam_b, auto& t_b,
+                           int k0)
+    {
+        for (int br = 0; br < blay.nrow(); ++br)
+        {
+            const int g = blay.group_of(br);
+            const int loc = br - blay.row_off(g);
+            int jj = 0, g_st = g, local = loc;
+            switch (g)
+            {
+            case g_bu:
+                jj = loc / SD::nbu;
+                local = loc % SD::nbu;
+                break;
+            case g_ineq:
+                jj = loc / SD::ng;
+                local = loc % SD::ng;
+                break;
+            case g_eq:
+                jj = loc / SD::ne;
+                local = loc % SD::ne;
+                break;
+            case g_lin:
+                if (loc < NB * SD::nl)
+                {
+                    jj = loc / SD::nl;
+                    local = loc % SD::nl;
+                }
+                else
+                {
+                    // internal state box row -> staged state-box row
+                    const int lb = loc - NB * SD::nl;
+                    jj = lb / SD::nbx + 1;
+                    g_st = g_bx;
+                    local = lb % SD::nbx;
+                }
+                break;
+            default:  // g_pin / g_bx: block-start row, stage j = 0
+                break;
+            }
+            // r_st must be the ABSOLUTE row index in the staged stage
+            // layout (row_off depends on the groups present in that type)
+            const int k = k0 + jj;
+            const QpLayout& lay_st = (k == 0) ? SD::lay_first
+                                              : SD::lay_path;
+            const int r_st = lay_st.row_off(g_st) + local;
+            map_row(br, blay, lam_b, t_b, k, r_st);
+        }
+    };
+
+    // Slack-side entries (non-negativity sides of the slack variables)
+    auto copy_slack_sides = [&](const QpLayout& blay, auto& lam_b, auto& t_b,
+                                int k0)
+    {
+        const int bso = blay.lo_size() + blay.nrow();
+        for (int j = 0; j < NB; ++j)
+        {
+            const int k = k0 + j;
+            const int nsl = (k == 0) ? SD::nslack_first : SD::nslack_path;
+            if (nsl == 0)
+            {
+                continue;
+            }
+            const int soff = (k0 == 0) ? B::stage_offset_first(j)
+                                       : B::stage_offset_path(j);
+            const QpLayout& lay_st = (k == 0) ? SD::lay_first
+                                              : SD::lay_path;
+            const int sso = lay_st.lo_size() + lay_st.nrow();
+            for (int i = 0; i < nsl; ++i)
+            {
+                if (k == 0)
+                {
+                    sol.lam_first(sso + i) = lam_b(bso + soff + i);
+                    sol.t_first(sso + i) = t_b(bso + soff + i);
+                }
+                else
+                {
+                    sol.lam_path[k - 1](sso + i) = lam_b(bso + soff + i);
+                    sol.t_path[k - 1](sso + i) = t_b(bso + soff + i);
+                }
+            }
+        }
+    };
+
+    for (int ii = 0; ii < N2; ++ii)
+    {
+        const int k0 = ii * NB;
+        if (ii == 0)
+        {
+            map_rows_of(B::lay_first, bsol.lam_first, bsol.t_first, k0);
+            copy_slack_sides(B::lay_first, bsol.lam_first, bsol.t_first, k0);
+        }
+        else
+        {
+            map_rows_of(B::lay_path, bsol.lam_path[ii - 1],
+                        bsol.t_path[ii - 1], k0);
+            copy_slack_sides(B::lay_path, bsol.lam_path[ii - 1],
+                             bsol.t_path[ii - 1], k0);
+        }
+    }
+    sol.lam_term = bsol.lam_term;
+    sol.t_term = bsol.t_term;
+
+    // ---------------------------------------------------------------
+    // Dynamics multipliers: pi_blk[ii] = pi_{k0 + NB - 1} (the
+    // composite-constraint multiplier is the multiplier of the last
+    // stage of the chain); internal pi's by the per-stage stationarity
+    // backward sweep.
+    // ---------------------------------------------------------------
+    auto res_x_ux = [&](const Stage& s, const V& z, const V& lam_m, int nrow)
+    {
+        V w(nrow);
+        for (int r = 0; r < nrow; ++r)
+        {
+            const int sl = s.lay.side_lo(r);
+            w(r) = lam_m(s.lay.side_hi(r))
+                   - (sl >= 0 ? lam_m(sl) : 0.0);
+        }
+        const V Hz = s.hess * z;
+        // .eval(): the returned expression must not reference the
+        // lambda-local Hz / w (lifetime ends on return)
+        return (Hz.segment(nu, nx) + s.grad.segment(nu, nx)
+                + s.DC.block(0, nu, nrow, nx).transpose() * w)
+               .eval();
+    };
+
+    for (int ii = 0; ii < N2; ++ii)
+    {
+        const int k0 = ii * NB;
+        const int klast = k0 + NB - 1;
+        sol.pi[klast] = bsol.pi[ii];
+        for (int k = klast; k >= k0 + 1; --k)
+        {
+            const Stage s = stage_at(k);
+            const V z = sol.ux_path[k - 1];
+            const V lam_m = s.d_mask.cwiseProduct(sol.lam_path[k - 1]);
+            sol.pi[k - 1] =
+                res_x_ux(s, z, lam_m, SD::nrow_path)
+                + s.BA.block(0, nu, nx, nx).transpose() * sol.pi[k];
+        }
+    }
 }
 
 }  // namespace ocp
