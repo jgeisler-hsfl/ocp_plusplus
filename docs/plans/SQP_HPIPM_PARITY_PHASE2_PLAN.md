@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 2: partial condensing (block grouping)
 
-Status: **active** (`2a`–`2e` complete). Builds on Phase 1 (full condensing,
+Status: **active** (`2a`–`2f` complete). Builds on Phase 1 (full condensing,
 `1a`–`1g` complete, committed). Adds acados' `PARTIAL_CONDENSING_HPIPM`: group the N stages into
 N2 blocks of NB stages each, condense each block to a mini QP (the internal
 states of a block are eliminated), and solve the resulting N2-stage "block"
@@ -168,12 +168,26 @@ Decisions:
    the extra (empty) member and the new dispatch methods, which shifts the
    compiler's FMA/vectorization decisions. ASan-clean; all checks pass with
    wide margin (threshold 1e-6).
-6. **2f — E2E + docs.** `tests/sqp/e2e_2f.cpp` (in `sqp_unit`):
-   DoubleIntegrator + MassesChain in both `kStaged` and
-   `kPartialCondensed` (NB=2, NB=4 where N%NB==0) from the same warm start
-   agree ≤1e-8 (x/u inf, cost rel); iteration counts comparable.
-   Update ARCHITECTURE/README + register `qp_cond_N` in the DUAL_ACCESS
-   inventory. Mark this plan's blocks complete.
+6. **2f — E2E + docs. ✅**
+   `tests/sqp/e2e_2f.cpp` (in `sqp_unit`, `run_e2e_2f_tests`): DI N=10
+   (NB=2; NB=4 skipped since N%4!=0) and MC N=40 (NB=2, NB=4) in
+   kStaged vs kPartialCondensed from the same warm start, 1e-8
+   (x/u inf, cost rel), plus a mismatch case (solver compiled with NB=4,
+   qp_cond_N=5) that must fall back to staged. A `BlockSolver` alias
+   template instantiates the trailing-NB solver. Results: DI NB=2
+   dx=3.8e-13 (2 it = 2 it), mismatch dx=0, MC NB=2 dx=3.5e-12 /
+   NB=4 dx=3.7e-12 (6 it = 6 it). **Bug found & fixed here:**
+   `BlockQpDim::make_idxs_{lo,hi}_first` used a ternary between
+   `Base::idxs_*_first` and `Base::idxs_*_path`, which are
+   `std::array`s of different sizes when the staged first/path row
+   counts differ (MC: 27 vs 7) — ill-formed, latent until the block
+   solver was fully instantiated for such a problem (DI happened to have
+   equal counts). Replaced by a capture-less static template helper
+   `fill_first_stage` dispatched on `j == 0`. ARCHITECTURE.md §8 lists
+   the third mode; README.md updated; `qp_cond_N` registered in the
+   DUAL_ACCESS inventory (33 → 34 flat scalars). All 23 test targets
+   green; vs baseline only the known 4l codegen wobble and cond_time
+   timing differ. Phase 2 complete.
 
 Gate for every block: `cmake --build build` warning-free
 (`-Wall -Wextra -Werror`), full test suite green.

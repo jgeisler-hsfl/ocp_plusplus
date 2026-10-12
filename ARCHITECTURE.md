@@ -169,10 +169,14 @@ The interface must remain sufficiently general to accommodate additional formula
 A solver may solve its subproblems in a formulation that differs from the
 stage-wise layout of the problem definition; such a choice is solver-internal
 (see "Separation of internal variables") and is selected by a solver-specific
-option, not by the problem interface. The reference SQP solver exposes two QP
-solve modes via `AcadosOptions.qp_mode` (`QpMode::kStaged`, the default, and
-`QpMode::kFullCondensed`): either the staged HPIPM QP over
-`(x, u, slacks)` with dynamics multipliers, or a single dense QP over the
-decision vector `v = [x_0 .. x_N, u_0 .. u_{N-1}]` obtained by eliminating
-the dynamics via full condensation. Both modes consume the same staged QP
-assembly and produce identical `ocp::Solution` quantities.
+option, not by the problem interface. The reference SQP solver exposes three QP
+solve modes via `AcadosOptions.qp_mode` (`QpMode::kStaged`, the default,
+`QpMode::kFullCondensed`, and `QpMode::kPartialCondensed`): the staged HPIPM
+QP over `(x, u, slacks)` with dynamics multipliers; a single dense QP over
+the decision vector `v = [x_0 .. x_N, u_0 .. u_{N-1}]` obtained by
+eliminating the dynamics via full condensation; or — partial condensing —
+the N stages grouped into `AcadosOptions.qp_cond_N` blocks of NB stages
+each (NB a compile-time parameter of the solver), each block condensed to a
+mini QP whose internal states are eliminated, and the resulting
+block-stage QP solved with the staged HPIPM IPM. All modes consume the same
+staged QP assembly and produce identical `ocp::Solution` quantities.

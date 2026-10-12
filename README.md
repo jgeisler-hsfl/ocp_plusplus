@@ -35,8 +35,9 @@ the first (reference) solver implementations.
   (reference) QP solver implementations.
 - `include/ocp/solvers/acados/` — the acados-style SQP outer loop (line
   search, regularization, merit function), the first (reference) SQP solver
-  implementation. Its QP subproblem is solved either staged (default) or as a
-  single full-condensed dense QP, selected by `AcadosOptions.qp_mode`.
+  implementation. Its QP subproblem is solved staged (default), as a single
+  full-condensed dense QP, or as a block-condensed staged QP (stages grouped
+  into blocks), selected by `AcadosOptions.qp_mode`.
 - `tools/acados2ocp_pp.py` — generator that ports an acados OCP (from its
   CasADi-generated `acados_ocp_nlp.json` + C model files) into an ocp++
   problem class.
