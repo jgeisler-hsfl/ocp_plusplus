@@ -1165,10 +1165,13 @@ public:
     /// reg-primal growth ladder (HPIPM `compute_preg`,
     /// x_ocp_qp_kkt.c:1166-1210): run `lq ? fact_solve_kkt_lq_reg :
     /// fact_solve_kkt_reg` and, on a singular factorization, grow the
-    /// reg-primal (`preg`) and retry.  Growth schedule (first growth is
-    /// additive, subsequent are multiplicative; `ws_.preg_last` holds the
-    /// last successfully-used reg and persists across IPM iterations):
-    ///   first growth:  +1e-4 if preg_last == base, else /3
+    /// reg-primal (`preg`) and retry.  As in HPIPM, the ladder re-tries the
+    /// base reg (`opts_.reg_prim`) on every call and only falls back to the
+    /// last successfully-used reg (`ws_.preg_last`) when the base fails, so
+    /// a reg grown by an earlier ill-conditioned iterate regresses once the
+    /// KKT is well-posed again.  Growth schedule after the fallback (first
+    /// growth is additive, subsequent are multiplicative):
+    ///   first growth: +1e-4 if preg_last == base, else preg_last / 3
     ///   next  growths: x100 if preg_last == base, else x8
     /// Sets `ws_.npd_reg_hess` on any failure and persists the reg used in
     /// `ws_.preg_last` on success.
@@ -1177,7 +1180,7 @@ public:
                              bool lq)
     {
         const S base = S(opts_.reg_prim);
-        S preg = ws_.preg_last;
+        S preg = base;
         bool preg_first = true;
         ws_.npd_reg_hess = false;
         for (int attempt = 0; attempt < 15; ++attempt)
@@ -1193,7 +1196,10 @@ public:
             ws_.npd_reg_hess = true;
             if (preg_first)
             {
-                preg = (ws_.preg_last == base) ? preg + S(1e-4) : preg / S(3.0);
+                // HPIPM compute_preg first fallback: seed from the last
+                // successfully-used reg.
+                preg = (ws_.preg_last == base) ? base + S(1e-4)
+                                               : ws_.preg_last / S(3.0);
             }
             else
             {
