@@ -43,6 +43,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,7 @@
 
 #include "dense_qp.hpp"
 #include "qp.hpp"
+#include "seed.hpp"
 
 namespace ocp
 {
@@ -393,6 +395,8 @@ public:
         const int N = in.N;
         ws_.resize(N);
         stat_.init(opts_.stat_max);
+        has_factors_ = false;
+        solved_ = false;
 
         if (!has_active_side(in))
         {
@@ -569,7 +573,37 @@ public:
             return Status::kNanDetected;
         }
         stat_.status = Status::kSolved;
+        solved_ = true;
         return Status::kSolved;
+    }
+
+    /// Forward QP sensitivity (HPIPM `OCP_QP_IPM_SENS_FRW`,
+    /// x_ocp_qp_ipm.c:3383): re-solves the KKT system of the last
+    /// converged `solve()` with the RHS fields (grad, b, d, m) replaced by
+    /// `seed`; the LHS (hess, BA, DC, d_mask) is unchanged. The output is
+    /// the sensitivity itself — the solution delta for a unit parameter
+    /// change: `new_sol ≈ sol + sens`.
+    ///
+    /// `in` must be the QP data of the last successful `solve()` on this
+    /// instance; `sol` its converged solution. The first call after a
+    /// `solve()` refactors at the final iterate (HPIPM `update_fact_exit`
+    /// refactor); later calls with other seeds reuse the factors.
+    /// Staged data only (Dim = QpDim<P>).
+    Status sens_forward(const QpT& in, const QpSolT& sol,
+                        const QpSeed<P, NH>& seed, QpSolT& sens)
+    {
+        return sens_solve<false>(in, sol, seed, sens);
+    }
+
+    /// Adjoint QP sensitivity (HPIPM `OCP_QP_IPM_SENS_ADJ`,
+    /// x_ocp_qp_ipm.c:3455): same KKT re-solve, except the `m` seed is
+    /// scaled by the converged slacks `sol.t` before the solve, and the
+    /// resulting `sens.t` is scaled by 1/sol.t afterwards. Same
+    /// preconditions as `sens_forward`.
+    Status sens_adj(const QpT& in, const QpSolT& sol,
+                    const QpSeed<P, NH>& seed, QpSolT& sens)
+    {
+        return sens_solve<true>(in, sol, seed, sens);
     }
 
     /// KKT residuals of a primal-dual iterate (HPIPM `OCP_QP_RES_COMPUTE`,
@@ -1871,6 +1905,14 @@ private:
     HpipmOptions opts_;
     HpipmStatistics stat_;
     Workspace ws_;
+    // 4b: true when the KKT factors in ws_ correspond to the final iterate
+    // of the last successful solve (set by the first sens call, which does
+    // the update_fact_exit refactor; reset at the start of every solve()).
+    bool has_factors_ = false;
+    // 4b: true when the last solve() on this instance returned kSolved
+    // (guard for sens_forward / sens_adj: a fresh solver has no final
+    // iterate to build the sensitivity factorization from).
+    bool solved_ = false;
 
     /// Infinity norm of a vector (0 for an empty vector).
     template <class V>
@@ -1931,6 +1973,149 @@ private:
             }
         }
         return any(in.term.d_mask);
+    }
+
+    // ==================================================================
+    //  4b/4c: QP sensitivities (HPIPM OCP_QP_IPM_SENS_FRW / SENS_ADJ)
+    // ==================================================================
+
+    /// Shared implementation of sens_forward / sens_adj (HPIPM
+    /// OCP_QP_IPM_SENS_FRW / _ADJ, x_ocp_qp_ipm.c:3383/3455): a single KKT
+    /// re-solve, no IPM loop.
+    ///
+    /// The seeded QP keeps the LHS of `in` (hess, BA, DC, d_mask) and takes
+    /// the seed vectors as RHS (grad, b, d, m). The seed vectors double as
+    /// the KKT forcing (HPIPM aliases them into res_g / res_b / res_d /
+    /// res_m inside SOLVE_KKT_STEP), so gamma is recomputed from the seeded
+    /// d / m and the converged lam / t (x_ocp_qp_kkt.c:2346). The output
+    /// `sens` is the KKT step itself — the deltas (ux, pi, lam, t) — i.e.
+    /// the sensitivity for a unit parameter change; SOLVE_KKT_STEP
+    /// overwrites the sens vector with the linear-system solution.
+    ///
+    /// Factorization: `solve()` leaves the factors one iterate stale (no
+    /// update_fact_exit refactor yet), so the first sens call after a
+    /// `solve()` refactors at the final iterate (reg = ws_.preg_last, the
+    /// HPIPM `arg->reg_prim` analogue); later sens calls reuse the factors
+    /// via compute_gamma + solve_kkt_reuse_gamma (the factors depend only
+    /// on the LHS + final lam/t + reg, not on the seed).
+    ///
+    /// `Adjoint = true`: the m seed is pre-scaled by the converged slacks
+    /// sol.t and the resulting sens.t is post-scaled by 1/sol.t (HPIPM
+    /// SENS_ADJ). Skipped when no side is active (t is undefined there).
+    template <bool Adjoint>
+    Status sens_solve(const QpT& in, const QpSolT& sol,
+                      const QpSeed<P, NH>& seed, QpSolT& sens)
+    {
+        static_assert(std::is_same_v<Dim, QpDim<P>>,
+            "sens_forward / sens_adj: staged QP data only (Dim = QpDim<P>)");
+        if (!solved_)
+        {
+            return Status::kQpFailure;
+        }
+        assert(in.N == sol.N && sol.N == seed.N);
+        sens.resize(seed.N);
+
+        // 1) seeded QP: LHS from in, RHS from the seed
+        QpT in_seed(seed.N);
+        in_seed.first.hess = in.first.hess;
+        in_seed.first.BA = in.first.BA;
+        in_seed.first.DC = in.first.DC;
+        in_seed.first.d_mask = in.first.d_mask;
+        in_seed.first.grad = seed.grad_first;
+        in_seed.first.b = seed.b[0];
+        in_seed.first.d = seed.d_first;
+        in_seed.first.m = seed.m_first;
+        for (int k = 1; k < seed.N; ++k)
+        {
+            const int i = k - 1;
+            in_seed.path[i].hess = in.path[i].hess;
+            in_seed.path[i].BA = in.path[i].BA;
+            in_seed.path[i].DC = in.path[i].DC;
+            in_seed.path[i].d_mask = in.path[i].d_mask;
+            in_seed.path[i].grad = seed.grad_path[i];
+            in_seed.path[i].b = seed.b[k];
+            in_seed.path[i].d = seed.d_path[i];
+            in_seed.path[i].m = seed.m_path[i];
+        }
+        in_seed.term.hess = in.term.hess;
+        in_seed.term.DC = in.term.DC;
+        in_seed.term.d_mask = in.term.d_mask;
+        in_seed.term.grad = seed.grad_term;
+        in_seed.term.d = seed.d_term;
+        in_seed.term.m = seed.m_term;
+        if constexpr (Adjoint)
+        {
+            in_seed.first.m = in_seed.first.m.cwiseProduct(sol.t_first);
+            for (int k = 1; k < seed.N; ++k)
+            {
+                in_seed.path[k - 1].m =
+                    in_seed.path[k - 1].m.cwiseProduct(sol.t_path[k - 1]);
+            }
+            in_seed.term.m = in_seed.term.m.cwiseProduct(sol.t_term);
+        }
+
+        // 2) forcing: the seed vectors ARE the KKT right-hand side
+        QpResT rhs(seed.N);
+        rhs.res_g_first = in_seed.first.grad;
+        rhs.res_b[0] = in_seed.first.b;
+        for (int k = 1; k < seed.N; ++k)
+        {
+            rhs.res_g_path[k - 1] = in_seed.path[k - 1].grad;
+            rhs.res_b[k] = in_seed.path[k - 1].b;
+        }
+        rhs.res_g_term = in_seed.term.grad;
+        rhs.res_d_first = in_seed.first.d;
+        rhs.res_m_first = in_seed.first.m;
+        for (int k = 1; k < seed.N; ++k)
+        {
+            rhs.res_d_path[k - 1] = in_seed.path[k - 1].d;
+            rhs.res_m_path[k - 1] = in_seed.path[k - 1].m;
+        }
+        rhs.res_d_term = in_seed.term.d;
+        rhs.res_m_term = in_seed.term.m;
+
+        const bool constr = has_active_side(in);
+        Status st;
+        if (constr)
+        {
+            if (!has_factors_)
+            {
+                // exit refactor at the final iterate (HPIPM
+                // update_fact_exit; our solve() does not refactor on exit)
+                st = fact_solve_kkt_reg(in_seed, sol, rhs, sens,
+                                        ws_.preg_last);
+                if (st == Status::kSolved)
+                {
+                    has_factors_ = true;
+                }
+                return st;
+            }
+            compute_gamma(in_seed, sol, rhs);
+            solve_kkt_reuse_gamma(in_seed, sol, rhs, sens);
+            st = Status::kSolved;
+        }
+        else
+        {
+            st = solve_kkt_unconstr(in_seed, rhs, sens);
+        }
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+        if constexpr (Adjoint)
+        {
+            if (constr)
+            {
+                sens.t_first = sens.t_first.cwiseQuotient(sol.t_first);
+                for (int k = 1; k < seed.N; ++k)
+                {
+                    sens.t_path[k - 1] =
+                        sens.t_path[k - 1].cwiseQuotient(sol.t_path[k - 1]);
+                }
+                sens.t_term = sens.t_term.cwiseQuotient(sol.t_term);
+            }
+        }
+        return Status::kSolved;
     }
 
     /// ||res_m − tau_min ∘ d_mask||_∞ across all stages (HPIPM's
@@ -2057,6 +2242,7 @@ private:
             return Status::kNanDetected;
         }
         stat_.status = Status::kSolved;
+        solved_ = true;
         return Status::kSolved;
     }
 
@@ -2326,6 +2512,7 @@ private:
             return Status::kNanDetected;
         }
         stat_.status = Status::kSolved;
+        solved_ = true;
         return Status::kSolved;
     }
 
