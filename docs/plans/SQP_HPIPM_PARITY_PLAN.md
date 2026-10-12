@@ -38,18 +38,19 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | Second-order correction pre-pass | done (3j) |
 | Adaptive LM, timeout heuristic, QP scaling + adaptive QP tolerances | done (3f, 3g, 3h) |
 | GN / EXACT Hessian split (`compute_hess_dyn/constr` + `has_*_hess`) | done |
-| **PARTIAL_CONDENSING** (block grouping, `N2`/`block_size`) | **missing** |
-| **FULL_CONDENSING** (dense QP + dense IPM) | **missing** |
+| **PARTIAL_CONDENSING** (block grouping, `N2`/`block_size`) | done (Phase 2; uniform `NB`, non-uniform `block_size` deferred) |
+| **FULL_CONDENSING** (dense QP + dense IPM) | done (Phase 1) |
 | **RTI SQP** (`sqp_rti`, `_reversible`, `_merit`) | **missing** |
 | **QP sensitivities** (forward/adjoint, HPIPM seed module) | **missing** |
 | `print_level = 2` (detailed per-iteration printout) | partial (0/1 only) |
-| condensing/expansion time in statistics | missing |
+| condensing/expansion time in statistics | done (`SqpIteration::cond_time`) |
 
-Note: today's `HpipmQpSolver` solves the *uncondensed* staged QP directly.
-Acados' default `PARTIAL_CONDENSING_HPIPM` with `qp_solver_cond_N = N` (the
-default) performs an *identity* block condensing before the same OCP-QP IPM,
-so the current ocp++ behaviour is numerically the identity-condensing case;
-the missing parts are the non-trivial `N2 < N` grouping and the dense path.
+Note: the staged path (`kStaged`) solves the *uncondensed* staged QP
+directly. Acados' default `PARTIAL_CONDENSING_HPIPM` with
+`qp_solver_cond_N = N` (the default) performs an *identity* block
+condensing before the same OCP-QP IPM, so the staged behaviour is
+numerically the identity-condensing case; both the non-trivial `N2 < N`
+grouping (Phase 2) and the dense path (Phase 1) are implemented.
 
 ## 3. Resolved decisions
 
