@@ -29,33 +29,8 @@
 
 #include <unsupported/Eigen/MatrixFunctions>
 
-// Shared (D
-//   x = [q; v]  (q: 4 positions, v: 4 velocities),  u: 3 forces
-//
-//   continuous time (Ts = 0.5):
-//        q_dot = v
-//        v_dot = T q + Bc u,   T = tridiag(1, -2, 1),  Bc = [0; I3]
-//
-//   discrete time:  x_{k+1} = A x_k + B u_k + b,
-//        A = expm(Ts Ac),  B = (A - I) Ac^{-1} Bc,  Ac = [0  I; T  0],
-//        b = 0.1 * ones(8)
-//
-//   stage cost:     0.5 * x'Q x + 0.5 * u'R u + q' x + r' u
-//                   Q = I_8, R = 2 I_3, q = 0.1 * ones(8), r = 0.2 * ones(3)
-//   terminal cost:  0.5 * x'Q x + q' x
-//
-//   box:  -0.5 <= u_i <= 0.5,  -4 <= x_i <= 4  (stages 1..N),  x_0 fixed
-//   terminal equality (Term variant):  x_N(0:3) = 0
-//
-// Two concrete problems share the shared MassSpringRefData (system matrices,
-// costs); the only difference between them is ne_t (terminal equality).
-
-#pragma once
-
-#include "ocp/problem.hpp"
-
-#include <unsupported/Eigen/MatrixFunctions>
-
+// Dims-independent system data and cost kernels shared by both problems.
+// All matrices are fixed 8-state / 3-control (the acados mass-spring dims).
 struct MassSpringRefBoxDims
 {
     static constexpr int nx = 8;
