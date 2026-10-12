@@ -16,6 +16,10 @@
 //   - Degenerate fixed-x_0 problem (hard ineq violated at the pinned
 //     state, row independent of u): solve() returns kInfeasible and
 //     leaves the iterate untouched.
+//   - Residual logging (block 3c): rti_log_residuals stores the pre-step
+//     NLP residuals; unless rti_log_only_available_residuals, the full
+//     residual recompute at the post-step iterate is appended; logging off
+//     leaves all residual fields zero.
 
 #include <cmath>
 #include <cstdio>
@@ -103,15 +107,26 @@ void make_iterate(const DoubleIntegrator& prob,
     sol.lambda_ineq_term.setZero();
     sol.lambda_eq_term.setZero();
     sol.lambda_lin_term.setZero();
+    // vector::resize default-inserts (C++11): Eigen slots are not
+    // value-initialized, so pin the box multipliers explicitly.
+    for (int k = 0; k <= N; ++k)
+    {
+        sol.lambda_box_state[k].setZero();
+    }
+    for (int k = 0; k < N; ++k)
+    {
+        sol.lambda_box_control[k].setZero();
+    }
 }
 
 void copy_solution(const Solution<DoubleIntegrator>& from,
-                   Solution<DoubleIntegrator>& to)
+                    Solution<DoubleIntegrator>& to)
 {
     const int N = from.N;
     for (int k = 0; k <= N; ++k)
     {
         to.x[k] = from.x[k];
+        to.lambda_box_state[k] = from.lambda_box_state[k];
     }
     for (int k = 0; k < N; ++k)
     {
@@ -120,6 +135,7 @@ void copy_solution(const Solution<DoubleIntegrator>& from,
         to.lambda_ineq_stage[k] = from.lambda_ineq_stage[k];
         to.lambda_eq_stage[k] = from.lambda_eq_stage[k];
         to.lambda_lin_stage[k] = from.lambda_lin_stage[k];
+        to.lambda_box_control[k] = from.lambda_box_control[k];
     }
     to.lambda_ineq_term = from.lambda_ineq_term;
     to.lambda_eq_term = from.lambda_eq_term;
@@ -462,6 +478,88 @@ void check_degenerate()
     check_close(sol.u[0](0), 0.0, "RTI degenerate: u_0 untouched");
 }
 
+// Block 3c: residual logging. The solver's pre-step slacks are zero on
+// the first call; after the full step (alpha = 1) they equal the QP
+// solution slacks, which the test rebuilds from last_qp_sol().
+void check_residual_logging()
+{
+    DoubleIntegrator prob;
+    const RtiOptions base;
+
+    // A: logging disabled -> all residual fields stay zero
+    {
+        Solution<DoubleIntegrator> sol(10);
+        make_iterate(prob, sol);
+        RtiSolver<DoubleIntegrator> rti;
+        check_true(rti.solve(prob, sol) == Status::kSolved,
+                   "RTI reslog A: solve");
+        const auto& s = rti.statistics().last;
+        check_close(s.res_stat, 0.0, "RTI reslog A: res_stat zero");
+        check_close(s.res_comp, 0.0, "RTI reslog A: res_comp zero");
+        check_close(s.res_stat_post, 0.0, "RTI reslog A: post zero");
+    }
+
+    // B: pre-step only (rti_log_only_available_residuals)
+    {
+        Solution<DoubleIntegrator> sol(10);
+        make_iterate(prob, sol);
+        Solution<DoubleIntegrator> pre(10);
+        copy_solution(sol, pre);
+
+        SqpSlacks<DoubleIntegrator> sl0(10);
+        sl0.setZero();
+
+        RtiOptions o;
+        o.rti_log_residuals = true;
+        o.rti_log_only_available_residuals = true;
+        RtiSolver<DoubleIntegrator> rti(o);
+        check_true(rti.solve(prob, sol) == Status::kSolved,
+                   "RTI reslog B: solve");
+
+        const NlpResiduals r0 =
+            compute_nlp_residuals(prob, pre, &sl0, base.tau_min);
+        const auto& s = rti.statistics().last;
+        check_close(s.res_stat, r0.res_stat, "RTI reslog B: res_stat pre");
+        check_close(s.res_eq, r0.res_eq, "RTI reslog B: res_eq pre");
+        check_close(s.res_ineq, r0.res_ineq, "RTI reslog B: res_ineq pre");
+        check_close(s.res_comp, r0.res_comp, "RTI reslog B: res_comp pre");
+        check_close(s.res_stat_post, 0.0, "RTI reslog B: post zero");
+    }
+
+    // C: pre + post (default rti_log_only_available_residuals = false)
+    {
+        Solution<DoubleIntegrator> sol(10);
+        make_iterate(prob, sol);
+
+        RtiOptions o;
+        o.rti_log_residuals = true;
+        RtiSolver<DoubleIntegrator> rti(o);
+        check_true(rti.solve(prob, sol) == Status::kSolved,
+                   "RTI reslog C: solve");
+
+        using D = QpDim<DoubleIntegrator>;
+        SqpSlacks<DoubleIntegrator> sl1(10);
+        sl1.first = rti.last_qp_sol().ux_first.segment(
+            D::nu + D::nx, D::nslack_first);
+        for (int k = 1; k < 10; ++k)
+        {
+            sl1.path[k - 1] = rti.last_qp_sol().ux_path[k - 1].segment(
+                D::nu + D::nx, D::nslack_path);
+        }
+        sl1.term = rti.last_qp_sol().ux_term.segment(
+            D::nx, D::nslack_term);
+        const NlpResiduals r1 =
+            compute_nlp_residuals(prob, sol, &sl1, o.tau_min);
+        const auto& s = rti.statistics().last;
+        check_close(s.res_stat_post, r1.res_stat, "RTI reslog C: res_stat post");
+        check_close(s.res_eq_post, r1.res_eq, "RTI reslog C: res_eq post");
+        check_close(s.res_ineq_post, r1.res_ineq,
+                    "RTI reslog C: res_ineq post");
+        check_close(s.res_comp_post, r1.res_comp,
+                    "RTI reslog C: res_comp post");
+    }
+}
+
 }  // namespace
 
 int run_rti_3b_tests()
@@ -471,10 +569,11 @@ int run_rti_3b_tests()
     check_lm_shift();
     check_qp_modes();
     check_degenerate();
+    check_residual_logging();
     if (failures == 0)
     {
         std::printf("  3b rti (DI N=10): solve / prepare+feedback / LM shift "
-                    "/ qp modes / degeneracy OK\n");
+                    "/ qp modes / degeneracy / reslog OK\n");
     }
     return failures;
 }

@@ -89,10 +89,17 @@ struct RtiOptions
 /// One statistics row of an RtiSolver::solve() call.
 struct RtiIteration
 {
-    double res_stat = 0.0;  // NLP residuals at the pre-step iterate
+    // pre-step NLP residuals (valid when rti_log_residuals; zero otherwise)
+    double res_stat = 0.0;
     double res_eq = 0.0;
     double res_ineq = 0.0;
     double res_comp = 0.0;
+    // post-step NLP residuals (valid when rti_log_residuals and not
+    // rti_log_only_available_residuals; zero otherwise)
+    double res_stat_post = 0.0;
+    double res_eq_post = 0.0;
+    double res_ineq_post = 0.0;
+    double res_comp_post = 0.0;
     int qp_status = 0;
     int qp_iter = 0;
     double step_norm = 0.0;
@@ -228,7 +235,8 @@ public:
             // acados: a QP MAXITER is acceptable, any other failure is a
             // hard stop (ocp_nlp_sqp_rti.c:613-620)
             sol.status = Status::kQpFailure;
-            record_row(res, qp_st, qp_iter, 0.0, 1.0);
+            record_row(res, NlpResiduals(), opts_.rti_log_residuals, false,
+                       qp_st, qp_iter, 0.0, 1.0);
             return Status::kQpFailure;
         }
 
@@ -245,7 +253,22 @@ public:
 
         sol.cost_value = compute_nlp_cost(problem, sol, slacks_);
         sol.status = Status::kSolved;
-        record_row(res, qp_st, qp_iter, step_norm, 1.0);
+
+        // full residual recompute at the post-step iterate (acados
+        // prepare_full_residual_computation + second ocp_nlp_res_compute);
+        // the pre-step pass is already available from the tolerance
+        // update above
+        const bool log_pre = opts_.rti_log_residuals;
+        const bool log_post =
+            log_pre && !opts_.rti_log_only_available_residuals;
+        NlpResiduals res_post;
+        if (log_post)
+        {
+            res_post = compute_nlp_residuals(problem, sol, &slacks_,
+                                             opts_.tau_min);
+        }
+        record_row(res, res_post, log_pre, log_post, qp_st, qp_iter,
+                   step_norm, 1.0);
         return Status::kSolved;
     }
 
@@ -510,28 +533,48 @@ private:
                      slacks_.term);
     }
 
-    void record_row(const NlpResiduals& res, Status qp_st, int qp_iter,
+    void record_row(const NlpResiduals& res_pre, const NlpResiduals& res_post,
+                    bool log_pre, bool log_post, Status qp_st, int qp_iter,
                     double step_norm, double alpha)
     {
-        stat_.last.res_stat = res.res_stat;
-        stat_.last.res_eq = res.res_eq;
-        stat_.last.res_ineq = res.res_ineq;
-        stat_.last.res_comp = res.res_comp;
-        stat_.last.qp_status = static_cast<int>(qp_st);
-        stat_.last.qp_iter = qp_iter;
-        stat_.last.step_norm = step_norm;
-        stat_.last.alpha = alpha;
-        stat_.last.cond_time = cond_time_;
+        auto& r = stat_.last;
+        r.res_stat = log_pre ? res_pre.res_stat : 0.0;
+        r.res_eq = log_pre ? res_pre.res_eq : 0.0;
+        r.res_ineq = log_pre ? res_pre.res_ineq : 0.0;
+        r.res_comp = log_pre ? res_pre.res_comp : 0.0;
+        r.res_stat_post = log_post ? res_post.res_stat : 0.0;
+        r.res_eq_post = log_post ? res_post.res_eq : 0.0;
+        r.res_ineq_post = log_post ? res_post.res_ineq : 0.0;
+        r.res_comp_post = log_post ? res_post.res_comp : 0.0;
+        r.qp_status = static_cast<int>(qp_st);
+        r.qp_iter = qp_iter;
+        r.step_norm = step_norm;
+        r.alpha = alpha;
+        r.cond_time = cond_time_;
         stat_.n_calls += 1;
         call_count_ += 1;
         if (opts_.print_level > 0)
         {
-            std::printf(
-                "  rti call %d: res %.3e %.3e %.3e %.3e, qp_status %d, "
-                "qp_iter %d, step %.3e, alpha %.1f, cond %.3e s\n",
-                stat_.n_calls, res.res_stat, res.res_eq, res.res_ineq,
-                res.res_comp, stat_.last.qp_status, qp_iter, step_norm,
-                alpha, cond_time_);
+            if (log_post)
+            {
+                std::printf(
+                    "  rti call %d: res %.3e %.3e %.3e %.3e (post "
+                    "%.3e %.3e %.3e %.3e), qp_status %d, qp_iter %d, "
+                    "step %.3e, alpha %.1f, cond %.3e s\n",
+                    stat_.n_calls, r.res_stat, r.res_eq, r.res_ineq,
+                    r.res_comp, r.res_stat_post, r.res_eq_post,
+                    r.res_ineq_post, r.res_comp_post, r.qp_status, qp_iter,
+                    step_norm, alpha, cond_time_);
+            }
+            else
+            {
+                std::printf(
+                    "  rti call %d: res %.3e %.3e %.3e %.3e, qp_status %d, "
+                    "qp_iter %d, step %.3e, alpha %.1f, cond %.3e s\n",
+                    stat_.n_calls, r.res_stat, r.res_eq, r.res_ineq,
+                    r.res_comp, r.qp_status, qp_iter, step_norm, alpha,
+                    cond_time_);
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 3: RTI SQP (standard real-time iteration)
 
-Status: **active** (blocks 3a–3b complete; 3c–3e pending). Builds on Phase 1 (full
+Status: **active** (blocks 3a–3c complete; 3d–3e pending). Builds on Phase 1 (full
 condensing) and Phase 2 (partial condensing), both complete. Adds acados'
 `SQP_RTI` solver in its **standard** form (`as_rti_iter = 0`,
 `as_rti_level = STANDARD_RTI`): the QP is assembled and solved **once** per
@@ -153,7 +153,7 @@ subset):
    `correct_dual_sol`, full-step application incl. slacks, status), and
    `solve(problem, sol)` = prepare + feedback. No iteration, no
    globalizer.
-3. **3c — Residual logging + printing.** `rti_log_residuals` stores the
+3. **3c — Residual logging + printing (done).** `rti_log_residuals` stores the
    pre-step NLP residuals (the "available" ones); unless
    `rti_log_only_available_residuals`, a full residual recompute at the
    post-step iterate is appended to the row (acados
@@ -204,3 +204,15 @@ for the pre-existing targets, modulo wall-clock prints).
    would have required refactoring the tested phase 1/2 driver. The cost
    / slack-penalty functions were extracted to `cost.hpp` instead, since
    both drivers need identical cost computation.
+4. **Latent `Solution` init gap (found in 3c).** `Solution::resize` uses
+   `Trajectory::resize` → `std::vector::resize`, which *default-inserts*
+   (C++11) the new slots; Eigen fixed-size matrices have a user-declared
+   empty default ctor, so the raw storage is **not** zeroed. Fresh
+   `Solution` objects therefore carry indeterminate
+   `lambda_box_state` / `lambda_box_control` (and the other multiplier
+   trajectories) until a solver overwrites them — observable once the
+   heap reuses a block freed by a previous solver call. All existing
+   drivers fill every multiplier before use, so no output changed; the
+   `rti_3b` test worked around it by pinning the box multipliers to zero.
+   Candidate fix (separate commit, gate on the full regression): zero the
+   slots explicitly in `Trajectory::resize` (dynamic mode).
