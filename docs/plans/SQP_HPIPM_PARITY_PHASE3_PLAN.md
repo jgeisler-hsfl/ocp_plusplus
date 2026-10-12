@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 3: RTI SQP (standard real-time iteration)
 
-Status: **active** (blocks 3a–3c complete; 3d–3e pending). Builds on Phase 1 (full
+Status: **active** (blocks 3a–3d complete; 3e pending). Builds on Phase 1 (full
 condensing) and Phase 2 (partial condensing), both complete. Adds acados'
 `SQP_RTI` solver in its **standard** form (`as_rti_iter = 0`,
 `as_rti_level = STANDARD_RTI`): the QP is assembled and solved **once** per
@@ -161,20 +161,25 @@ subset):
    acados' pre-step residuals are the cheap QP-data-based norms; ours are
    the full `compute_nlp_residuals` at the pre-step iterate — a cost
    deviation, recorded in the worklog. `print_level = 1` prints the row.
-4. **3d — Tests.** `tests/sqp/rti_3d.cpp` (in `sqp_unit`):
+4. **3d — Tests (done).** `tests/sqp/rti_3d.cpp` (in `sqp_unit`):
    - DoubleIntegrator (constant Hessian): one RTI `solve` from a warm
-     start must reproduce one `AcadosSolver` SQP iteration (assemble +
-     LM + regularize + QP solve + full step) in x/u to ~1e-10; a second
-     RTI call from the (near-optimal) result takes a ~0 step and stays
-     put; residuals reported by `rti_log_residuals` match
-     `compute_nlp_residuals`.
-   - MassesChain / mass_spring (soft rows, terminal equality): single RTI
-     call from the forward-simulation start lands within 1e-6 of the
-     `AcadosSolver` solution (QP is its own linearization: one Newton
-     step converges) in x/u inf-norm and cost.
+     start reproduces one `AcadosSolver` SQP iteration (assemble +
+     LM + regularize + QP solve + full step) in x/u to 1e-10 (empirically
+     bit-exact, both drivers take a full step, alpha = 1); a second RTI
+     call from the (near-optimal) result takes a ~0 step and stays put;
+     pre-step row of `rti_log_residuals` matches `compute_nlp_residuals`
+     at the start iterate.
+   - MassesChain (GN Hessian, `has_dynamics_hess = false`): one RTI call
+     reproduces one `AcadosSolver` SQP iteration in x/u to 1e-10
+     (per-iteration parity; a single GN step does not in general
+     converge to the NLP solution, so the original "1e-6 from the
+     converged solution" wording — which assumed a constant Hessian —
+     does not apply). mass_spring (constant Hessian): a single RTI call
+     lands on the converged `AcadosSolver` solution (x/u 1e-8, cost
+     1e-10; empirically bit-exact).
    - QP-mode cross-check: same RTI result for `kStaged`,
-     `kFullCondensed`, and (N % 2 == 0) `kPartialCondensed` NB = 2 within
-     1e-8.
+     `kFullCondensed`, and `kPartialCondensed` NB = 2 within 1e-8
+     (DI N = 10, MC N = 40).
 5. **3e — acados reference + docs.** Extend `tests/sqp_acados_ref` with an
    `SQP_RTI` reference (standalone acados C driver, `nlp_solver_type =
    SQP_RTI`, mass_spring QP) compared at the existing 1e-4 thresholds; if

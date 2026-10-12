@@ -283,6 +283,7 @@ add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
                         tests/sqp/qpmode_1e.cpp tests/sqp/e2e_1f.cpp
                         tests/sqp/e2e_2f.cpp
                         tests/sqp/assemble_rti_3a.cpp
+                        tests/sqp/rti_3d.cpp
                         tests/sqp/rti_3b.cpp
                         ${MC_MODEL_C})
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
