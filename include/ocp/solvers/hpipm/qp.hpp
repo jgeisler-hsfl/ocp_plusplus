@@ -885,6 +885,47 @@ struct BlockQpDim
     // --- first block ------------------------------------------------
     // Explicit per-group assignments: block row -> stage_offset(j) + the
     // re-based original stage's idxs entry (-1 preserved for non-soft rows).
+    // Stage 0 is re-based from the staged first layout, stages 1..NB-1
+    // from the staged path layout; the two source arrays differ in size
+    // in general, so the per-stage fill goes through a static helper
+    // instead of a ternary between the two arrays.
+    template <std::size_t NSRC>
+    static constexpr void fill_first_stage(std::array<int, nrow_first>& a,
+                                           const std::array<int, NSRC>& ib,
+                                           const detail::QpLayout& lb,
+                                           int j, int o)
+    {
+        for (int i = 0; i < P::nbu; ++i)
+        {
+            a[lay_first.row_off(detail::g_bu) + j * P::nbu + i] =
+                remap(ib, lb.row_off(detail::g_bu) + i, o);
+        }
+        for (int i = 0; i < P::ng; ++i)
+        {
+            a[lay_first.row_off(detail::g_ineq) + j * P::ng + i] =
+                remap(ib, lb.row_off(detail::g_ineq) + i, o);
+        }
+        for (int i = 0; i < P::ne; ++i)
+        {
+            a[lay_first.row_off(detail::g_eq) + j * P::ne + i] =
+                remap(ib, lb.row_off(detail::g_eq) + i, o);
+        }
+        for (int i = 0; i < P::nl; ++i)
+        {
+            a[lay_first.row_off(detail::g_lin) + j * P::nl + i] =
+                remap(ib, lb.row_off(detail::g_lin) + i, o);
+        }
+        if (j > 0)
+        {
+            for (int i = 0; i < P::nbx; ++i)
+            {
+                a[lay_first.row_off(detail::g_lin)
+                   + NB * P::nl + (j - 1) * P::nbx + i] =
+                    remap(ib, lb.row_off(detail::g_bx) + i, o);
+            }
+        }
+    }
+
     static constexpr std::array<int, nrow_first> make_idxs_lo_first()
     {
         std::array<int, nrow_first> a{};
@@ -901,37 +942,14 @@ struct BlockQpDim
         for (int j = 0; j < NB; ++j)
         {
             const int o = stage_offset_first(j);
-            const auto& ib = (j == 0) ? Base::idxs_lo_first
-                                      : Base::idxs_lo_path;
-            const auto& lb = (j == 0) ? Base::lay_first : Base::lay_path;
-            for (int i = 0; i < P::nbu; ++i)
+            if (j == 0)
             {
-                a[lay_first.row_off(detail::g_bu) + j * P::nbu + i] =
-                    remap(ib, lb.row_off(detail::g_bu) + i, o);
+                fill_first_stage(a, Base::idxs_lo_first,
+                                 Base::lay_first, j, o);
             }
-            for (int i = 0; i < P::ng; ++i)
+            else
             {
-                a[lay_first.row_off(detail::g_ineq) + j * P::ng + i] =
-                    remap(ib, lb.row_off(detail::g_ineq) + i, o);
-            }
-            for (int i = 0; i < P::ne; ++i)
-            {
-                a[lay_first.row_off(detail::g_eq) + j * P::ne + i] =
-                    remap(ib, lb.row_off(detail::g_eq) + i, o);
-            }
-            for (int i = 0; i < P::nl; ++i)
-            {
-                a[lay_first.row_off(detail::g_lin) + j * P::nl + i] =
-                    remap(ib, lb.row_off(detail::g_lin) + i, o);
-            }
-            if (j > 0)
-            {
-                for (int i = 0; i < P::nbx; ++i)
-                {
-                    a[lay_first.row_off(detail::g_lin)
-                       + NB * P::nl + (j - 1) * P::nbx + i] =
-                        remap(ib, Base::lay_path.row_off(detail::g_bx) + i, o);
-                }
+                fill_first_stage(a, Base::idxs_lo_path, Base::lay_path, j, o);
             }
         }
         return a;
@@ -955,37 +973,14 @@ struct BlockQpDim
         for (int j = 0; j < NB; ++j)
         {
             const int o = stage_offset_first(j);
-            const auto& ib = (j == 0) ? Base::idxs_hi_first
-                                      : Base::idxs_hi_path;
-            const auto& lb = (j == 0) ? Base::lay_first : Base::lay_path;
-            for (int i = 0; i < P::nbu; ++i)
+            if (j == 0)
             {
-                a[lay_first.row_off(detail::g_bu) + j * P::nbu + i] =
-                    remap(ib, lb.row_off(detail::g_bu) + i, o);
+                fill_first_stage(a, Base::idxs_hi_first,
+                                 Base::lay_first, j, o);
             }
-            for (int i = 0; i < P::ng; ++i)
+            else
             {
-                a[lay_first.row_off(detail::g_ineq) + j * P::ng + i] =
-                    remap(ib, lb.row_off(detail::g_ineq) + i, o);
-            }
-            for (int i = 0; i < P::ne; ++i)
-            {
-                a[lay_first.row_off(detail::g_eq) + j * P::ne + i] =
-                    remap(ib, lb.row_off(detail::g_eq) + i, o);
-            }
-            for (int i = 0; i < P::nl; ++i)
-            {
-                a[lay_first.row_off(detail::g_lin) + j * P::nl + i] =
-                    remap(ib, lb.row_off(detail::g_lin) + i, o);
-            }
-            if (j > 0)
-            {
-                for (int i = 0; i < P::nbx; ++i)
-                {
-                    a[lay_first.row_off(detail::g_lin)
-                       + NB * P::nl + (j - 1) * P::nbx + i] =
-                        remap(ib, Base::lay_path.row_off(detail::g_bx) + i, o);
-                }
+                fill_first_stage(a, Base::idxs_hi_path, Base::lay_path, j, o);
             }
         }
         return a;
