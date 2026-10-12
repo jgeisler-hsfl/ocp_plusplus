@@ -180,3 +180,13 @@ each (NB a compile-time parameter of the solver), each block condensed to a
 mini QP whose internal states are eliminated, and the resulting
 block-stage QP solved with the staged HPIPM IPM. All modes consume the same
 staged QP assembly and produce identical `ocp::Solution` quantities.
+
+A second, non-iterative driver, `RtiSolver` (`solvers/acados/rti.hpp`),
+implements acados' standard real-time-iteration SQP (`ocp_nlp_sqp_rti`,
+`as_rti_level = STANDARD_RTI`): one `solve()` call assembles the LHS
+(Hessian + Jacobians, fixed Levenberg–Marquardt shift) and the RHS
+(gradients + offsets), solves the QP once in any `QpMode`, and applies the
+full primal step (alpha = 1) with a full-step dual update — no line search,
+no convergence test. The shared LHS/RHS stage assembly lives in
+`solvers/acados/assemble.hpp` (used by both `AcadosSolver` and
+`RtiSolver`); cost and slack-penalty helpers are shared via `cost.hpp`.

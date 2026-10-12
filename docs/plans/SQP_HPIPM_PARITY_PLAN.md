@@ -40,7 +40,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | GN / EXACT Hessian split (`compute_hess_dyn/constr` + `has_*_hess`) | done |
 | **PARTIAL_CONDENSING** (block grouping, `N2`/`block_size`) | done (Phase 2; uniform `NB`, non-uniform `block_size` deferred) |
 | **FULL_CONDENSING** (dense QP + dense IPM) | done (Phase 1) |
-| **RTI SQP** (`sqp_rti`, `_reversible`, `_merit`) | **missing** |
+| **RTI SQP** (standard `sqp_rti`: LHS+RHS per call, full step, no line search) | done (Phase 3, `RtiSolver` in `solvers/acados/rti.hpp`; `_reversible` / `_merit` variants out of scope) |
 | **QP sensitivities** (forward/adjoint, HPIPM seed module) | **missing** |
 | `print_level = 2` (detailed per-iteration printout) | partial (0/1 only) |
 | condensing/expansion time in statistics | done (`SqpIteration::cond_time`) |
@@ -158,6 +158,9 @@ Files: `solvers/hpipm/block_qp.hpp` (new), `condense.hpp`, `hpipm.hpp`,
 Gate: warning-free build, full regression, new tests green.
 
 ## 6. Phase 3 — RTI SQP
+
+**Done** — see `SQP_HPIPM_PARITY_PHASE3_PLAN.md` (standard `sqp_rti`
+only; `_reversible` / `_merit` variants out of scope).
 
 Files: `solvers/acados/rti.hpp` (new), `acados.hpp` (shared assembly
 extraction).

@@ -29,6 +29,7 @@ registry only stores (name, offset, type) metadata and addresses the members
 | --- | --- | --- |
 | `AcadosOptions` | `solvers/acados/acados.hpp:722` | 34 flat scalars (int/double/bool; `qp_cond_N` only effective with `qp_mode = QpMode::kPartialCondensed`) + `QpMode qp_mode` (enum) + nested `GlobOptions glob` |
 | `GlobOptions` | `solvers/acados/globalize.hpp:38` | 5 scalars (embedded in `AcadosOptions`) |
+| `RtiOptions` | `solvers/acados/rti.hpp:43` | 19 flat scalars (int/double/bool) + `QpMode qp_mode` (enum); RTI solver options (Phase 3) |
 | `HpipmOptions` | `solvers/hpipm/hpipm.hpp:61` | 27 scalars (int/double/bool) |
 | `AcadosStatistics` | `solvers/acados/acados.hpp:792` | `iter`, `status`, `rows` (10 columns x iter, `SqpIteration`) |
 | `HpipmStatistics` | `solvers/hpipm/hpipm.hpp:129` | `iter`, `stat_max`, `status`, `rows` (21 columns, `HpipmIteration`) |

@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 3: RTI SQP (standard real-time iteration)
 
-Status: **active** (blocks 3a–3d complete; 3e pending). Builds on Phase 1 (full
+Status: **complete** (blocks 3a–3e done). Builds on Phase 1 (full
 condensing) and Phase 2 (partial condensing), both complete. Adds acados'
 `SQP_RTI` solver in its **standard** form (`as_rti_iter = 0`,
 `as_rti_level = STANDARD_RTI`): the QP is assembled and solved **once** per
@@ -180,14 +180,20 @@ subset):
    - QP-mode cross-check: same RTI result for `kStaged`,
      `kFullCondensed`, and `kPartialCondensed` NB = 2 within 1e-8
      (DI N = 10, MC N = 40).
-5. **3e — acados reference + docs.** Extend `tests/sqp_acados_ref` with an
-   `SQP_RTI` reference (standalone acados C driver, `nlp_solver_type =
-   SQP_RTI`, mass_spring QP) compared at the existing 1e-4 thresholds; if
-   the acados C build is unavailable in the dev environment, gate 3e on
-   it and keep 3d as the parity evidence. Docs: ARCHITECTURE.md (new
-   driver + LHS/RHS split), README.md, `qp_mode` / `RtiOptions` noted in
-   the DUAL_ACCESS inventory, master-plan parity matrix row "RTI SQP" →
-   done, pointer from master plan §6 to this document.
+5. **3e — acados reference + docs (done).** `tests/sqp_acados_ref/gen_rti_ref.c`
+   is a standalone acados C driver (`nlp_solver_type = SQP_RTI`, standard
+   RTI: `PREPARATION_AND_FEEDBACK`, `as_rti_level = STANDARD_RTI`, one
+   call, `FULL_CONDENSING_HPIPM` inner QP) that solves the mass_spring
+   boxonly QP from the same warm start as the boxonly reference and
+   prints (x, u, cost) to 17 significant digits. The output is embedded
+   in `ref_rti.h`; `run_rti_variant` in `sqp_acados_ref.cpp` solves the
+   same problem with our `RtiSolver` (one `solve()` call) and compares at
+   the existing 1e-4 thresholds (measured: cost rel err ~8e-13, dx ~9e-7,
+   du ~2e-6 — one Newton step lands on the QP optimum for this LQ
+   problem). Docs: ARCHITECTURE.md (new driver + LHS/RHS split),
+   README.md, `qp_mode` / `RtiOptions` noted in the DUAL_ACCESS inventory,
+   master-plan parity matrix row "RTI SQP" → done, pointer from master
+   plan §6 to this document.
 
 Gate for every block: `cmake --build build` warning-free
 (`-Wall -Wextra -Werror`), full test suite green (byte-identical output
