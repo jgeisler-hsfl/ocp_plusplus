@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 2: partial condensing (block grouping)
 
-Status: **active** (`2a`, `2b`, `2c` complete). Builds on Phase 1 (full condensing,
+Status: **active** (`2a`–`2e` complete). Builds on Phase 1 (full condensing,
 `1a`–`1g` complete, committed). Adds acados' `PARTIAL_CONDENSING_HPIPM`: group the N stages into
 N2 blocks of NB stages each, condense each block to a mini QP (the internal
 states of a block are eliminated), and solve the resulting N2-stage "block"
@@ -140,12 +140,34 @@ Decisions:
    e.g. pins, and masked sides are unconstrained). All checks pass; the
    21 pre-existing targets are unchanged (sqp_unit differs only in
    printed timing).
-5. **2e — driver hook.** `QpMode::kPartialCondensed`,
-   `AcadosOptions.qp_cond_N`, `AcadosSolver<P, NH, NB>` member
-   `block_qp_solver_` (`HpipmQpSolver<P, NH2, BlockQpDim<P,NB>>`) +
-   `block_qp_in_/out_`; dispatch in `solve_qp` (main + SOC); identity fast
-   path when `qp_cond_N >= N` or NB=1; `cond_time`; dual warm start via the
-   block workspace. `options_2e` gains qp_cond_N default.
+5. **2e — driver hook. ✅**
+   `QpMode::kPartialCondensed` + `AcadosOptions.qp_cond_N` (number of blocks
+   N2; 0 = identity fast path). `AcadosSolver` gains a trailing `int NB = 0`
+   template param (0 = partial condensing compiled out; the one existing
+   3-arg positional use keeps compiling). Block state lives in
+   `detail::BlockQpWorkspaces<P, NB> block_qp_` (member `solver` =
+   `HpipmQpSolver<P, Dynamic, BlockQpDim<P,NB>>`, `in` / `out` block QP data
+   and solution, always dynamic horizon since N2 = N/NB is runtime); the
+   NB == 0 specialization is an empty struct so a default solver gains no
+   block state (only a 1-byte empty member). Dispatch in
+   `solve_qp` (covers the SOC re-solve, which calls the same method):
+   kPartialCondensed → `solve_qp_partial_condensed`, which falls back to the
+   plain staged solve when NB == 0, `qp_cond_N >= N`, `N % qp_cond_N != 0`,
+   or `N / qp_cond_N != NB`; otherwise condense → block solve →
+   `expand_block_sol`. The primal step is zeroed each call (cold) while
+   lam/t persist in `block_qp_.out` (dual warm start, ws 2/3); condense +
+   expand wall clock accumulates in `cond_time_`, block IPM iterations in
+   `qp_iter_`. `update_qp_tolerances` and `resize` extend to the block
+   solver / workspaces. NB == 0 + kPartialCondensed prints a fallback note
+   (once per solver instance) in the constructor. `options_2e` checks the `qp_cond_N`
+   default. Smoke (out of tree): DI N=8 staged vs NB=2/NB=4 agree
+   maxdx ~1e-11, dcost ~1e-10; NB mismatch (qp_cond_N = 2, NB = 4) falls
+   back to staged. Note: the `integrators_unit` "4l sqp" AD-vs-hand
+   diagnostic (2.8e-11 → ~1e-11 scale) is a codegen-level floating-point
+   artifact: the 4l test's own AcadosSolver instances are now compiled with
+   the extra (empty) member and the new dispatch methods, which shifts the
+   compiler's FMA/vectorization decisions. ASan-clean; all checks pass with
+   wide margin (threshold 1e-6).
 6. **2f — E2E + docs.** `tests/sqp/e2e_2f.cpp` (in `sqp_unit`):
    DoubleIntegrator + MassesChain in both `kStaged` and
    `kPartialCondensed` (NB=2, NB=4 where N%NB==0) from the same warm start
