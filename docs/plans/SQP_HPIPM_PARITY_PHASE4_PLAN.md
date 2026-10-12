@@ -50,14 +50,27 @@ left on exit by the converged `solve()`; no IPM loop, no line search.
 2. Force term: the seed vectors ARE the KKT force (HPIPM aliases them into
    `res_g/res_b/res_d/res_m` inside `SOLVE_KKT_STEP`); no centering shift
    (the sens call happens outside the IPM loop, sigma = 0).
-3. `solve_kkt_reuse_gamma(in_seed, sol, rhs, step)`: recomputes
-   Gamma = lam*/t* (factor-consistent with the stored L factors), runs
-   backward-reduced / forward / closed-form passes with the stored
-   factors.
-4. `sens = sol + step` (all four parts: ux, pi, lam, t) — HPIPM loads the
-   converged solution into the sens vectors and applies the step in place.
-5. Adjoint only: before step 3, scale `in_seed.m` by `sol.t` (per side);
-   after step 4, scale `sens.t` by `1/sol.t` (per side).
+3. Solve the KKT system with the stored factors:
+   `solve_kkt_reuse_gamma(in_seed, sol, rhs, step)` — recomputes
+   Gamma = lam*/t* (from `sol`), runs the backward-reduced / forward /
+   closed-form passes over the stored L/P factors.
+4. **`sens` = the step itself (ux, pi, lam, t deltas).** HPIPM's
+   `SOLVE_KKT_STEP` overwrites the sens vector with the linear-system
+   solution (`VECCP(res_g, dux)`, x_ocp_qp_kkt.c:2357); the bkp load in
+   `SENS_FRW` only supplies `cws->lam/t` for gamma + the closed-form dual
+   update. The caller adds: `new_sol ≈ sol + sens` for a unit parameter
+   change. (Not a preloaded solution plus step.)
+5. Factorization: our `solve()` does NOT refactor at exit (the
+   `update_fact_exit` option is declared, not yet implemented — the stored
+   L/P factors are from the last *predictor* of the final iteration, i.e.
+   one update stale). Therefore `sens_forward` performs a fresh
+   `fact_solve_kkt(in_seed, sol, rhs, step)` on the FIRST call after a
+   `solve()` (the HPIPM `update_fact_exit` refactor at the final iterate);
+   later calls with other seeds reuse the factors via
+   `solve_kkt_reuse_gamma` (factors depend only on LHS + final lam/t, not
+   on the seed). A `has_factors_` latch tracks this; `solve()` resets it.
+6. Adjoint only: before the solve, scale `in_seed.m` by `sol.t` (per
+   side); after, scale `sens.t` by `1/sol.t` (per side).
 
 Field mapping (HPIPM `OCP_QP` / seed  ->  ocp++ `Qp` / `QpSeed`):
 
@@ -106,14 +119,20 @@ Status sens_adj(const QpT& in, const QpSolT& sol,
 
 Contract:
 - `in` must be the QP that was last successfully `solve()`d on this
-  instance (same LHS); `sol` its converged solution. The KKT factors left
-  in the workspace are reused (HPIPM `update_fact_exit` semantics).
-- A private `bool has_factors_` latch (set on successful `solve()`)
-  guards the calls; otherwise return `kQpFailure`.
-- Sens calls do not invalidate the factors (no refactoring), so several
-  seeds can be probed back-to-back; a subsequent `solve()` refactors.
-- Staged solver only (`Dim = QpDim<P>`); `HpipmDenseQpSolver` / block
-  condensing get no seed support in this phase.
+  instance (same LHS); `sol` its converged solution.
+- Factorization: `solve()` resets a private `bool has_factors_` latch.
+  The FIRST sens call after a `solve()` does a fresh `fact_solve_kkt`
+  at the final iterate (the HPIPM `update_fact_exit` refactor, which our
+  `solve()` does not do on exit); subsequent sens calls (any seed) reuse
+  the factors via `compute_gamma` + `solve_kkt_reuse_gamma` (factors
+  depend only on LHS + final lam/t + reg, not on the seed). A subsequent
+  `solve()` refactors and resets the latch.
+- Unconstrained QP (all d_mask = 0): no gamma/factor path — a single
+  `solve_kkt_unconstr` on the seeded QP; the adjoint t-scaling is
+  skipped (no sides; avoids 0/0 in the m = 0 case).
+- Staged solver only (`Dim = QpDim<P>`, compile-time `static_assert`);
+  `HpipmDenseQpSolver` / block condensing get no seed support in this
+  phase.
 
 ## Blocks
 
@@ -121,9 +140,10 @@ Contract:
    (fixed-size Eigen, same NH mechanism as `Qp`/`QpSol`), `setZero()`.
    Compile smoke via the 4d test (no behavior yet).
 2. **4b — `sens_forward`.** Private `sens_solve<Adj>` helper implementing
-   the algorithm above; public `sens_forward`; `has_factors_` latch set
-   in `solve()` (all success paths, incl. unconstrained / dense — only
-   staged factors are actually valid; guard: staged instances only).
+   the algorithm above (seeded QP + forced QpRes, lazy exit-refactor on
+   first use, `solve_kkt_reuse_gamma` with explicit `compute_gamma`
+   thereafter); public `sens_forward`; `has_factors_` latch (reset in
+   `solve()`, set after the first successful sens factorization).
 3. **4c — `sens_adj`.** Adjoint m/t scaling on top of the shared helper.
 4. **4d — tests** `tests/hpipm/seed_4d.cpp` (in the `qp_unit` target,
    `run_seed_4d_tests()` called from `qp_unit.cpp` main):
