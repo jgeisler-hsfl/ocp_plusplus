@@ -168,15 +168,21 @@ struct HpipmStatistics
 /// The solve direction follows the HPIPM convention (see QpSol): `out`
 /// carries the primal STEP over the stage-type variable vectors and the
 /// ABSOLUTE multipliers (pi, lam, t).
-template <class P, int NH = Eigen::Dynamic>
+template <class P, int NH = Eigen::Dynamic, class Dim = QpDim<P>>
 class HpipmQpSolver
 {
     static_assert(NH == Eigen::Dynamic || NH >= 1,
         "ocp::HpipmQpSolver: the horizon must be at least 1 (one dynamics "
         "step) or Eigen::Dynamic.");
 public:
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
+    /// The QP data / solution / residual types for this (Dim, P, NH)
+    /// combination (staged Qp by default; a block-condensed QP when
+    /// Dim = BlockQpDim<P, NB>).
+    using QpT    = Qp<P, NH, Dim>;
+    using QpSolT = QpSol<P, NH, Dim>;
+    using QpResT = QpRes<P, NH, Dim>;
 
     // Per-stage-type matrix / vector aliases (compile-time extents).
     using M_first_t = Eigen::Matrix<S, D::nvar_first, D::nvar_first>;
@@ -258,11 +264,11 @@ public:
         v_term_t rtilde_term{};
 
         // KKT residuals (HPIPM d_ocp_qp_res analogue)
-        QpRes<P, NH> res;
+        QpResT res;
         // unshifted complementarity residual backup (HPIPM res_m_bkp,
         // BACKUP_RES_M): the centering / pure-centering targets are built
         // from this pre-tau-shift snapshot
-        QpRes<P, NH> res_bkp;
+        QpResT res_bkp;
 
         // per-side gamma / Gamma (HPIPM COMPUTE_GAMMA, x_core_qp_ipm_aux.c)
         c_first_t gamma_first{};
@@ -317,8 +323,8 @@ public:
         int last_lq_fact = 0;
         // iterative-refinement scratch (3d): the linearized residual and the
         // correction solve (reused factors).
-        QpRes<P, NH> res_itref;
-        QpSol<P, NH> sol_itref;
+        QpResT res_itref;
+        QpSolT sol_itref;
 
         /// (Re)allocate the horizon-sized storage for `n` stages (k = 0..n).
         /// Dynamic horizon: resizes the path trajectories; fixed horizon:
@@ -382,7 +388,7 @@ public:
     /// are within their tolerances and dual_gap <= dual_gap_max.
     /// @return kSolved, or kMaxIterations / kMinStep / kQpFailure /
     ///         kNanDetected on failure.
-    Status solve(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    Status solve(const QpT& in, QpSolT& out)
     {
         const int N = in.N;
         ws_.resize(N);
@@ -414,7 +420,7 @@ public:
         ws_.force_lq = false;
         ws_.preg_last = S(opts_.reg_prim);
 
-        QpSol<P, NH> step(N);
+        QpSolT step(N);
         for (int kk = 0; kk < opts_.iter_max; ++kk)
         {
             // exit test (x_ocp_qp_ipm.c:3119-3128): both step lengths must
@@ -586,8 +592,8 @@ public:
     /// @param in   staged QP data (HPIPM `qp`)
     /// @param sol  primal STEP (ux_*) + ABSOLUTE duals (pi, lam, t)
     /// @param[out] res  KKT residuals + obj, dual_gap, res_mu
-    void compute_residuals(const Qp<P, NH>& in, const QpSol<P, NH>& sol,
-                           QpRes<P, NH>& res) const
+    void compute_residuals(const QpT& in, const QpSolT& sol,
+                           QpResT& res) const
     {
         const int N = in.N;
         assert(sol.N == N && res.N == N);
@@ -707,10 +713,10 @@ public:
     ///   res_m = d_mask . (m + lam_bar . delta_t + delta_lam . t_bar)
     /// where lam_bar / t_bar are the iterate's multiplier / barrier. obj /
     /// dual_gap / res_mu are left untouched (the caller ignores them).
-    void compute_linear_residual(const Qp<P, NH>& in,
-                                 const QpSol<P, NH>& iter,
-                                 const QpSol<P, NH>& step,
-                                 QpRes<P, NH>& linres) const
+    void compute_linear_residual(const QpT& in,
+                                 const QpSolT& iter,
+                                 const QpSolT& step,
+                                 QpResT& linres) const
     {
         const int N = in.N;
         assert(step.N == N && linres.N == N);
@@ -828,7 +834,7 @@ public:
     ///       initial iterate, m = 0 in v1).
     ///
     /// Made public for the phase-1 tests (plan sec. 6 lists it private).
-    void init_point(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    void init_point(const QpT& in, QpSolT& out)
     {
         const int N = in.N;
         assert(out.N == N);
@@ -919,7 +925,7 @@ public:
             const auto& lay = D::lay_first;
             BoundFirstArr bound;
             int bi = 0;
-            if (P::fixed_initial_state)
+            if (D::fixed_initial_state)
             {
                 for (int j = 0; j < D::nx; ++j)
                 {
@@ -994,16 +1000,16 @@ public:
     ///
     /// @return kSolved on success, kQpFailure if the Cholesky stays
     ///         singular after the reg-primal growth schedule.
-    Status fact_solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                          const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    Status fact_solve_kkt(const QpT& in, const QpSolT& iter,
+                          const QpResT& res, QpSolT& step)
     {
         return fact_solve_kkt_reg(in, iter, res, step, S(opts_.reg_prim));
     }
 
     /// Same as fact_solve_kkt but with an explicit reg-primal value (the
     /// reg-ladder path in the lq_fact dispatch, 3d).
-    Status fact_solve_kkt_reg(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                              const QpRes<P, NH>& res, QpSol<P, NH>& step,
+    Status fact_solve_kkt_reg(const QpT& in, const QpSolT& iter,
+                              const QpResT& res, QpSolT& step,
                               S reg)
     {
         const int N = in.N;
@@ -1037,8 +1043,8 @@ public:
     /// are recomputed from `res` (the centering-shifted res_m) before the
     /// forward pass, as in HPIPM's leading COMPUTE_GAMMA_QP
     /// (x_ocp_qp_kkt.c:2346).
-    void solve_kkt(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                   const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    void solve_kkt(const QpT& in, const QpSolT& iter,
+                   const QpResT& res, QpSolT& step)
     {
         const int N = in.N;
         compute_gamma(in, iter, res);
@@ -1059,8 +1065,8 @@ public:
     /// Inequality-free fast path (HPIPM `OCP_QP_FACT_SOLVE_KKT_UNCONSTR`,
     /// x_ocp_qp_kkt.c:316): the same two-pass with Gamma = gamma = 0 (no
     /// constraint rows; `res` carries res_g / res_b only).
-    Status solve_kkt_unconstr(const Qp<P, NH>& in, const QpRes<P, NH>& res,
-                              QpSol<P, NH>& step)
+    Status solve_kkt_unconstr(const QpT& in, const QpResT& res,
+                              QpSolT& step)
     {
         const int N = in.N;
         ws_.gamma_first.setZero();
@@ -1113,17 +1119,17 @@ public:
     /// backward-reduced, and closed-form stages are shared.  A singular
     /// Hessian block (any stage's Lh) returns kQpFailure (the reg-primal
     /// growth ladder is applied by the caller in the lq_fact dispatch).
-    Status fact_solve_kkt_lq(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                             const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    Status fact_solve_kkt_lq(const QpT& in, const QpSolT& iter,
+                             const QpResT& res, QpSolT& step)
     {
         return fact_solve_kkt_lq_reg(in, iter, res, step, S(opts_.reg_prim));
     }
 
     /// Same as fact_solve_kkt_lq but with an explicit reg-primal value (the
     /// reg-ladder path in the lq_fact dispatch, 3d).
-    Status fact_solve_kkt_lq_reg(const Qp<P, NH>& in,
-                                 const QpSol<P, NH>& iter,
-                                 const QpRes<P, NH>& res, QpSol<P, NH>& step,
+    Status fact_solve_kkt_lq_reg(const QpT& in,
+                                 const QpSolT& iter,
+                                 const QpResT& res, QpSolT& step,
                                  S reg)
     {
         const int N = in.N;
@@ -1166,8 +1172,8 @@ public:
     ///   next  growths: x100 if preg_last == base, else x8
     /// Sets `ws_.npd_reg_hess` on any failure and persists the reg used in
     /// `ws_.preg_last` on success.
-    Status fact_solve_ladder(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                             const QpRes<P, NH>& res, QpSol<P, NH>& step,
+    Status fact_solve_ladder(const QpT& in, const QpSolT& iter,
+                             const QpResT& res, QpSolT& step,
                              bool lq)
     {
         const S base = S(opts_.reg_prim);
@@ -1206,8 +1212,8 @@ public:
     ///        the rest of the solve (HPIPM `force_lq`, x_ocp_qp_ipm.c:2259);
     ///   2 -> LQ (fact_solve_ladder, lq = true) always.
     /// Sets `ws_.last_lq_fact` (stat col 13) to whether LQ was used.
-    Status delta_factor_solve(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                              const QpRes<P, NH>& res, QpSol<P, NH>& step)
+    Status delta_factor_solve(const QpT& in, const QpSolT& iter,
+                              const QpResT& res, QpSolT& step)
     {
         ws_.last_lq_fact = 0;
         const bool use_lq = (opts_.lq_fact == 2) || ws_.force_lq;
@@ -1236,8 +1242,8 @@ public:
     /// with `use_Pb = 0`, x_ocp_qp_ipm.c:2424-2425).  Note: the δπ update
     /// uses the stored P matrix (the P-based forward pass) rather than
     /// HPIPM's L-factor form; equivalent to working precision.
-    void solve_kkt_reuse_gamma(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                               const QpRes<P, NH>& rhs, QpSol<P, NH>& step)
+    void solve_kkt_reuse_gamma(const QpT& in, const QpSolT& iter,
+                               const QpResT& rhs, QpSolT& step)
     {
         const int N = in.N;
         for (int k = N; k >= 0; --k)
@@ -1258,7 +1264,7 @@ public:
     /// step `a`, in place (used to apply / undo an iterative-refinement
     /// correction).
     template <bool Add>
-    void combine_sol(QpSol<P, NH>& a, const QpSol<P, NH>& b)
+    void combine_sol(QpSolT& a, const QpSolT& b)
     {
         const int N = a.N;
         auto op = [](auto& x, const auto& y)
@@ -1306,8 +1312,8 @@ public:
     /// it is 0 the pass is a no-op.  Returns the number of corrections
     /// applied (0 if `max_iter <= 0`).  The final linearized residual is
     /// left in `ws_.res_itref`.
-    int refine_step(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                    QpSol<P, NH>& step, int max_iter)
+    int refine_step(const QpT& in, const QpSolT& iter,
+                    QpSolT& step, int max_iter)
     {
         if (max_iter <= 0)
         {
@@ -1374,7 +1380,7 @@ public:
     /// Mask the step's lam and t by d_mask (HPIPM masks sol_step after
     /// the KKT solve, before alpha computation;
     /// x_ocp_qp_ipm.c:2284-2285).
-    void mask_step(const Qp<P, NH>& in, QpSol<P, NH>& step) const
+    void mask_step(const QpT& in, QpSolT& step) const
     {
         step.lam_first = step.lam_first.cwiseProduct(in.first.d_mask);
         for (int k = 1; k < in.N; ++k)
@@ -1410,8 +1416,8 @@ public:
     ///
     /// Call `mask_step` before this so that dlam / dt are zero on absent
     /// sides.  Stores the result in ws_.alpha_prim / ws_.alpha_dual.
-    void compute_alpha(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                       const QpSol<P, NH>& step)
+    void compute_alpha(const QpT& in, const QpSolT& iter,
+                       const QpSolT& step)
     {
         // m_zero: true when all m entries are zero
         // (x_ocp_qp_ipm.c:2966-2973)
@@ -1694,7 +1700,7 @@ public:
     /// Applied: ux += α_p·δz, π += α_d·δπ,
     /// λ += α_d·δλ (clip ≥ lam_min), t += α_p·δt (clip ≥ t_min).
     /// With split_step = 0, α_p = α_d so behaviour is identical.
-    void update_vars(QpSol<P, NH>& iter, const QpSol<P, NH>& step) const
+    void update_vars(QpSolT& iter, const QpSolT& step) const
     {
         const int N = iter.N;
         S alpha_p = ws_.alpha_prim;
@@ -1745,8 +1751,8 @@ public:
     /// workspace res_m. Must be called after compute_alpha so that
     /// ws_.alpha_prim / ws_.alpha_dual hold the accepted step lengths.
     /// Stores the result in ws_.mu_aff and returns it.
-    S compute_mu_aff(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                     const QpSol<P, NH>& step)
+    S compute_mu_aff(const QpT& in, const QpSolT& iter,
+                     const QpSolT& step)
     {
         const S a_d = ws_.alpha_dual;  // drives λ
         const S a_p = ws_.alpha_prim;  // drives t
@@ -1796,9 +1802,9 @@ public:
     /// res_out; res_out.res_g / res_b / res_d must already hold the (fixed)
     /// stationarity / dynamics / feasibility residuals of the current
     /// iterate. Stores the (unfloored) sigma in ws_.sigma.
-    void apply_centering(const Qp<P, NH>& in, const QpRes<P, NH>& res_bkp,
-                         const QpSol<P, NH>& step, bool correction,
-                         QpRes<P, NH>& res_out)
+    void apply_centering(const QpT& in, const QpResT& res_bkp,
+                         const QpSolT& step, bool correction,
+                         QpResT& res_out)
     {
         const S mu = res_bkp.res_mu;
         const S ratio = ws_.mu_aff / mu;
@@ -1894,7 +1900,7 @@ private:
 
     /// True when at least one side has d_mask > 0.5 (any active
     /// constraint). Drives the fast-path branch in solve().
-    bool has_active_side(const Qp<P, NH>& in) const
+    bool has_active_side(const QpT& in) const
     {
         auto any = [](const auto& dm)
         {
@@ -1923,7 +1929,7 @@ private:
 
     /// ||res_m − tau_min ∘ d_mask||_∞ across all stages (HPIPM's
     /// res_m_tau exit-test quantity, x_ocp_qp_ipm.c:3114-3116).
-    S res_m_tau(const Qp<P, NH>& in, const QpRes<P, NH>& res) const
+    S res_m_tau(const QpT& in, const QpResT& res) const
     {
         S m = 0;
         auto acc = [&](const auto& rm, const auto& dm)
@@ -1944,7 +1950,7 @@ private:
 
     /// Mask the absolute multipliers by d_mask (HPIPM masks qp_sol->lam
     /// after init; t is kept for all sides to stay interior).
-    void mask_abs_lam(const Qp<P, NH>& in, QpSol<P, NH>& sol) const
+    void mask_abs_lam(const QpT& in, QpSolT& sol) const
     {
         sol.lam_first = sol.lam_first.cwiseProduct(in.first.d_mask);
         for (int k = 1; k < in.N; ++k)
@@ -1957,7 +1963,7 @@ private:
 
     /// res_m -= tau * d_mask on every stage (COMPUTE_TAU_MIN_QP,
     /// x_core_qp_ipm_aux.c:756-778).
-    void shift_res_m(const Qp<P, NH>& in, QpRes<P, NH>& res, S tau) const
+    void shift_res_m(const QpT& in, QpResT& res, S tau) const
     {
         res.res_m_first.array() -= tau * in.first.d_mask.array();
         for (int k = 1; k < in.N; ++k)
@@ -1970,7 +1976,7 @@ private:
 
     /// Fill the residual / objective fields of a stat row (HPIPM cols 7-12).
     static void fill_stat_residuals(HpipmIteration& row,
-                                    const QpRes<P, NH>& res)
+                                    const QpResT& res)
     {
         row.res_stat = res.res_g_max;
         row.res_eq = res.res_b_max;
@@ -1990,7 +1996,7 @@ private:
     /// Unconstrained fast path (HPIPM OCP_QP_IPM_SOLVE unconstr branch,
     /// x_ocp_qp_ipm.c:2908-2950). Zero the iterate, solve the KKT system
     /// once, return iter = 0.
-    Status solve_unconstr(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    Status solve_unconstr(const QpT& in, QpSolT& out)
     {
         const int N = in.N;
         out.ux_first.setZero();
@@ -2017,7 +2023,7 @@ private:
         out.t_term.setZero();
 
         compute_residuals(in, out, ws_.res);
-        QpSol<P, NH> step(N);
+        QpSolT step(N);
         const Status st = solve_kkt_unconstr(in, ws_.res, step);
         if (st != Status::kSolved)
         {
@@ -2067,7 +2073,7 @@ private:
     /// Subtract the current iterate `cur` from `step` in place: the
     /// absolute-form KKT solve returns the new iterate; the Newton delta is
     /// new - current (HPIPM AXPY -1.0, x_ocp_qp_ipm.c:2096-2099).
-    void subtract_iterate(const QpSol<P, NH>& cur, QpSol<P, NH>& step) const
+    void subtract_iterate(const QpSolT& cur, QpSolT& step) const
     {
         const int N = step.N;
         step.ux_first -= cur.ux_first;
@@ -2097,7 +2103,7 @@ private:
     /// Scalar barrier parameter of the absolute iterate: mu = mean
     /// |lam*t - m| over the active sides (HPIPM inline mu in the abs loop,
     /// x_ocp_qp_ipm.c:3034-3044).
-    S inline_mu(const Qp<P, NH>& in, const QpSol<P, NH>& out) const
+    S inline_mu(const QpT& in, const QpSolT& out) const
     {
         S sum = S(0);
         int nc = 0;
@@ -2129,7 +2135,7 @@ private:
     /// (HPIPM sets qp_step->rqz/b/d to the original QP when abs_form = 1,
     /// x_ocp_qp_ipm.c:2990-2992). res_m is filled separately each iteration
     /// by transform_abs_res_m + shift_res_m.
-    void fill_abs_rhs(const Qp<P, NH>& in, QpRes<P, NH>& rhs) const
+    void fill_abs_rhs(const QpT& in, QpResT& rhs) const
     {
         rhs.res_g_first = in.first.grad;
         for (int k = 1; k < in.N; ++k)
@@ -2152,8 +2158,8 @@ private:
 
     /// Absolute-form m-RHS transform (HPIPM AXPBY, x_ocp_qp_ipm.c:2075):
     /// res_m <- -(lam*t - m) - 2*m = -lam*t - m (element-wise; v1 m = 0).
-    void transform_abs_res_m(const Qp<P, NH>& in, const QpSol<P, NH>& out,
-                             QpRes<P, NH>& res) const
+    void transform_abs_res_m(const QpT& in, const QpSolT& out,
+                             QpResT& res) const
     {
         res.res_m_first =
             -(out.lam_first.cwiseProduct(out.t_first)) - in.first.m;
@@ -2170,14 +2176,14 @@ private:
     /// Absolute-formulation IPM (see section banner). Mirrors the relative
     /// solve() loop with the absolute KKT right-hand side, the per-iteration
     /// current-iterate subtraction, and the scalar |mu - tau_min| exit test.
-    Status solve_abs(const Qp<P, NH>& in, QpSol<P, NH>& out)
+    Status solve_abs(const QpT& in, QpSolT& out)
     {
         const int N = in.N;
         ws_.resize(N);
         stat_.init(opts_.stat_max);
 
-        QpRes<P, NH> abs_rhs(N);
-        QpRes<P, NH> abs_bkp(N);
+        QpResT abs_rhs(N);
+        QpResT abs_bkp(N);
         fill_abs_rhs(in, abs_rhs);
 
         init_point(in, out);
@@ -2193,7 +2199,7 @@ private:
         fill_stat_residuals(stat_.row(0), ws_.res);
         stat_.row(0).mu = mu;
 
-        QpSol<P, NH> step(N);
+        QpSolT step(N);
         for (int kk = 0; kk < opts_.iter_max; ++kk)
         {
             // exit test (x_ocp_qp_ipm.c:3022-3027)
@@ -2712,8 +2718,8 @@ private:
     /// Per-side gamma / Gamma / t_inv (HPIPM COMPUTE_GAMMA_GAMMA_QP,
     /// x_core_qp_ipm_aux.c:38): gamma_i = (res_m_i - lam_i res_d_i)/t_i,
     /// Gamma_i = lam_i/t_i, both masked by d_mask (absent sides -> 0).
-    void compute_gamma(const Qp<P, NH>& in, const QpSol<P, NH>& iter,
-                       const QpRes<P, NH>& res)
+    void compute_gamma(const QpT& in, const QpSolT& iter,
+                       const QpResT& res)
     {
         auto fill = [](auto& gamma, auto& Gamma, auto& t_inv, const auto& dmask,
                        const auto& lam, const auto& t, const auto& res_d,
@@ -3061,7 +3067,7 @@ private:
 
     // Stage dispatch wrappers (first / path / term).
 
-    bool backward_factor_stage(int k, const Qp<P, NH>& in, S reg)
+    bool backward_factor_stage(int k, const QpT& in, S reg)
     {
         const int N = in.N;
         if (k == 0)
@@ -3097,7 +3103,7 @@ private:
     /// wide-matrix LQ factor (factor_one_stage_lq) instead of the dense
     /// Cholesky of Mtilde_k.  Reads the x-block of L_{k+1} (already factored,
     /// we walk k = N..0) to build the dynamics column of W_k; zero at k = N.
-    bool backward_factor_stage_lq(int k, const Qp<P, NH>& in, S reg,
+    bool backward_factor_stage_lq(int k, const QpT& in, S reg,
                                   bool lh_valid)
     {
         const int N = in.N;
@@ -3142,8 +3148,8 @@ private:
             ws_.Lh_path[k - 1], ws_.L_path[k - 1], ws_.P_path[k - 1]);
     }
 
-    void backward_reduced_stage(int k, const Qp<P, NH>& in,
-                                const QpRes<P, NH>& res)
+    void backward_reduced_stage(int k, const QpT& in,
+                                const QpResT& res)
     {
         const int N = in.N;
         if (k == 0)
@@ -3184,8 +3190,8 @@ private:
         }
     }
 
-    void forward_stage(int k, const Qp<P, NH>& in, const QpRes<P, NH>& res,
-                       QpSol<P, NH>& step)
+    void forward_stage(int k, const QpT& in, const QpResT& res,
+                       QpSolT& step)
     {
         const int N = in.N;
         Pi_t dpi_prev = Pi_t::Zero();
@@ -3233,8 +3239,8 @@ private:
         }
     }
 
-    void closed_form_stage(int k, const Qp<P, NH>& in, const QpRes<P, NH>& res,
-                           const QpSol<P, NH>& iter, QpSol<P, NH>& step)
+    void closed_form_stage(int k, const QpT& in, const QpResT& res,
+                           const QpSolT& iter, QpSolT& step)
     {
         const int N = in.N;
         if (k == 0)

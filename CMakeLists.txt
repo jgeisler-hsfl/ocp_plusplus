@@ -256,6 +256,14 @@ add_executable(dense_qp_dim tests/hpipm/dense_qp_dim.cpp)
 target_include_directories(dense_qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(dense_qp_dim PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(block_qp_dim tests/hpipm/block_qp_dim.cpp)
+target_include_directories(block_qp_dim PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(block_qp_dim PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(condense_block tests/hpipm/condense_block.cpp)
+target_include_directories(condense_block PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(condense_block PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(condense_full tests/hpipm/condense_full.cpp)
 target_include_directories(condense_full PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(condense_full PRIVATE ${OCP_WARN_FLAGS})

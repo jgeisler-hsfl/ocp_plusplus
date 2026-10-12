@@ -282,6 +282,10 @@ struct QpDim
     static constexpr int ne_t  = P::ne_t;
     static constexpr int nl_t  = P::nl_t;
 
+    /// x_0 fixed: pin rows replace the stage-0 state box (problem property,
+    /// re-exposed so Dim-parameterized consumers need not touch P).
+    static constexpr bool fixed_initial_state = P::fixed_initial_state;
+
     // ---------------------------------------------------------------
     // Slack variables (one per soft side)
     // ---------------------------------------------------------------
@@ -667,6 +671,449 @@ struct QpDim
 };
 
 // =========================================================================
+//  Block (partial-condensation) stage-type dimensions
+// =========================================================================
+
+/// Dimensions of one stage of a partially condensed QP.
+///
+/// The N path stages are grouped into N2 = N / NB blocks of NB stages
+/// (uniform size; the condenser requires N % NB == 0). Each block keeps
+/// all NB controls and the block-start state x_{k0} as decision
+/// variables; the internal states x_{k0+1} .. x_{k0+NB-1} are eliminated
+/// by condensation. The condensed block OCP is a staged QP over the N2
+/// blocks plus a copy of the original terminal stage (acados
+/// PART_COND_QP_COMPUTE_DIM; block_size[N2] = 0).
+///
+/// Row treatment of a block (acados semantics):
+///   - the block-start state box (nbx) and all NB control boxes
+///     (NB * nbu) remain box rows;
+///   - all original stage ineq / eq / lin rows of the NB stages become
+///     general rows, keeping their original group (ineq stays one-sided);
+///   - the internal-state box rows ((NB - 1) * nbx) become two-sided
+///     general rows (grouped with the lin rows).
+///
+/// General-row ordering is group-major (acados only fixes the COUNTS, not
+/// the order): [all NB stages' ineq rows, then all eq rows, then all lin
+/// rows, then the (NB-1) internal-state box rows], each block in
+/// stage-major order (stage j, in-group index i).
+///
+/// Variable vector of a block stage: (u_{k0}; ...; u_{k0+NB-1}; x_{k0}; s)
+/// with control j (0..NB-1) in columns j * P::nu .. (j + 1) * P::nu - 1.
+/// The block slack vector concatenates the original per-stage slack
+/// vectors in stage order. The terminal stage is an exact copy of
+/// QpDim<P>'s terminal. NB = 1 reproduces QpDim<P> exactly.
+template <class P, int NB>
+struct BlockQpDim
+{
+    static_assert(NB >= 1, "BlockQpDim: block size must be >= 1");
+    using Base = QpDim<P>;
+
+    // ---------------------------------------------------------------
+    // Core dimensions
+    // ---------------------------------------------------------------
+    static constexpr int nx = P::nx;
+    /// All NB controls of the block are decision variables.
+    static constexpr int nu = NB * P::nu;
+
+    // ---------------------------------------------------------------
+    // Active row counts (per block stage type)
+    // ---------------------------------------------------------------
+    static constexpr int nbx = P::nbx;  // block-start state box rows
+    static constexpr int nbu = NB * P::nbu;  // all NB control box rows
+    static constexpr int ng  = NB * P::ng;   // original ineq rows (one-sided)
+    static constexpr int ne  = NB * P::ne;   // original equality rows
+    /// Original linear rows plus the internal-state box rows, which
+    /// become two-sided general rows after condensation.
+    static constexpr int nl  = NB * P::nl + (NB - 1) * P::nbx;
+    static constexpr int nbx_t = P::nbx_t;
+    static constexpr int ng_t  = P::ng_t;
+    static constexpr int ne_t  = P::ne_t;
+    static constexpr int nl_t  = P::nl_t;
+
+    static constexpr bool fixed_initial_state = P::fixed_initial_state;
+
+    // ---------------------------------------------------------------
+    // Slack variables (original per-stage slacks, concatenated)
+    // ---------------------------------------------------------------
+    /// First block: stage-0 slacks + (NB - 1) path-stage slacks.
+    static constexpr int nslack_first =
+        Base::nslack_first + (NB - 1) * Base::nslack_path;
+    /// Path block: NB path-stage slacks.
+    static constexpr int nslack_path = NB * Base::nslack_path;
+    /// Terminal: unchanged.
+    static constexpr int nslack_term = Base::nslack_term;
+
+    // ---------------------------------------------------------------
+    // Stage-type layouts
+    // ---------------------------------------------------------------
+    static constexpr detail::QpLayout lay_first = {
+        {P::fixed_initial_state ? nx : 0,
+         P::fixed_initial_state ? 0 : nbx,
+         nbu, ng, ne, nl},
+        nslack_first};
+    static constexpr detail::QpLayout lay_path = {
+        {0, nbx, nbu, ng, ne, nl},
+        nslack_path};
+    static constexpr detail::QpLayout lay_term = Base::lay_term;
+
+    // ---------------------------------------------------------------
+    // Derived totals (per stage type)
+    // ---------------------------------------------------------------
+    static constexpr int nvar_first = nu + nx + nslack_first;  // (u; x; s)
+    static constexpr int nvar_path  = nu + nx + nslack_path;   // (u; x; s)
+    static constexpr int nvar_term  = nx + nslack_term;        // (x; s)
+
+    static constexpr int nrow_first = lay_first.nrow();
+    static constexpr int nrow_path  = lay_path.nrow();
+    static constexpr int nrow_term  = lay_term.nrow();
+
+    static constexpr int nside_first = lay_first.nside();
+    static constexpr int nside_path  = lay_path.nside();
+    static constexpr int nside_term  = lay_term.nside();
+
+    static constexpr int side_lo_first(int r) { return lay_first.side_lo(r); }
+    static constexpr int side_hi_first(int r) { return lay_first.side_hi(r); }
+    static constexpr int side_lo_path(int r)  { return lay_path.side_lo(r); }
+    static constexpr int side_hi_path(int r)  { return lay_path.side_hi(r); }
+    static constexpr int side_lo_term(int r)  { return lay_term.side_lo(r); }
+    static constexpr int side_hi_term(int r)  { return lay_term.side_hi(r); }
+
+    // ---------------------------------------------------------------
+    // Box-row -> variable index in the block vector
+    // (u_{k0}; ...; u_{k0+NB-1}; x_{k0}; s)
+    // ---------------------------------------------------------------
+    static constexpr int nbx_first = P::fixed_initial_state ? 0 : nbx;
+
+    static constexpr std::array<int, nbx_first + nbu> make_idxb_first()
+    {
+        std::array<int, nbx_first + nbu> a{};
+        for (int j = 0; j < nbx_first; ++j)
+        {
+            a[j] = nu + P::state_box_idx[j];
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[nbx_first + j * P::nbu + i] = j * P::nu
+                                                + P::control_box_idx[i];
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nbx_first + nbu> idxb_first =
+        make_idxb_first();
+
+    static constexpr std::array<int, nbx + nbu> make_idxb_path()
+    {
+        std::array<int, nbx + nbu> a{};
+        for (int j = 0; j < nbx; ++j)
+        {
+            a[j] = nu + P::state_box_idx[j];
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[nbx + j * P::nbu + i] = j * P::nu + P::control_box_idx[i];
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nbx + nbu> idxb_path = make_idxb_path();
+
+    static constexpr std::array<int, nbx_t> idxb_term = Base::idxb_term;
+
+    /// Pin rows (first block, fixed x_0): x_0 starts at column NB * nu.
+    static constexpr std::array<int, P::fixed_initial_state ? nx : 0>
+        make_idx_x0()
+    {
+        std::array<int, P::fixed_initial_state ? nx : 0> a{};
+        for (int j = 0; j < (P::fixed_initial_state ? nx : 0); ++j)
+        {
+            a[j] = nu + j;
+        }
+        return a;
+    }
+    static constexpr std::array<int, P::fixed_initial_state ? nx : 0>
+        idx_x0 = make_idx_x0();
+
+    static constexpr int nbound_first = (P::fixed_initial_state ? nx : 0)
+                                        + nbx_first + nbu;
+    static constexpr int nbound_path  = nbx + nbu;
+    static constexpr int nbound_term  = Base::nbound_term;
+
+    // ---------------------------------------------------------------
+    // Soft-slack column mapping (HPIPM `idxs` / `idxs_rev` analogue)
+    // ---------------------------------------------------------------
+    // The block slack vector concatenates the original per-stage slack
+    // vectors in stage order; the slack column of a block row is the
+    // stage offset plus the original stage's slack column.
+    //
+    // Stage offset of the j-th original stage (0..NB-1) inside the block:
+    //   first block: j == 0 ? 0 : Base::nslack_first + (j-1) * path slacks
+    //   path block:  j * Base::nslack_path
+
+    static constexpr int stage_offset_first(int j)
+    {
+        return j == 0
+            ? 0
+            : Base::nslack_first + (j - 1) * Base::nslack_path;
+    }
+    static constexpr int stage_offset_path(int j)
+    {
+        return j * Base::nslack_path;
+    }
+
+    // The original per-stage slack block starts at column P::nu + P::nx
+    // inside (u; x; s); Base::idxs_* values are absolute in that vector,
+    // so they are re-based onto the block vector below.
+    static constexpr int nv0_blk = NB * P::nu + P::nx;
+    static constexpr int nv0_orig = P::nu + P::nx;
+
+    // --- slack-column re-basing --------------------------------------
+    // Maps an original stage's idxs entry (absolute column in the original
+    // (u; x; s) vector, or -1 for a non-soft row) onto the block vector.
+    template <std::size_t NR>
+    static constexpr int remap(const std::array<int, NR>& src, int orig_row,
+                               int stage_off)
+    {
+        const int orig = src[orig_row];
+        return (orig >= 0) ? nv0_blk + stage_off + (orig - nv0_orig) : -1;
+    }
+
+    // --- first block ------------------------------------------------
+    // Explicit per-group assignments: block row -> stage_offset(j) + the
+    // re-based original stage's idxs entry (-1 preserved for non-soft rows).
+    static constexpr std::array<int, nrow_first> make_idxs_lo_first()
+    {
+        std::array<int, nrow_first> a{};
+        for (int r = 0; r < nrow_first; ++r)
+        {
+            a[r] = -1;
+        }
+        for (int i = 0; i < nbx_first; ++i)
+        {
+            a[lay_first.row_off(detail::g_bx) + i] =
+                remap(Base::idxs_lo_first,
+                      Base::lay_first.row_off(detail::g_bx) + i, 0);
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            const int o = stage_offset_first(j);
+            const auto& ib = (j == 0) ? Base::idxs_lo_first
+                                      : Base::idxs_lo_path;
+            const auto& lb = (j == 0) ? Base::lay_first : Base::lay_path;
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[lay_first.row_off(detail::g_bu) + j * P::nbu + i] =
+                    remap(ib, lb.row_off(detail::g_bu) + i, o);
+            }
+            for (int i = 0; i < P::ng; ++i)
+            {
+                a[lay_first.row_off(detail::g_ineq) + j * P::ng + i] =
+                    remap(ib, lb.row_off(detail::g_ineq) + i, o);
+            }
+            for (int i = 0; i < P::ne; ++i)
+            {
+                a[lay_first.row_off(detail::g_eq) + j * P::ne + i] =
+                    remap(ib, lb.row_off(detail::g_eq) + i, o);
+            }
+            for (int i = 0; i < P::nl; ++i)
+            {
+                a[lay_first.row_off(detail::g_lin) + j * P::nl + i] =
+                    remap(ib, lb.row_off(detail::g_lin) + i, o);
+            }
+            if (j > 0)
+            {
+                for (int i = 0; i < P::nbx; ++i)
+                {
+                    a[lay_first.row_off(detail::g_lin)
+                       + NB * P::nl + (j - 1) * P::nbx + i] =
+                        remap(ib, Base::lay_path.row_off(detail::g_bx) + i, o);
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nrow_first> idxs_lo_first =
+        make_idxs_lo_first();
+
+    static constexpr std::array<int, nrow_first> make_idxs_hi_first()
+    {
+        std::array<int, nrow_first> a{};
+        for (int r = 0; r < nrow_first; ++r)
+        {
+            a[r] = -1;
+        }
+        for (int i = 0; i < nbx_first; ++i)
+        {
+            a[lay_first.row_off(detail::g_bx) + i] =
+                remap(Base::idxs_hi_first,
+                      Base::lay_first.row_off(detail::g_bx) + i, 0);
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            const int o = stage_offset_first(j);
+            const auto& ib = (j == 0) ? Base::idxs_hi_first
+                                      : Base::idxs_hi_path;
+            const auto& lb = (j == 0) ? Base::lay_first : Base::lay_path;
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[lay_first.row_off(detail::g_bu) + j * P::nbu + i] =
+                    remap(ib, lb.row_off(detail::g_bu) + i, o);
+            }
+            for (int i = 0; i < P::ng; ++i)
+            {
+                a[lay_first.row_off(detail::g_ineq) + j * P::ng + i] =
+                    remap(ib, lb.row_off(detail::g_ineq) + i, o);
+            }
+            for (int i = 0; i < P::ne; ++i)
+            {
+                a[lay_first.row_off(detail::g_eq) + j * P::ne + i] =
+                    remap(ib, lb.row_off(detail::g_eq) + i, o);
+            }
+            for (int i = 0; i < P::nl; ++i)
+            {
+                a[lay_first.row_off(detail::g_lin) + j * P::nl + i] =
+                    remap(ib, lb.row_off(detail::g_lin) + i, o);
+            }
+            if (j > 0)
+            {
+                for (int i = 0; i < P::nbx; ++i)
+                {
+                    a[lay_first.row_off(detail::g_lin)
+                       + NB * P::nl + (j - 1) * P::nbx + i] =
+                        remap(ib, Base::lay_path.row_off(detail::g_bx) + i, o);
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nrow_first> idxs_hi_first =
+        make_idxs_hi_first();
+
+    // --- path block -------------------------------------------------
+    static constexpr std::array<int, nrow_path> make_idxs_lo_path()
+    {
+        std::array<int, nrow_path> a{};
+        for (int r = 0; r < nrow_path; ++r)
+        {
+            a[r] = -1;
+        }
+        for (int i = 0; i < P::nbx; ++i)
+        {
+            a[lay_path.row_off(detail::g_bx) + i] =
+                remap(Base::idxs_lo_path,
+                      Base::lay_path.row_off(detail::g_bx) + i, 0);
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            const int o = stage_offset_path(j);
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[lay_path.row_off(detail::g_bu) + j * P::nbu + i] =
+                    remap(Base::idxs_lo_path,
+                          Base::lay_path.row_off(detail::g_bu) + i, o);
+            }
+            for (int i = 0; i < P::ng; ++i)
+            {
+                a[lay_path.row_off(detail::g_ineq) + j * P::ng + i] =
+                    remap(Base::idxs_lo_path,
+                          Base::lay_path.row_off(detail::g_ineq) + i, o);
+            }
+            for (int i = 0; i < P::ne; ++i)
+            {
+                a[lay_path.row_off(detail::g_eq) + j * P::ne + i] =
+                    remap(Base::idxs_lo_path,
+                          Base::lay_path.row_off(detail::g_eq) + i, o);
+            }
+            for (int i = 0; i < P::nl; ++i)
+            {
+                a[lay_path.row_off(detail::g_lin) + j * P::nl + i] =
+                    remap(Base::idxs_lo_path,
+                          Base::lay_path.row_off(detail::g_lin) + i, o);
+            }
+            if (j > 0)
+            {
+                for (int i = 0; i < P::nbx; ++i)
+                {
+                    a[lay_path.row_off(detail::g_lin)
+                       + NB * P::nl + (j - 1) * P::nbx + i] =
+                        remap(Base::idxs_lo_path,
+                              Base::lay_path.row_off(detail::g_bx) + i, o);
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nrow_path> idxs_lo_path =
+        make_idxs_lo_path();
+
+    static constexpr std::array<int, nrow_path> make_idxs_hi_path()
+    {
+        std::array<int, nrow_path> a{};
+        for (int r = 0; r < nrow_path; ++r)
+        {
+            a[r] = -1;
+        }
+        for (int i = 0; i < P::nbx; ++i)
+        {
+            a[lay_path.row_off(detail::g_bx) + i] =
+                remap(Base::idxs_hi_path,
+                      Base::lay_path.row_off(detail::g_bx) + i, 0);
+        }
+        for (int j = 0; j < NB; ++j)
+        {
+            const int o = stage_offset_path(j);
+            for (int i = 0; i < P::nbu; ++i)
+            {
+                a[lay_path.row_off(detail::g_bu) + j * P::nbu + i] =
+                    remap(Base::idxs_hi_path,
+                          Base::lay_path.row_off(detail::g_bu) + i, o);
+            }
+            for (int i = 0; i < P::ng; ++i)
+            {
+                a[lay_path.row_off(detail::g_ineq) + j * P::ng + i] =
+                    remap(Base::idxs_hi_path,
+                          Base::lay_path.row_off(detail::g_ineq) + i, o);
+            }
+            for (int i = 0; i < P::ne; ++i)
+            {
+                a[lay_path.row_off(detail::g_eq) + j * P::ne + i] =
+                    remap(Base::idxs_hi_path,
+                          Base::lay_path.row_off(detail::g_eq) + i, o);
+            }
+            for (int i = 0; i < P::nl; ++i)
+            {
+                a[lay_path.row_off(detail::g_lin) + j * P::nl + i] =
+                    remap(Base::idxs_hi_path,
+                          Base::lay_path.row_off(detail::g_lin) + i, o);
+            }
+            if (j > 0)
+            {
+                for (int i = 0; i < P::nbx; ++i)
+                {
+                    a[lay_path.row_off(detail::g_lin)
+                       + NB * P::nl + (j - 1) * P::nbx + i] =
+                        remap(Base::idxs_hi_path,
+                              Base::lay_path.row_off(detail::g_bx) + i, o);
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, nrow_path> idxs_hi_path =
+        make_idxs_hi_path();
+
+    // --- terminal (exact copy of the original terminal stage) --------
+    static constexpr std::array<int, nrow_term> idxs_lo_term =
+        Base::idxs_lo_term;
+    static constexpr std::array<int, nrow_term> idxs_hi_term =
+        Base::idxs_hi_term;
+};
+
+// =========================================================================
 //  Stage data
 // =========================================================================
 
@@ -674,10 +1121,10 @@ struct QpDim
 ///
 /// hess/grad/DC cover the variable vector (u_0; x_0; s_0); DC rows follow
 /// the first-stage row layout (pin rows first when x_0 is fixed).
-template <class P>
+template <class P, class Dim = QpDim<P>>
 struct QpStageFirst
 {
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
 
     /// Hessian of the stage cost over (u_0; x_0; s_0).
@@ -743,10 +1190,10 @@ struct QpStageFirst
 
 /// Path-stage (k = 1..N-1) QP data; identical shape to QpStageFirst when
 /// x_0 is not fixed, smaller when it is.
-template <class P>
+template <class P, class Dim = QpDim<P>>
 struct QpStagePath
 {
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
 
     /// Hessian of the stage cost over (u; x; s). See QpStageFirst::hess.
@@ -791,10 +1238,10 @@ struct QpStagePath
 };
 
 /// Terminal (k = N) QP data; variable vector (x_N; s_N), no dynamics.
-template <class P>
+template <class P, class Dim = QpDim<P>>
 struct QpStageTerm
 {
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
 
     /// Hessian of the terminal cost over (x_N; s_N). See
@@ -844,19 +1291,19 @@ struct QpStageTerm
 /// and `resize(int)` only asserts that the argument matches NH. N = 0
 /// (terminal-only problem) is not supported: at least one dynamics step is
 /// required.
-template <class P, int NH = Eigen::Dynamic>
+template <class P, int NH = Eigen::Dynamic, class Dim = QpDim<P>>
 struct Qp
 {
     static_assert(NH == Eigen::Dynamic || NH >= 1,
         "ocp::Qp: the horizon must be at least 1 (one dynamics step) or "
         "Eigen::Dynamic.");
 
-    using D = QpDim<P>;
+    using D = Dim;
 
     int N = (NH == Eigen::Dynamic) ? 0 : NH;
-    QpStageFirst<P> first;  // k = 0
-    Trajectory<QpStagePath<P>, detail::traj_extent<NH, -1>()> path;  // k = 1..N-1
-    QpStageTerm<P> term;    // k = N
+    QpStageFirst<P, Dim> first;  // k = 0
+    Trajectory<QpStagePath<P, Dim>, detail::traj_extent<NH, -1>()> path;  // k = 1..N-1
+    QpStageTerm<P, Dim> term;    // k = N
 
     Qp() = default;
     /// Dynamic horizon: allocate for `n_stages` stages; fixed horizon:
@@ -893,14 +1340,14 @@ struct Qp
 ///   - pi    : ABSOLUTE dynamics multipliers (k = 0..N-1)
 ///   - lam_* : ABSOLUTE constraint multipliers, one per side
 ///   - t_*   : ABSOLUTE IPM slacks, same layout as lam
-template <class P, int NH = Eigen::Dynamic>
+template <class P, int NH = Eigen::Dynamic, class Dim = QpDim<P>>
 struct QpSol
 {
     static_assert(NH == Eigen::Dynamic || NH >= 1,
         "ocp::QpSol: the horizon must be at least 1 (one dynamics step) or "
         "Eigen::Dynamic.");
 
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
 
     using ux_first_t  = Eigen::Matrix<S, D::nvar_first, 1>;
@@ -963,14 +1410,14 @@ struct QpSol
 /// KKT residuals of a staged QP (HPIPM `d_ocp_qp_res` analogue).
 ///
 /// Computed by the solver's `compute_residuals` each IPM iteration.
-template <class P, int NH = Eigen::Dynamic>
+template <class P, int NH = Eigen::Dynamic, class Dim = QpDim<P>>
 struct QpRes
 {
     static_assert(NH == Eigen::Dynamic || NH >= 1,
         "ocp::QpRes: the horizon must be at least 1 (one dynamics step) or "
         "Eigen::Dynamic.");
 
-    using D = QpDim<P>;
+    using D = Dim;
     using S = typename P::scalar_t;
 
     using res_g_first_t = Eigen::Matrix<S, D::nvar_first, 1>;
