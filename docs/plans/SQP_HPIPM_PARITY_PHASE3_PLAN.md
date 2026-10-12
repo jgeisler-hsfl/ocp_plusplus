@@ -1,6 +1,6 @@
 # SQP + HPIPM parity — Phase 3: RTI SQP (standard real-time iteration)
 
-Status: **active** (no blocks complete yet). Builds on Phase 1 (full
+Status: **active** (block 3a complete; 3b–3e pending). Builds on Phase 1 (full
 condensing) and Phase 2 (partial condensing), both complete. Adds acados'
 `SQP_RTI` solver in its **standard** form (`as_rti_iter = 0`,
 `as_rti_level = STANDARD_RTI`): the QP is assembled and solved **once** per
@@ -130,7 +130,7 @@ subset):
 
 ## Blocks
 
-1. **3a — LHS/RHS assembly split.** Extract
+1. **3a — LHS/RHS assembly split (done).** Extract
    `assemble_{first,path,term}` into `solvers/acados/assemble.hpp` as
    free-function templates `assemble_stage_{first,path,term}_{lhs,rhs}`,
    with `AssembleFlags{compute_hess_dyn, compute_hess_constr}`;
