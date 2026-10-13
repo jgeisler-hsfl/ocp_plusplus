@@ -2081,9 +2081,29 @@ private:
             if (!has_factors_)
             {
                 // exit refactor at the final iterate (HPIPM
-                // update_fact_exit; our solve() does not refactor on exit)
-                st = fact_solve_kkt_reg(in_seed, sol, rhs, sens,
-                                        ws_.preg_last);
+                // update_fact_exit; our solve() does not refactor on exit).
+                // Follow the lq dispatch of the delta step (delta_factor_
+                // solve): LQ when the solve ended LQ (lq_fact == 2 or the
+                // force_lq latch), Cholesky otherwise, with the LQ fallback
+                // for lq_fact == 1.  The reg stays pinned at ws_.preg_last
+                // (the reg of the last Newton factorization).
+                const bool use_lq = (opts_.lq_fact == 2) || ws_.force_lq;
+                if (use_lq)
+                {
+                    st = fact_solve_kkt_lq_reg(in_seed, sol, rhs, sens,
+                                               ws_.preg_last);
+                }
+                else
+                {
+                    st = fact_solve_kkt_reg(in_seed, sol, rhs, sens,
+                                            ws_.preg_last);
+                    if (st != Status::kSolved && opts_.lq_fact == 1)
+                    {
+                        ws_.force_lq = true;
+                        st = fact_solve_kkt_lq_reg(in_seed, sol, rhs, sens,
+                                                   ws_.preg_last);
+                    }
+                }
                 if (st == Status::kSolved)
                 {
                     has_factors_ = true;

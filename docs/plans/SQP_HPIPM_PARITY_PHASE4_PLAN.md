@@ -183,23 +183,36 @@ for the pre-existing targets, modulo wall-clock prints).
 
 ## Open items (verify during implementation, not design)
 
-1. Exact force-term semantics: our `solve_kkt_reuse_gamma` recomputes
-   gamma from the passed `res` (res_m - lam*res_d over 1/t). HPIPM's
-   `SOLVE_KKT_STEP` does the same from `qp->d/m` (the seeds) with no
-   centering shift. Confirm by reading our `backward_reduced_stage` /
-   `forward_stage` force assembly and, decisively, by the 4d FD tests
-   (any semantic slip shows up there).
-2. Whether the stored factors remain valid when the last `solve()` ended
-   on the LQ auto-switch path (`force_lq`): the L factors come from the
-   LQ wide-matrix factorization; the reuse pass must be the LQ-consistent
-   one. The 4d test runs with the default `lq_fact = 0` (Cholesky);
-   optionally add an LQ-mode FD check if the reuse path differs.
-3. `ws_.Pb_*`: declared/resized but apparently never read (the LQ path
-   computes the D' L product inline into the wide matrix). If confirmed
-   dead, leave as-is (no cleanup in this phase; note for 5-polish).
-4. Hessian seeds are expressed as an equivalent `grad` seed in the 4d
-   test (d(sol)/d(H) = -K^{-1} (E v*)); the API stays HPIPM-faithful
-   (RHS seeds only) — no matrix-seed field in `QpSeed`.
-5. `m` seeds: not FD-tested (v1 has m = 0 everywhere; complementarity
+Resolved during implementation:
+
+1. **Force-term semantics** — confirmed correct by the 4d FD tests:
+   `solve_kkt_reuse_gamma` recomputes gamma from the passed `res` (res_m -
+   lam*res_d over 1/t), exactly matching HPIPM's `SOLVE_KKT_STEP` which
+   does the same from the seeded `qp->d/m` with no centering shift.
+2. **LQ factor reuse for sens** — the reuse pass (`solve_kkt_reuse_gamma`)
+   is factor-agnostic (consumes whatever L/P were stored), so it is
+   LQ-consistent by construction. The sens exit-refactor dispatches on
+   `lq_fact`/`force_lq` like the delta step (LQ when the solve ended LQ,
+   Cholesky otherwise), so a final-iterate KKT that was not PSD during
+   the solve still factors the same way. Verified by the 4d FD checks run
+   with `lq_fact = 2` (DI and MS): forward FD, hessian-via-grad, adjoint
+   and duality all hold on LQ-factor-based sens.
+3. **`ws_.Pb_*` dead** — confirmed: declared and resized, but never read
+   (the LQ path computes the D' L product inline into the wide matrix,
+   and the reuse pass uses P, not Pb). Left as-is per plan; cleanup is
+   5-polish territory.
+4. **Hessian seeds** — expressed as an equivalent `grad` seed in the 4d
+   test (d(sol)/d(H) = -K^{-1} (E z*)); the API stays HPIPM-faithful
+   (RHS seeds only) — no matrix-seed field in `QpSeed`. Verified by the
+   FD test, which compares `sens_forward(grad = E z*)` to the central
+   difference of H +- h E with no sign flip (the KKT solve supplies the
+   minus).
+5. **`m` seeds** — not FD-tested (v1 has m = 0 everywhere; complementarity
    m_relax is not implemented). The API carries `m_*` for completeness
    (HPIPM parity, adjoint scaling path exercised by the m = 0 case).
+
+Remaining for a future phase:
+
+- FD-verify `m` seeds once m_relax / complementarity exists.
+- Optionally: dense-QP (`DenseQp`) sensitivity path, mirroring 4b/4c for
+  the condensed formulation (deferred, like dense adjoint).

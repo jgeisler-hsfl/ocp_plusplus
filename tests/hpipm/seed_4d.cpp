@@ -9,6 +9,9 @@
 //   - state hygiene (solve -> sens -> solve on one instance)
 //   - the no-prior-solve guard (kQpFailure)
 //   - QpSeed sizing / setZero smoke
+//   - the LQ factorization path: the same FD checks with the base solve
+//     forced to LQ (lq_fact = 2), so the sens exit refactor and the
+//     factor-reuse path are exercised on LQ factors
 
 #include <cmath>
 #include <cstdio>
@@ -170,11 +173,13 @@ void fill_qp(Qp<P, NH>& qp, int N)
 }
 
 // Tight-tolerance solver for the FD re-solves (a small h amplifies the
-// absolute solver error by 1/h).
+// absolute solver error by 1/h).  lq_fact forwards to HpipmOptions (used
+// to force the LQ factorization path in the base-solve FD checks).
 template <class P, int NH>
-HpipmQpSolver<P, NH> fd_solver()
+HpipmQpSolver<P, NH> fd_solver(int lq_fact = 0)
 {
     HpipmOptions o;
+    o.lq_fact = lq_fact;
     o.res_g_max = 3e-7;
     o.res_b_max = 1e-11;
     o.res_d_max = 1e-10;
@@ -305,7 +310,7 @@ void check_seed_smoke(const char* name, int N)
 }
 
 template <class P, int NH>
-void check_seed_fd(const char* name, int N)
+void check_seed_fd(const char* name, int N, int lq_fact = 0)
 {
     using D = QpDim<P>;
     using S = typename P::scalar_t;
@@ -315,7 +320,7 @@ void check_seed_fd(const char* name, int N)
 
     Qp<P, NH> qp(N);
     fill_qp(qp, N);
-    HpipmQpSolver<P, NH> solver = fd_solver<P, NH>();
+    HpipmQpSolver<P, NH> solver = fd_solver<P, NH>(lq_fact);
     QpSol<P, NH> sol(N);
     check(solver.solve(qp, sol) == Status::kSolved, p + " base solve");
 
@@ -490,6 +495,10 @@ int run_seed_4d_tests()
     check_seed_fd_d<DoubleIntegrator, Eigen::Dynamic>("DI dyn N=5", N);
     check_seed_fd<MassSpring, 5>("MS NH=5 N=5", N);
     check_seed_fd_d<MassSpring, 5>("MS NH=5 N=5", N);
+    // LQ factorization path: base solve and sens refactor use the LQ
+    // factorization; the same FD ground truth must still hold.
+    check_seed_fd<DoubleIntegrator, Eigen::Dynamic>("DI dyn N=5 lq", N, 2);
+    check_seed_fd<MassSpring, 5>("MS NH=5 N=5 lq", N, 2);
     if (failures == 0)
     {
         std::printf("All seed (4d) checks passed.\n");
