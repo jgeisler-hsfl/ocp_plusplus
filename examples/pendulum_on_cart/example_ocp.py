@@ -69,7 +69,10 @@ def create_ocp() -> AcadosOcp:
     ocp.constraints.idxbu = np.array([0])
     ocp.constraints.x0 = np.array([0.0, np.pi, 0.0, 0.0])
 
-    # solver: SQP + partial condensing (HPIPM), Gauss-Newton, IRK
+    # solver: SQP + HPIPM, Gauss-Newton, IRK. Despite the option name,
+    # the default qp_cond_N = 0 disables block condensing: HPIPM runs its
+    # staged two-pass Riccati on the uncondensed QP (the ocp++ port uses
+    # the matching QpMode::kStaged default).
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "IRK"

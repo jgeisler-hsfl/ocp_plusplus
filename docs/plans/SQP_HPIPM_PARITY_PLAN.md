@@ -234,11 +234,15 @@ Gate: warning-free build, full regression, FD tests green.
   `HpipmStatistics::write_csv` writes the same 21 quantities as
   `print()` (+ row index); `options_2e` csv test updated for the new
   header; new test `tests/sqp/stats_5d.cpp`.
-- **Docs**: README/ARCHITECTURE update (condensing modes, RTI,
-  sensitivities); fix the "partial condensing (HPIPM)" comments in the
-  example `example_ocp.py` files to describe the current reality (HPIPM
-  two-pass Riccati on the uncondensed QP); register new options per
-  `DUAL_ACCESS_PLAN.md`.
+- ~~**Docs**~~ done (5e): README / ARCHITECTURE.md sec. 8 already document
+  the condensing modes, RTI and the QP-level sensitivities. The misleading
+  "partial condensing (HPIPM)" comments in `examples/unicycle/example_ocp.py`
+  and `examples/pendulum_on_cart/example_ocp.py` now state the reality:
+  `PARTIAL_CONDENSING_HPIPM` with default `qp_cond_N = 0` runs HPIPM's
+  staged two-pass Riccati on the uncondensed QP (the ocp++ port's
+  `QpMode::kStaged` default). *Pending (blocked):* "register new options
+  per `DUAL_ACCESS_PLAN.md`" — that plan (named-value registry) is not
+  implemented yet; revisit when it lands.
 
 ## 9. Open items (verify at implementation time, not design decisions)
 
