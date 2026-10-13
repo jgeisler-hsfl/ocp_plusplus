@@ -30,7 +30,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 |---|---|
 | OCP-QP IPM, relative + abs formulation, Mehrotra P-C, conditional pure centering | done (3e) |
 | KKT two-pass Riccati, Cholesky + LQ fallback | done (3d) |
-| Iterative refinement | done, known guard flaw (SQP_PLAN §12.5) |
+| Iterative refinement | done (3d; guard fixed on the actual KKT residual, 5c) |
 | `split_step`, warm start 0/2/3, `m_safe`, `t_lam_min`, `t0_init` | done |
 | `square_root_alg` (Riccati variant 0 = classical) | done (5a) |
 | GLM / no-regularization | done |
@@ -215,9 +215,15 @@ Gate: warning-free build, full regression, FD tests green.
   `tests/hpipm/sqrt_alg_5a.cpp` solves a synthetic QP with variant 0 and 1
   and checks the converged ux/pi/lam/t agree to 1e-8 (DI N=1,3; MS N=2;
   MS NH=4 N=4).
-- **itref guard fix** (SQP_PLAN §12.5): `refine_step` shrink-guard should
-  monitor the *actual* KKT residual, not the linearized one; re-run
-  `lq_itref_3d` + mass_spring with itref on.
+- ~~**itref guard fix**~~ done (5c, SQP_PLAN §12.5): `refine_step`'s
+  shrink-guard now monitors the *actual* KKT residual at the candidate
+  iterate (iter + step) instead of the linearized residual: a correction is
+  probed on a copy of the candidate and applied to the step only when the
+  actual residual shrinks. The linearized residual (measured against the raw
+  stage Hessian) can diverge from the barrier-augmented system the stored
+  factors solve -- on mass-spring it shrank while the actual residual grew,
+  so the IPM diverged (status=2, iter=50); now `lq_itref_3d` MS cases
+  converge (status=1, iter=3) and the full regression is clean.
 - ~~**`print_level = 2`**~~ done (5b): `HpipmStatistics::print()` (hpipm.hpp)
   dumps the 21-column per-IPM-iteration table after every QP solve
   (staged / full-condensed / partial-condensed / NB==0), acados

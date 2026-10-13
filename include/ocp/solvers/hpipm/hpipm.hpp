@@ -1390,6 +1390,14 @@ public:
     /// it is 0 the pass is a no-op.  Returns the number of corrections
     /// applied (0 if `max_iter <= 0`).  The final linearized residual is
     /// left in `ws_.res_itref`.
+    ///
+    /// Shrink guard (5c, SQP_PLAN sec. 12.5): a correction is accepted
+    /// only when the *actual* KKT residual at the candidate iterate
+    /// (iter + step) shrinks.  The linearized residual is measured
+    /// against the raw stage Hessian, while the stored factors solve the
+    /// barrier-augmented (regularized) system, so the two can diverge --
+    /// on mass-spring the linearized norm shrank while the actual
+    /// residual grew and the IPM diverged (SQP_PHASE3_PLAN worklog 3d).
     int refine_step(const QpT& in, const QpSolT& iter,
                     QpSolT& step, int max_iter)
     {
@@ -1397,15 +1405,21 @@ public:
         {
             return 0;
         }
-        (void)in;
         compute_linear_residual(in, iter, step, ws_.res_itref);
         S norm[4] = { ws_.res_itref.res_g_max, ws_.res_itref.res_b_max,
                       ws_.res_itref.res_d_max, ws_.res_itref.res_m_max };
-        S maxnorm = norm[0];
-        for (int i = 1; i < 4; ++i)
-        {
-            maxnorm = std::max(maxnorm, norm[i]);
-        }
+
+        // Candidate iterate (iter + step) and its actual KKT residual;
+        // `step` is corrected in place only for accepted corrections.
+        QpSolT cand = iter;
+        combine_sol<true>(cand, step);
+        QpResT res_cand(in.N);
+        compute_residuals(in, cand, res_cand);
+        S cand_max = res_cand.res_g_max;
+        cand_max = std::max(cand_max, res_cand.res_b_max);
+        cand_max = std::max(cand_max, res_cand.res_d_max);
+        cand_max = std::max(cand_max, res_cand.res_m_max);
+
         int nref = 0;
         for (int it = 0; it < max_iter; ++it)
         {
@@ -1424,29 +1438,29 @@ public:
             }
             solve_kkt_reuse_gamma(in, iter, ws_.res_itref, ws_.sol_itref);
             mask_step(in, ws_.sol_itref);
-            combine_sol<true>(step, ws_.sol_itref);
-            compute_linear_residual(in, iter, step, ws_.res_itref);
-            S newnorm[4] = { ws_.res_itref.res_g_max,
-                             ws_.res_itref.res_b_max,
-                             ws_.res_itref.res_d_max,
-                             ws_.res_itref.res_m_max };
-            S newmax = newnorm[0];
-            for (int i = 1; i < 4; ++i)
-            {
-                newmax = std::max(newmax, newnorm[i]);
-            }
+            // Probe the candidate (iter + step + correction) before
+            // touching `step`.
+            combine_sol<true>(cand, ws_.sol_itref);
+            compute_residuals(in, cand, res_cand);
+            S newmax = res_cand.res_g_max;
+            newmax = std::max(newmax, res_cand.res_b_max);
+            newmax = std::max(newmax, res_cand.res_d_max);
+            newmax = std::max(newmax, res_cand.res_m_max);
             ++nref;
-            if (newmax >= maxnorm)
+            if (newmax >= cand_max)
             {
-                combine_sol<false>(step, ws_.sol_itref);
-                compute_linear_residual(in, iter, step, ws_.res_itref);
+                // Actual residual did not shrink: drop the correction
+                // (`step` is left untouched).
+                combine_sol<false>(cand, ws_.sol_itref);
                 break;
             }
-            norm[0] = newnorm[0];
-            norm[1] = newnorm[1];
-            norm[2] = newnorm[2];
-            norm[3] = newnorm[3];
-            maxnorm = newmax;
+            combine_sol<true>(step, ws_.sol_itref);
+            compute_linear_residual(in, iter, step, ws_.res_itref);
+            norm[0] = ws_.res_itref.res_g_max;
+            norm[1] = ws_.res_itref.res_b_max;
+            norm[2] = ws_.res_itref.res_d_max;
+            norm[3] = ws_.res_itref.res_m_max;
+            cand_max = newmax;
         }
         return nref;
     }
