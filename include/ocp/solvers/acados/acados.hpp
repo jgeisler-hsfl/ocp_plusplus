@@ -762,7 +762,11 @@ struct AcadosOptions
     double adaptive_lm_lam = 5.0;         // 3g: growth/shrink factor
     double adaptive_lm_mu_min = 1e-16;    // 3g: floor for the full-step decay
     double adaptive_lm_obj_scalar = 2.0;  // 3g: mu_eff = obj_scalar * raw_cost * mu
-    int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
+    int print_level = 0;                  // 0 = silent, 1 = per-iteration rows,
+                                          // 2 = + QP IPM stat table per QP solve
+                                          // and a globalization-failure message
+                                          // (phase 5; acados forwards a QP
+                                          // print_level of 1 for levels > 2)
     int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
     QpMode qp_mode = QpMode::kStaged;     // kStaged | kFullCondensed | kPartialCondensed
@@ -1351,6 +1355,11 @@ public:
             {
                 sol.status = gstatus;
                 stat_.status = gstatus;
+                if (opts_.print_level > 1)
+                {
+                    std::printf("\nFailure in globalization, got status %d!\n",
+                                static_cast<int>(gstatus));
+                }
                 if (opts_.print_level > 0)
                 {
                     print_sqp_iteration(iter, row);
@@ -1470,6 +1479,19 @@ private:
         }
     }
 
+    /// Phase 5: when print_level >= 2, dump the QP solver's per-IPM-iteration
+    /// table (HPIPM stat, acados ocp_qp_hpipm.c:367-373) after each QP solve.
+    /// Acados instead forwards print_level 1 to the QP solver for NLP levels
+    /// > 2; here it is driven directly by the SQP print_level.
+    template <class StatsT>
+    void print_qp_stats(const StatsT& st) const
+    {
+        if (opts_.print_level > 1)
+        {
+            st.print();
+        }
+    }
+
     /// Solve the QP of the current SQP iteration, dispatching on
     /// opts_.qp_mode (phase 1e).  kStaged: the plain staged HPIPM solve.
     /// kFullCondensed: condense the staged QP to the dense workspace, solve
@@ -1499,6 +1521,7 @@ private:
         out.ux_term.setZero();
         qp_.set_warm_start(ws);
         const Status st = qp_.solve(in, out);
+        print_qp_stats(qp_.statistics());
         qp_iter_ = qp_.statistics().iter;
         return st;
     }
@@ -1516,6 +1539,7 @@ private:
         dense_qp_out_.v.setZero();
         qp_dense_.set_warm_start(ws);
         const Status st = qp_dense_.solve(dense_qp_in_, dense_qp_out_);
+        print_qp_stats(qp_dense_.statistics());
         expand_full_sol(in, dense_qp_in_, dense_qp_out_, out);
         cond_time_ += std::chrono::duration<double>(
                           std::chrono::steady_clock::now() - t0)
@@ -1555,6 +1579,7 @@ private:
                 out.ux_term.setZero();
                 qp_.set_warm_start(ws);
                 const Status st = qp_.solve(in, out);
+                print_qp_stats(qp_.statistics());
                 qp_iter_ = qp_.statistics().iter;
                 return st;
             }
@@ -1573,6 +1598,7 @@ private:
             block_qp_.solver.set_warm_start(ws);
             const Status st =
                 block_qp_.solver.solve(block_qp_.in, block_qp_.out);
+            print_qp_stats(block_qp_.solver.statistics());
             expand_block_sol<P, NH, Eigen::Dynamic, NB>(
                 in, block_qp_.in, block_qp_.out, out);
             cond_time_ += std::chrono::duration<double>(
@@ -1592,6 +1618,7 @@ private:
             out.ux_term.setZero();
             qp_.set_warm_start(ws);
             const Status st = qp_.solve(in, out);
+            print_qp_stats(qp_.statistics());
             qp_iter_ = qp_.statistics().iter;
             return st;
         }

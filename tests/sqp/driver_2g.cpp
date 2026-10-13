@@ -430,6 +430,7 @@ void test_solve_infeasible()
 struct MockStats
 {
     int iter = 0;
+    void print() const {}  // no-op for print_qp_stats (phase 5)
 };
 
 class FailQp

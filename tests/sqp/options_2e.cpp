@@ -210,6 +210,10 @@ void test_print_iteration()
     check(tmp >= 0, "print capture file opened");
     if (tmp >= 0)
     {
+        // Flush anything the C runtime buffered for stdout onto the
+        // original fd first; otherwise the redirect below would dump the
+        // pending output of earlier tests into the capture file.
+        std::fflush(stdout);
         ::dup2(tmp, 1);
         print_sqp_iteration(0, r);   // must include header (iter % 10 == 0)
         print_sqp_iteration(1, r);   // no header

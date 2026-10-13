@@ -43,6 +43,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -153,6 +154,33 @@ struct HpipmStatistics
 
     HpipmIteration& row(int i) { return rows[i]; }
     const HpipmIteration& row(int i) const { return rows[i]; }
+
+    /// Print the per-iteration table to stdout (acados QP `print_level`
+    /// dump, ocp_qp_hpipm.c:367-373): the 21 column names, then one row
+    /// per valid iteration, 0..iter (row 0 = pre-iteration residuals);
+    /// the unused stat_max capacity rows are not printed (acados prints
+    /// stat_m x (iter + 1) via d_print_exp_tran_mat).
+    void print() const
+    {
+        std::printf("\nalpha_prim_aff\talpha_dual_aff\tmu_aff\t\tsigma\t\t"
+                    "alpha_prim\talpha_dual\tmu\t\tres_stat\tres_eq\t\t"
+                    "res_ineq\tres_comp\tdual gap\tobj\t\tlq fact\t\t"
+                    "itref pred\titref corr\tlin res stat\tlin res eq\t"
+                    "lin res ineq\tlin res comp\tsingular\n");
+        for (std::size_t i = 0; i <= static_cast<std::size_t>(iter); ++i)
+        {
+            const HpipmIteration& r = rows[i];
+            std::printf("%zu\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t"
+                        "%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%d\t%d\t%d\t"
+                        "%.3e\t%.3e\t%.3e\t%.3e\t%d\n",
+                        i, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
+                        r.sigma, r.alpha_prim, r.alpha_dual, r.mu,
+                        r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
+                        r.dual_gap, r.obj, r.lq_fact, r.itref_pred,
+                        r.itref_corr, r.lin_res_stat, r.lin_res_eq,
+                        r.lin_res_ineq, r.lin_res_comp, r.npd_reg_hess);
+        }
+    }
 };
 
 // =========================================================================

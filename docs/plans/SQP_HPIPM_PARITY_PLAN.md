@@ -42,7 +42,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | **FULL_CONDENSING** (dense QP + dense IPM) | done (Phase 1) |
 | **RTI SQP** (standard `sqp_rti`: LHS+RHS per call, full step, no line search) | done (Phase 3, `RtiSolver` in `solvers/acados/rti.hpp`; `_reversible` / `_merit` variants out of scope) |
 | **QP sensitivities** (forward/adjoint, HPIPM seed module) | done (Phase 4, staged forward + adjoint; dense / partial-condensed deferred) |
-| `print_level = 2` (detailed per-iteration printout) | partial (0/1 only) |
+| `print_level = 2` (detailed per-iteration printout) | done (5b) |
 | condensing/expansion time in statistics | done (`SqpIteration::cond_time`) |
 
 Note: the staged path (`kStaged`) solves the *uncondensed* staged QP
@@ -214,8 +214,11 @@ Gate: warning-free build, full regression, FD tests green.
 - **itref guard fix** (SQP_PLAN §12.5): `refine_step` shrink-guard should
   monitor the *actual* KKT residual, not the linearized one; re-run
   `lq_itref_3d` + mass_spring with itref on.
-- **`print_level = 2`**: detailed per-iteration dump (QP residuals, mu,
-  alpha, lq/itref columns) mirroring acados' verbose mode.
+- ~~**`print_level = 2`**~~ done (5b): `HpipmStatistics::print()` (hpipm.hpp)
+  dumps the 21-column per-IPM-iteration table after every QP solve
+  (staged / full-condensed / partial-condensed / NB==0), acados
+  `ocp_qp_hpipm.c:367-373`; globalization-failure message when
+  `print_level > 1`; test `tests/sqp/print_level_5b.cpp`.
 - **Statistics**: `cond_time` column (Phases 1/2) already adds the
   condensing/expansion timing; extend `write_csv` + `HpipmStatistics`
   accordingly.
