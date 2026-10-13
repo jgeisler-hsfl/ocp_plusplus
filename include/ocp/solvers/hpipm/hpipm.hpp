@@ -181,6 +181,37 @@ struct HpipmStatistics
                         r.lin_res_ineq, r.lin_res_comp, r.npd_reg_hess);
         }
     }
+
+    /// Write the per-iteration table to `path` as CSV: the same 21
+    /// quantities as print(), in the same column order (plus the row
+    /// index), rows 0..iter. No-op if the file cannot be opened.
+    void write_csv(const char* path) const
+    {
+        std::FILE* f = std::fopen(path, "w");
+        if (f == nullptr)
+        {
+            return;
+        }
+        std::fprintf(f, "iter,alpha_prim_aff,alpha_dual_aff,mu_aff,sigma,"
+                        "alpha_prim,alpha_dual,mu,res_stat,res_eq,"
+                        "res_ineq,res_comp,dual_gap,obj,lq_fact,itref_pred,"
+                        "itref_corr,lin_res_stat,lin_res_eq,lin_res_ineq,"
+                        "lin_res_comp,npd_reg_hess\n");
+        for (std::size_t i = 0; i <= static_cast<std::size_t>(iter); ++i)
+        {
+            const HpipmIteration& r = rows[i];
+            std::fprintf(f, "%zu,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
+                            "%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
+                            "%d,%d,%d,%.10e,%.10e,%.10e,%.10e,%d\n",
+                         i, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
+                         r.sigma, r.alpha_prim, r.alpha_dual, r.mu,
+                         r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
+                         r.dual_gap, r.obj, r.lq_fact, r.itref_pred,
+                         r.itref_corr, r.lin_res_stat, r.lin_res_eq,
+                         r.lin_res_ineq, r.lin_res_comp, r.npd_reg_hess);
+        }
+        std::fclose(f);
+    }
 };
 
 // =========================================================================

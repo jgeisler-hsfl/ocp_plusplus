@@ -229,9 +229,11 @@ Gate: warning-free build, full regression, FD tests green.
   (staged / full-condensed / partial-condensed / NB==0), acados
   `ocp_qp_hpipm.c:367-373`; globalization-failure message when
   `print_level > 1`; test `tests/sqp/print_level_5b.cpp`.
-- **Statistics**: `cond_time` column (Phases 1/2) already adds the
-  condensing/expansion timing; extend `write_csv` + `HpipmStatistics`
-  accordingly.
+- ~~**Statistics**~~ done (5d): `AcadosStatistics::write_csv` extended to
+  12 columns (adds `funnel_iter_type`, `funnel_width`, `cond_time`); new
+  `HpipmStatistics::write_csv` writes the same 21 quantities as
+  `print()` (+ row index); `options_2e` csv test updated for the new
+  header; new test `tests/sqp/stats_5d.cpp`.
 - **Docs**: README/ARCHITECTURE update (condensing modes, RTI,
   sensitivities); fix the "partial condensing (HPIPM)" comments in the
   example `example_ocp.py` files to describe the current reality (HPIPM

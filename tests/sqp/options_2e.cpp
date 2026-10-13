@@ -157,17 +157,21 @@ void test_statistics_csv()
         }
         check(lines.size() == 3, "csv has header + 2 rows");
         check(lines[0] == "iter,res_stat,res_eq,res_ineq,res_comp,"
-                          "qp_status,qp_iter,step_norm,alpha",
+                          "qp_status,qp_iter,step_norm,alpha,"
+                          "funnel_iter_type,funnel_width,cond_time",
               "csv header");
         for (int i = 0; i < 2; ++i)
         {
-            int iter_i = -1, qp_status = -1, qp_iter = -1;
-            double rs = 0.0, re = 0.0, ri = 0.0, rc = 0.0, sn = 0.0, al = 0.0;
+            int iter_i = -1, qp_status = -1, qp_iter = -1, ftype = 0;
+            double rs = 0.0, re = 0.0, ri = 0.0, rc = 0.0, sn = 0.0,
+                   al = 0.0, fw = 0.0, ct = 0.0;
             const int n = std::sscanf(lines[i + 1].c_str(),
-                                      "%d,%lf,%lf,%lf,%lf,%d,%d,%lf,%lf",
+                                      "%d,%lf,%lf,%lf,%lf,%d,%d,%lf,%lf,"
+                                      "%d,%lf,%lf",
                                       &iter_i, &rs, &re, &ri, &rc,
-                                      &qp_status, &qp_iter, &sn, &al);
-            check(n == 9, "csv row parsed");
+                                      &qp_status, &qp_iter, &sn, &al,
+                                      &ftype, &fw, &ct);
+            check(n == 12, "csv row parsed");
             check(iter_i == i, "csv iter column");
             check_close(rs, 1.5e-3, "csv res_stat");
             check_close(re, 2.5e-4, "csv res_eq");

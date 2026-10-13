@@ -289,6 +289,7 @@ add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
                         tests/sqp/rti_3d.cpp
                         tests/sqp/rti_3b.cpp
                         tests/sqp/print_level_5b.cpp
+                        tests/sqp/stats_5d.cpp
                         ${MC_MODEL_C})
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE ${OCP_WARN_FLAGS})

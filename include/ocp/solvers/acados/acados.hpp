@@ -838,21 +838,26 @@ struct AcadosStatistics
         ++iter;
     }
 
-    /// Write statistics to `path` as CSV (header + one row per iteration).
-    /// No-op if the file cannot be opened.
+    /// Write statistics to `path` as CSV (header + one row per iteration;
+    /// columns mirror the SqpIteration fields, incl. the funnel accept
+    /// type / width and the condense + expand wall clock). No-op if the
+    /// file cannot be opened.
     void write_csv(const char* path) const
     {
         std::FILE* f = std::fopen(path, "w");
         if (f == nullptr)
             return;
         std::fprintf(f, "iter,res_stat,res_eq,res_ineq,res_comp,"
-                        "qp_status,qp_iter,step_norm,alpha\n");
+                        "qp_status,qp_iter,step_norm,alpha,"
+                        "funnel_iter_type,funnel_width,cond_time\n");
         for (std::size_t i = 0; i < rows.size(); ++i)
         {
             const SqpIteration& r = rows[i];
-            std::fprintf(f, "%zu,%.10e,%.10e,%.10e,%.10e,%d,%d,%.10e,%.10e\n",
+            std::fprintf(f, "%zu,%.10e,%.10e,%.10e,%.10e,%d,%d,%.10e,%.10e,"
+                            "%d,%.10e,%.10e\n",
                          i, r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
-                         r.qp_status, r.qp_iter, r.step_norm, r.alpha);
+                         r.qp_status, r.qp_iter, r.step_norm, r.alpha,
+                         r.funnel_iter_type, r.funnel_width, r.cond_time);
         }
         std::fclose(f);
     }
