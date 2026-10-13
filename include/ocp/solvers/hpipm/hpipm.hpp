@@ -349,6 +349,14 @@ public:
         // mode-1 Cholesky auto-switch fires, stay on LQ for the rest of the
         // solve. Reset in solve().
         bool force_lq = false;
+        // true when the KKT factors currently stored in L_* / P_* came from
+        // a classical (non-square-root) backward factorization
+        // (square_root_alg = 0): L_* then holds Lw in the (w,w) corner and
+        // Lp = chol(P) in the (x,x) corner (not a full Mtilde factor), so
+        // the reduced / forward passes must use the block-elimination
+        // (classical) forms.  Set by backward_factor_stage /
+        // backward_factor_stage_lq; read by the reduced / forward passes.
+        bool factor_classic = false;
         // LQ mode actually used at the current IPM iteration (stat col 13).
         int last_lq_fact = 0;
         // iterative-refinement scratch (3d): the linearized residual and the
@@ -448,8 +456,10 @@ public:
         S rm_tau = res_m_tau(in, ws_.res);
         fill_stat_residuals(stat_.row(0), ws_.res);
 
-        // 3d: per-solve latches for the reg ladder + LQ auto-switch
+        // 3d: per-solve latches for the reg ladder + LQ auto-switch; 5a:
+        // factor-type flag (set by the backward factor passes)
         ws_.force_lq = false;
+        ws_.factor_classic = false;
         ws_.preg_last = S(opts_.reg_prim);
 
         QpSolT step(N);
@@ -2431,6 +2441,7 @@ private:
         ws_.alpha_prim = S(1);
         ws_.alpha_dual = S(1);
         ws_.force_lq = false;
+        ws_.factor_classic = false;
         ws_.preg_last = S(opts_.reg_prim);
 
         // pre-iteration residuals (stat row 0) + initial mu
@@ -2996,6 +3007,52 @@ private:
              iter.lam_term, iter.t_term, res.res_d_term, res.res_m_term);
     }
 
+    /// Explicit forward substitution: x = L^{-1} b for a lower-triangular
+    /// L and a (possibly multi-column) RHS b.  Loops instead of Eigen's
+    /// triangular solver (same GCC 13 -O2 maybe-uninitialized workaround as
+    /// reduce_one_stage / forward_one_stage).
+    template <class Lm, class Bm>
+    static Bm tri_forward(const Lm& L, const Bm& b)
+    {
+        const int n = static_cast<int>(b.rows());
+        Bm x;
+        for (int col = 0; col < b.cols(); ++col)
+        {
+            for (int i = 0; i < n; ++i)
+            {
+                S acc = b(i, col);
+                for (int j = 0; j < i; ++j)
+                {
+                    acc -= L(i, j) * x(j, col);
+                }
+                x(i, col) = acc / L(i, i);
+            }
+        }
+        return x;
+    }
+
+    /// Explicit backward substitution: x = L^{-T} b for a lower-triangular
+    /// L (i.e. the transpose solve) and a (possibly multi-column) RHS b.
+    template <class Lm, class Bm>
+    static Bm tri_backward(const Lm& L, const Bm& b)
+    {
+        const int n = static_cast<int>(b.rows());
+        Bm x;
+        for (int col = 0; col < b.cols(); ++col)
+        {
+            for (int i = n - 1; i >= 0; --i)
+            {
+                S acc = b(i, col);
+                for (int j = i + 1; j < n; ++j)
+                {
+                    acc -= L(j, i) * x(j, col);
+                }
+                x(i, col) = acc / L(i, i);
+            }
+        }
+        return x;
+    }
+
     /// Factor one stage (backward): form Mtilde_k = M_k + D_k' P_{k+1} D_k
     /// in (u;s;x) order, Cholesky it, and read off P_k = L_k(x,x)' L_k(x,x).
     /// Returns false if the Cholesky is singular. NU / NX / NSK are the
@@ -3045,6 +3102,90 @@ private:
         l_usx_out = llt.matrixL();
         const auto lxx = l_usx_out.block(nw, nw, NX, NX);
         p_out = lxx * lxx.transpose();
+        return true;
+    }
+
+    /// Classical (non-square-root) Riccati factor for one stage (HPIPM
+    /// `square_root_alg = 0`, x_ocp_qp_kkt.c:997-1108): Mtilde_k is built
+    /// exactly as in factor_one_stage, but instead of square-rooting the
+    /// whole (u;s;x) matrix, only the leading (u;s) block Mww is
+    /// Cholesky-factored (Lw) and the Riccati state Hessian is the
+    /// explicit Schur complement
+    ///     P = Mxx - Mxw Mww^{-1} Mwx,
+    /// which equals the square-root variant's P = Lxx Lxx' (both are the
+    /// Schur complement of Mww in Mtilde).  Storage in l_usx_out: Lw in
+    /// the (w,w) corner, Lp = chol(P) in the (x,x) corner, cross corners
+    /// zero — not a full factor of Mtilde, so the reduced / forward
+    /// passes must use the classical block-elimination forms (5a).
+    /// m_usx_out keeps the full Mtilde (needed there for Mxw / Mwx).
+    /// Returns false if the Mww or P Cholesky is singular (the caller
+    /// runs the reg-primal ladder).
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Ba,
+              class IdxLo, class IdxHi>
+    bool factor_one_stage_classic(bool has_dyn, const H& hess, const Dc& dc,
+                                  const Dv& gamma, const Dv& Gamma,
+                                  const Ba* ba, detail::QpLayout lay,
+                                  const IdxLo& idxs_lo, const IdxHi& idxs_hi,
+                                  S reg, const P_first_t& p_next,
+                                  H& m_usx_out, H& l_usx_out,
+                                  P_first_t& p_out)
+    {
+        (void)gamma;
+        using Ss = typename H::Scalar;
+        constexpr int nvar = H::RowsAtCompileTime;
+        constexpr int nw = NU + NSK;
+        const auto c = usx_build_side_dc(dc, Gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        H m_nat = hess + c.transpose() * (Gamma.asDiagonal() * c);
+        H m_usx = usx_permute_mat(m_nat, NU, NX, NSK);
+        for (int i = 0; i < NU; ++i)
+        {
+            m_usx(i, i) += reg;
+        }
+        for (int i = 0; i < NX; ++i)
+        {
+            m_usx(nw + i, nw + i) += reg;
+        }
+        if (has_dyn)
+        {
+            Eigen::Matrix<Ss, NX, nvar> dk;
+            dk.setZero();
+            if (NU > 0)
+            {
+                dk.block(0, 0, NX, NU) = ba->block(0, 0, NX, NU);
+            }
+            dk.block(0, nw, NX, NX) = ba->block(0, NU, NX, NX);
+            m_usx += dk.transpose() * p_next * dk;
+        }
+        m_usx_out = m_usx;
+        l_usx_out.setZero();
+        if constexpr (nw > 0)
+        {
+            using Wm = Eigen::Matrix<Ss, nw, nw>;
+            using Wx = Eigen::Matrix<Ss, nw, NX>;
+            const Wm mww = m_usx.topLeftCorner(nw, nw);
+            Eigen::LLT<Wm> lltw(mww);
+            if (lltw.info() != Eigen::Success)
+            {
+                return false;
+            }
+            const Wm lw = lltw.matrixL();
+            l_usx_out.topLeftCorner(nw, nw) = lw;
+            const Wx mwx = m_usx.block(0, nw, nw, NX);
+            const Wx mww_inv_mwx = tri_backward(lw, tri_forward(lw, mwx));
+            p_out = m_usx.block(nw, nw, NX, NX)
+                    - m_usx.block(nw, 0, NX, nw) * mww_inv_mwx;
+        }
+        else
+        {
+            p_out = m_usx;
+        }
+        Eigen::LLT<P_first_t> llt_p(p_out);
+        if (llt_p.info() != Eigen::Success)
+        {
+            return false;
+        }
+        l_usx_out.block(nw, nw, NX, NX) = llt_p.matrixL();
         return true;
     }
 
@@ -3221,6 +3362,61 @@ private:
         q_out = -rx + lxm * z;
     }
 
+    /// Classical (non-square-root) variant of reduce_one_stage (5a): the
+    /// rtilde reduction is identical (P-based); the costate offset uses the
+    /// block-elimination form q = -rx + Mxw Mww^{-1} rw (== L(x,w) L(w,w)^{-1}
+    /// rw of the square-root variant, where Lw is the (w,w) corner of l_usx
+    /// and m_usx carries Mxw).
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Rg,
+              class Rb, class Ba, class IdxLo, class IdxHi>
+    void reduce_one_stage_classic(bool has_dyn, const H& hess, const Dc& dc,
+                                  const Dv& gamma, const Rg& res_g,
+                                  const Rb* res_b, const Ba* ba,
+                                  detail::QpLayout lay,
+                                  const IdxLo& idxs_lo, const IdxHi& idxs_hi,
+                                  const P_first_t& p_next, const Pi_t& q_next,
+                                  const H& m_usx, const H& l_usx,
+                                  Rg& rtilde_out, Pi_t& q_out)
+    {
+        (void)hess;
+        using Ss = typename H::Scalar;
+        constexpr int nvar = H::RowsAtCompileTime;
+        constexpr int nw = NU + NSK;
+        const auto c = usx_build_side_dc(dc, gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        Rg r0_nat = -res_g - c.transpose() * gamma;
+        Rg rtilde = usx_permute_vec(r0_nat, NU, NX, NSK);
+        if (has_dyn)
+        {
+            Eigen::Matrix<Ss, NX, nvar> dk;
+            dk.setZero();
+            if (NU > 0)
+            {
+                dk.block(0, 0, NX, NU) = ba->block(0, 0, NX, NU);
+            }
+            dk.block(0, nw, NX, NX) = ba->block(0, NU, NX, NX);
+            const Pi_t term = p_next * (*res_b) + q_next;
+            rtilde -= dk.transpose() * term;
+        }
+        rtilde_out = rtilde;
+        using Wm = Eigen::Matrix<Ss, nw, nw>;
+        using Wv = Eigen::Matrix<Ss, nw, 1>;
+        using Xv = Eigen::Matrix<Ss, NX, 1>;
+        const Xv rx = rtilde.tail(NX);
+        if constexpr (nw > 0)
+        {
+            const Wm lw = l_usx.topLeftCorner(nw, nw);
+            const Wv rw = rtilde.head(nw);
+            const Wv z = tri_backward(lw, tri_forward(lw, rw));
+            const Eigen::Matrix<Ss, NX, nw> m_xw = m_usx.block(nw, 0, NX, nw);
+            q_out = -rx + m_xw * z;
+        }
+        else
+        {
+            q_out = -rx;
+        }
+    }
+
     /// Forward solve for one stage: dz_k = Mtilde_k^{-1}(rtilde_k + e_x
     /// dpi_{k-1}) and (when a costate exists) dpi_k = P_{k+1}(D_k dz_k +
     /// res_b_k) + q_{k+1}.
@@ -3282,6 +3478,82 @@ private:
         }
     }
 
+    /// Classical (non-square-root) forward pass for one stage (5a, HPIPM
+    /// square_root_alg = 0): dz = Mtilde^{-1} b by block elimination with
+    /// Lw = chol(Mww) (the (w,w) corner of l_usx), Lp = chol(P) (the (x,x)
+    /// corner) and the stage matrix m_usx:
+    ///     dx = P^{-1} (bx - Mxw Mww^{-1} bw)
+    ///     dw = Mww^{-1} (bw - Mwx dx)
+    /// which is the same step as the square-root two-triangular-solve
+    /// (forward_one_stage) — the factorization strategy differs, not the
+    /// linear system.  The costate update (P / q based) is unchanged.
+    template <int NU, int NX, int NSK, class H, class Rg, class Rb, class Ba>
+    void forward_one_stage_classic(bool has_dyn, const H& l_usx,
+                                   const H& m_usx, const Rg& rtilde,
+                                   const Pi_t& dpi_prev,
+                                   const P_first_t& p_next,
+                                   const Pi_t& q_next, const Rb* res_b,
+                                   const Ba* ba, Rg& dz_usx_out,
+                                   Pi_t* dpi_out)
+    {
+        (void)has_dyn;
+        using Ss = typename H::Scalar;
+        constexpr int nw = NU + NSK;
+        Rg b = rtilde;
+        for (int i = 0; i < NX; ++i)
+        {
+            b(nw + i) += dpi_prev(i);
+        }
+        using Wm = Eigen::Matrix<Ss, nw, nw>;
+        using Wv = Eigen::Matrix<Ss, nw, 1>;
+        using Xv = Eigen::Matrix<Ss, NX, 1>;
+        Xv dx;
+        if constexpr (nw > 0)
+        {
+            const Wm lw = l_usx.topLeftCorner(nw, nw);
+            using Xm = Eigen::Matrix<Ss, NX, NX>;
+            const Xm lp = l_usx.block(nw, nw, NX, NX);
+            const Wv bw = b.head(nw);
+            const Xv bx = b.tail(NX);
+            const Wv y = tri_backward(lw, tri_forward(lw, bw));
+            const Eigen::Matrix<Ss, NX, nw> m_xw = m_usx.block(nw, 0, NX, nw);
+            const Xv rx = bx - m_xw * y;
+            dx = tri_backward(lp, tri_forward(lp, rx));
+            const Eigen::Matrix<Ss, nw, NX> m_wx = m_usx.topRightCorner(nw, NX);
+            // Materialize the RHS before the triangular solve: tri_* deduce
+            // the vector type from the argument, and an Eigen expression
+            // (bw - Mwx dx) cannot be default-constructed.
+            const Wv rw2 = bw - m_wx * dx;
+            const Wv dw = tri_backward(lw, tri_forward(lw, rw2));
+            dz_usx_out.head(nw) = dw;
+        }
+        else
+        {
+            // nw = 0: Mtilde is the (x,x) block itself and l_usx holds
+            // Lp = chol(P) over its whole extent.
+            dx = tri_backward(l_usx, tri_forward(l_usx, b));
+        }
+        dz_usx_out.tail(NX) = dx;
+        if (dpi_out != nullptr)
+        {
+            Pi_t dnext;
+            for (int i = 0; i < NX; ++i)
+            {
+                Ss acc = (*res_b)(i);
+                for (int j = 0; j < NU; ++j)
+                {
+                    acc += (*ba)(i, j) * dz_usx_out(j);
+                }
+                for (int j = 0; j < NX; ++j)
+                {
+                    acc += (*ba)(i, NU + j) * dz_usx_out(NU + NSK + j);
+                }
+                dnext(i) = acc;
+            }
+            *dpi_out = p_next * dnext + q_next;
+        }
+    }
+
     /// Closed-form slack / multiplier step for one stage:
     /// dt_i = C_i dz_k - res_d_i and
     /// dlam_i = d_mask_i (-(res_m_i + lam_i dt_i)/t_i).
@@ -3308,36 +3580,68 @@ private:
 
     // Stage dispatch wrappers (first / path / term).
 
+    /// Cholesky backward factor for one stage, dispatched on
+    /// `opts_.square_root_alg`: 1 (default) = square-root Riccati
+    /// (factor_one_stage, full Cholesky of Mtilde_k); 0 = classical Riccati
+    /// (factor_one_stage_classic, Cholesky of the (u;s) block + explicit
+    /// Schur-complement P, x_ocp_qp_kkt.c:997).  Records the variant in
+    /// `ws_.factor_classic` for the reduced / forward passes.
     bool backward_factor_stage(int k, const QpT& in, S reg)
     {
         const int N = in.N;
+        const bool classic = !opts_.square_root_alg;
+        ws_.factor_classic = classic;
         if (k == 0)
         {
             const auto& st = in.first;
             const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
-            return factor_one_stage<D::nu, D::nx, D::nslack_first>(
-                true, st.hess, st.DC, ws_.gamma_first, ws_.Gamma_first,
-                &st.BA, D::lay_first, D::idxs_lo_first, D::idxs_hi_first, reg,
-                p_next, ws_.M_first, ws_.L_first, ws_.P_first);
+            const bool ok = classic
+                ? factor_one_stage_classic<D::nu, D::nx, D::nslack_first>(
+                      true, st.hess, st.DC, ws_.gamma_first, ws_.Gamma_first,
+                      &st.BA, D::lay_first, D::idxs_lo_first,
+                      D::idxs_hi_first, reg, p_next, ws_.M_first,
+                      ws_.L_first, ws_.P_first)
+                : factor_one_stage<D::nu, D::nx, D::nslack_first>(
+                      true, st.hess, st.DC, ws_.gamma_first,
+                      ws_.Gamma_first, &st.BA, D::lay_first,
+                      D::idxs_lo_first, D::idxs_hi_first, reg, p_next,
+                      ws_.M_first, ws_.L_first, ws_.P_first);
+            return ok;
         }
         if (k == N)
         {
             const auto& st = in.term;
             const P_first_t p_next = P_first_t::Zero();
-            return factor_one_stage<0, D::nx, D::nslack_term>(
-                false, st.hess, st.DC, ws_.gamma_term, ws_.Gamma_term,
-                static_cast<const Ba_t*>(nullptr), D::lay_term,
-                D::idxs_lo_term, D::idxs_hi_term, reg, p_next, ws_.M_term,
-                ws_.L_term, ws_.P_term);
+            const bool ok = classic
+                ? factor_one_stage_classic<0, D::nx, D::nslack_term>(
+                      false, st.hess, st.DC, ws_.gamma_term, ws_.Gamma_term,
+                      static_cast<const Ba_t*>(nullptr), D::lay_term,
+                      D::idxs_lo_term, D::idxs_hi_term, reg, p_next,
+                      ws_.M_term, ws_.L_term, ws_.P_term)
+                : factor_one_stage<0, D::nx, D::nslack_term>(
+                      false, st.hess, st.DC, ws_.gamma_term, ws_.Gamma_term,
+                      static_cast<const Ba_t*>(nullptr), D::lay_term,
+                      D::idxs_lo_term, D::idxs_hi_term, reg, p_next,
+                      ws_.M_term, ws_.L_term, ws_.P_term);
+            return ok;
         }
         const auto& st = in.path[k - 1];
         const P_first_t& p_next =
             (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
-        return factor_one_stage<D::nu, D::nx, D::nslack_path>(
-            true, st.hess, st.DC, ws_.gamma_path[k - 1],
-            ws_.Gamma_path[k - 1], &st.BA, D::lay_path, D::idxs_lo_path,
-            D::idxs_hi_path, reg, p_next, ws_.M_path[k - 1],
-            ws_.L_path[k - 1], ws_.P_path[k - 1]);
+        const bool ok = classic
+            ? factor_one_stage_classic<D::nu, D::nx, D::nslack_path>(
+                  true, st.hess, st.DC, ws_.gamma_path[k - 1],
+                  ws_.Gamma_path[k - 1], &st.BA, D::lay_path,
+                  D::idxs_lo_path, D::idxs_hi_path, reg, p_next,
+                  ws_.M_path[k - 1], ws_.L_path[k - 1],
+                  ws_.P_path[k - 1])
+            : factor_one_stage<D::nu, D::nx, D::nslack_path>(
+                  true, st.hess, st.DC, ws_.gamma_path[k - 1],
+                  ws_.Gamma_path[k - 1], &st.BA, D::lay_path,
+                  D::idxs_lo_path, D::idxs_hi_path, reg, p_next,
+                  ws_.M_path[k - 1], ws_.L_path[k - 1],
+                  ws_.P_path[k - 1]);
+        return ok;
     }
 
     /// LQ variant of backward_factor_stage (3d): fills L_k / P_k via the
@@ -3347,6 +3651,10 @@ private:
     bool backward_factor_stage_lq(int k, const QpT& in, S reg,
                                   bool lh_valid)
     {
+        // The LQ path stores a full Mtilde factor (L L' = Mtilde), like the
+        // square-root path, so the reduced / forward passes use the
+        // full-factor forms.
+        ws_.factor_classic = false;
         const int N = in.N;
         Eigen::Matrix<S, D::nx, D::nx> lnext_xx;
         lnext_xx.setZero();
@@ -3389,6 +3697,38 @@ private:
             ws_.Lh_path[k - 1], ws_.L_path[k - 1], ws_.P_path[k - 1]);
     }
 
+    /// One reduced-backward stage, dispatched on the stored factor type
+    /// (`ws_.factor_classic`): the classical factors (Lw in the (w,w)
+    /// corner, no full Mtilde factor) need the block-elimination q form
+    /// with the stage matrix M, the full-factor variants (square-root /
+    /// LQ) use the L-based form.
+    template <int NU, int NX, int NSK, class H, class Dc, class Dv, class Rg,
+              class Rb, class Ba, class IdxLo, class IdxHi>
+    void reduce_stage(bool has_dyn, const H& hess, const Dc& dc,
+                      const Dv& gamma, const Rg& res_g, const Rb* res_b,
+                      const Ba* ba, detail::QpLayout lay,
+                      const IdxLo& idxs_lo, const IdxHi& idxs_hi,
+                      const P_first_t& p_next, const Pi_t& q_next,
+                      const H& m_usx, const H& l_usx, Rg& rtilde_out,
+                      Pi_t& q_out)
+    {
+        if (ws_.factor_classic)
+        {
+            reduce_one_stage_classic<NU, NX, NSK>(has_dyn, hess, dc, gamma,
+                                                  res_g, res_b, ba, lay,
+                                                  idxs_lo, idxs_hi, p_next,
+                                                  q_next, m_usx, l_usx,
+                                                  rtilde_out, q_out);
+        }
+        else
+        {
+            reduce_one_stage<NU, NX, NSK>(has_dyn, hess, dc, gamma, res_g,
+                                          res_b, ba, lay, idxs_lo, idxs_hi,
+                                          p_next, q_next, l_usx, rtilde_out,
+                                          q_out);
+        }
+    }
+
     void backward_reduced_stage(int k, const QpT& in,
                                 const QpResT& res)
     {
@@ -3398,23 +3738,23 @@ private:
             const auto& st = in.first;
             const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
             const Pi_t& q_next = (N == 1) ? ws_.q_term : ws_.q_path[0];
-            reduce_one_stage<D::nu, D::nx, D::nslack_first>(
+            reduce_stage<D::nu, D::nx, D::nslack_first>(
                 true, st.hess, st.DC, ws_.gamma_first, res.res_g_first,
                 &res.res_b[0], &st.BA, D::lay_first, D::idxs_lo_first,
-                D::idxs_hi_first, p_next, q_next, ws_.L_first,
-                ws_.rtilde_first, ws_.q_first);
+                D::idxs_hi_first, p_next, q_next, ws_.M_first,
+                ws_.L_first, ws_.rtilde_first, ws_.q_first);
         }
         else if (k == N)
         {
             const auto& st = in.term;
             const P_first_t p_next = P_first_t::Zero();
             const Pi_t q_next = Pi_t::Zero();
-            reduce_one_stage<0, D::nx, D::nslack_term>(
+            reduce_stage<0, D::nx, D::nslack_term>(
                 false, st.hess, st.DC, ws_.gamma_term, res.res_g_term,
                 static_cast<const Pi_t*>(nullptr),
                 static_cast<const Ba_t*>(nullptr), D::lay_term,
-                D::idxs_lo_term, D::idxs_hi_term, p_next, q_next, ws_.L_term,
-                ws_.rtilde_term, ws_.q_term);
+                D::idxs_lo_term, D::idxs_hi_term, p_next, q_next,
+                ws_.M_term, ws_.L_term, ws_.rtilde_term, ws_.q_term);
         }
         else
         {
@@ -3422,12 +3762,38 @@ private:
             const P_first_t& p_next =
                 (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
             const Pi_t& q_next = (k + 1 == N) ? ws_.q_term : ws_.q_path[k];
-            reduce_one_stage<D::nu, D::nx, D::nslack_path>(
+            reduce_stage<D::nu, D::nx, D::nslack_path>(
                 true, st.hess, st.DC, ws_.gamma_path[k - 1],
                 res.res_g_path[k - 1], &res.res_b[k], &st.BA, D::lay_path,
                 D::idxs_lo_path, D::idxs_hi_path, p_next, q_next,
-                ws_.L_path[k - 1], ws_.rtilde_path[k - 1],
-                ws_.q_path[k - 1]);
+                ws_.M_path[k - 1], ws_.L_path[k - 1],
+                ws_.rtilde_path[k - 1], ws_.q_path[k - 1]);
+        }
+    }
+
+    /// One forward stage, dispatched on the stored factor type
+    /// (`ws_.factor_classic`): the classical factors need the block
+    /// elimination with the stage matrix M and Lw / Lp, the full-factor
+    /// variants (square-root / LQ) use two triangular solves with L.
+    template <int NU, int NX, int NSK, class H, class Rg, class Rb, class Ba>
+    void forward_step(bool has_dyn, const H& m_usx, const H& l_usx,
+                      const Rg& rtilde, const Pi_t& dpi_prev,
+                      const P_first_t& p_next, const Pi_t& q_next,
+                      const Rb* res_b, const Ba* ba, Rg& dz_usx_out,
+                      Pi_t* dpi_out)
+    {
+        if (ws_.factor_classic)
+        {
+            forward_one_stage_classic<NU, NX, NSK>(has_dyn, l_usx, m_usx,
+                                                   rtilde, dpi_prev, p_next,
+                                                   q_next, res_b, ba,
+                                                   dz_usx_out, dpi_out);
+        }
+        else
+        {
+            forward_one_stage(has_dyn, l_usx, rtilde, dpi_prev, p_next,
+                              q_next, res_b, ba, NSK, NU, NX, dz_usx_out,
+                              dpi_out);
         }
     }
 
@@ -3446,21 +3812,20 @@ private:
             const P_first_t& p_next = (N == 1) ? ws_.P_term : ws_.P_path[0];
             const Pi_t& q_next = (N == 1) ? ws_.q_term : ws_.q_path[0];
             v_first_t dz_usx;
-            forward_one_stage(true, ws_.L_first, ws_.rtilde_first, dpi_prev,
-                              p_next, q_next, &res.res_b[0], &st.BA,
-                              D::nslack_first, D::nu, D::nx, dz_usx,
-                              &step.pi[0]);
+            forward_step<D::nu, D::nx, D::nslack_first>(
+                true, ws_.M_first, ws_.L_first, ws_.rtilde_first, dpi_prev,
+                p_next, q_next, &res.res_b[0], &st.BA, dz_usx, &step.pi[0]);
             step.ux_first = usx_unpermute_vec(dz_usx, D::nu, D::nx,
                                               D::nslack_first);
         }
         else if (k == N)
         {
             v_term_t dz_usx;
-            forward_one_stage(false, ws_.L_term, ws_.rtilde_term, dpi_prev,
-                              P_first_t::Zero(), Pi_t::Zero(),
-                              static_cast<const Pi_t*>(nullptr),
-                              static_cast<const Ba_t*>(nullptr),
-                              D::nslack_term, 0, D::nx, dz_usx, nullptr);
+            forward_step<0, D::nx, D::nslack_term>(
+                false, ws_.M_term, ws_.L_term, ws_.rtilde_term, dpi_prev,
+                P_first_t::Zero(), Pi_t::Zero(),
+                static_cast<const Pi_t*>(nullptr),
+                static_cast<const Ba_t*>(nullptr), dz_usx, nullptr);
             step.ux_term = usx_unpermute_vec(dz_usx, 0, D::nx,
                                              D::nslack_term);
         }
@@ -3471,10 +3836,10 @@ private:
                 (k + 1 == N) ? ws_.P_term : ws_.P_path[k];
             const Pi_t& q_next = (k + 1 == N) ? ws_.q_term : ws_.q_path[k];
             v_path_t dz_usx;
-            forward_one_stage(true, ws_.L_path[k - 1],
-                              ws_.rtilde_path[k - 1], dpi_prev, p_next,
-                              q_next, &res.res_b[k], &st.BA, D::nslack_path,
-                              D::nu, D::nx, dz_usx, &step.pi[k]);
+            forward_step<D::nu, D::nx, D::nslack_path>(
+                true, ws_.M_path[k - 1], ws_.L_path[k - 1],
+                ws_.rtilde_path[k - 1], dpi_prev, p_next, q_next,
+                &res.res_b[k], &st.BA, dz_usx, &step.pi[k]);
             step.ux_path[k - 1] =
                 usx_unpermute_vec(dz_usx, D::nu, D::nx, D::nslack_path);
         }

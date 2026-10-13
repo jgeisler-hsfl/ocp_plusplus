@@ -32,7 +32,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | KKT two-pass Riccati, Cholesky + LQ fallback | done (3d) |
 | Iterative refinement | done, known guard flaw (SQP_PLAN §12.5) |
 | `split_step`, warm start 0/2/3, `m_safe`, `t_lam_min`, `t0_init` | done |
-| `square_root_alg` (Riccati variant 0 = classical) | **declared in `HpipmOptions` but never read — classical path missing** |
+| `square_root_alg` (Riccati variant 0 = classical) | done (5a) |
 | GLM / no-regularization | done |
 | Merit backtracking + funnel + full-step dual + sufficient descent | done (2d, 3i) |
 | Second-order correction pre-pass | done (3j) |
@@ -206,11 +206,15 @@ Gate: warning-free build, full regression, FD tests green.
 
 ## 8. Phase 5 — remaining options and polish
 
-- **`square_root_alg`**: implement Riccati variant 0 (classical, non
-  square-root) in `backward_factor_stage` / `forward_stage` — the option is
-  currently declared in `HpipmOptions` but never read; add a unit test
-  comparing variant 0 vs 1 on a synthetic QP (they must agree to solver
-  tolerance).
+- ~~**`square_root_alg`**~~ done (5a): classical Riccati variant 0
+  implemented in `factor_one_stage_classic` / `reduce_one_stage_classic` /
+  `forward_one_stage_classic` (hpipm.hpp), dispatched via
+  `ws_.factor_classic` in `backward_factor_stage` / `backward_reduced_stage`
+  / `forward_stage` (LQ path always uses the full-factor forms); the option
+  is now read and changes the KKT factorization. Test
+  `tests/hpipm/sqrt_alg_5a.cpp` solves a synthetic QP with variant 0 and 1
+  and checks the converged ux/pi/lam/t agree to 1e-8 (DI N=1,3; MS N=2;
+  MS NH=4 N=4).
 - **itref guard fix** (SQP_PLAN §12.5): `refine_step` shrink-guard should
   monitor the *actual* KKT residual, not the linearized one; re-run
   `lq_itref_3d` + mass_spring with itref on.
