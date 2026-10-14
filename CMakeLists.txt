@@ -250,8 +250,9 @@ add_executable(qp_unit tests/hpipm/qp_unit.cpp tests/hpipm/residuals_1b.cpp
                      tests/hpipm/split_step_3b.cpp
                      tests/hpipm/lq_itref_3d.cpp
                      tests/hpipm/abs_form_3e.cpp
-                     tests/hpipm/seed_4d.cpp
-                     tests/hpipm/sqrt_alg_5a.cpp)
+                      tests/hpipm/seed_4d.cpp
+                      tests/hpipm/sqrt_alg_5a.cpp
+                      tests/hpipm/dense_seed_5g.cpp)
 target_include_directories(qp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(qp_unit PRIVATE ${OCP_WARN_FLAGS})
 

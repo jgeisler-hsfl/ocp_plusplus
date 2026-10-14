@@ -183,11 +183,129 @@ void test_sens_x0_fd()
     }
 }
 
+// 5g: the same FD check with qp_mode = kFullCondensed (dense QP + dense
+// sens path, hard-equality block KKT), plus a cross-check of the dense
+// sens_x0 against the staged sens_x0 on the same base solution.
+void test_sens_x0_fd_dense()
+{
+    const std::string name = "sens_x0 dense DI N=10 ";
+    const int N = 10;
+    const double tol = 1e-6;
+    const double h = 1e-6;
+
+    DiSens p;
+    Solution<DiSens> sol = make_start(p, N);
+    AcadosOptions opts;
+    opts.qp_mode = QpMode::kFullCondensed;
+    AcadosSolver<DiSens, Eigen::Dynamic> solver(opts);
+    const Status st = solver.solve(p, sol);
+    check(st == Status::kSolved, name + " base solve kSolved (got " +
+                                      std::to_string(static_cast<int>(st)) +
+                                      ")");
+    if (st != Status::kSolved)
+    {
+        return;
+    }
+
+    // staged reference (same base iterate)
+    AcadosOptions opts_st;
+    AcadosSolver<DiSens, Eigen::Dynamic> solver_st(opts_st);
+    Solution<DiSens> sol_st = make_start(p, N);
+    check(solver_st.solve(p, sol_st) == Status::kSolved,
+          name + " staged base solve kSolved");
+
+    for (int i = 0; i < QpDim<DiSens>::nx; ++i)
+    {
+        const std::string pfx = name + " e_" + std::to_string(i);
+
+        DiSens::state_t e_i;
+        e_i.setZero();
+        e_i(i) = 1.0;
+        QpSol<DiSens, Eigen::Dynamic> dsol(N);
+        const Status ss = solver.sens_x0(p, sol, e_i, dsol);
+        check(ss == Status::kSolved, pfx + ": sens_x0 kSolved (got " +
+                                         std::to_string(static_cast<int>(ss)) +
+                                         ")");
+        if (ss != Status::kSolved)
+        {
+            continue;
+        }
+
+        // pinned initial state moves exactly by dx0
+        Eigen::VectorXd dx0_an = dsol.ux_first.segment(QpDim<DiSens>::nu,
+                                                       QpDim<DiSens>::nx);
+        check((dx0_an - e_i).cwiseAbs().maxCoeff() < 1e-12,
+              pfx + ": dx_0 == e_i (pinned initial state)");
+
+        // cross-check: dense sens vs staged sens on the same base solution
+        QpSol<DiSens, Eigen::Dynamic> dsol_st(N);
+        check(solver_st.sens_x0(p, sol_st, e_i, dsol_st) == Status::kSolved,
+              pfx + ": staged sens_x0 kSolved");
+        double xdiff = 0.0;
+        for (int k = 0; k <= N; ++k)
+        {
+            Eigen::VectorXd du_d, dx_d, du_s, dx_s;
+            ux_block(dsol, N, k, du_d, dx_d);
+            ux_block(dsol_st, N, k, du_s, dx_s);
+            xdiff = std::max(xdiff, (du_d - du_s).cwiseAbs().maxCoeff());
+            xdiff = std::max(xdiff, (dx_d - dx_s).cwiseAbs().maxCoeff());
+        }
+        check(xdiff < 1e-6, pfx + ": dense vs staged sens agree < 1e-6 (got "
+                                  + std::to_string(xdiff) + ")");
+
+        // finite differences: x0 +/- h*e_i, re-solved (dense mode)
+        DiSens pp = p;
+        pp.x0_(i) += h;
+        DiSens pm = p;
+        pm.x0_(i) -= h;
+        Solution<DiSens> sol_p = make_start(pp, N);
+        Solution<DiSens> sol_m = make_start(pm, N);
+        AcadosSolver<DiSens, Eigen::Dynamic> sp(opts);
+        AcadosSolver<DiSens, Eigen::Dynamic> sm(opts);
+        check(sp.solve(pp, sol_p) == Status::kSolved, pfx + ": FD+ kSolved");
+        check(sm.solve(pm, sol_m) == Status::kSolved, pfx + ": FD- kSolved");
+        if (failures > 0)
+        {
+            return;
+        }
+
+        double max_du = 0.0;
+        double max_dx = 0.0;
+        for (int k = 0; k <= N; ++k)
+        {
+            Eigen::VectorXd du_an, dx_an;
+            ux_block(dsol, N, k, du_an, dx_an);
+            Eigen::VectorXd dx_fd =
+                (sol_p.x[k].cast<double>() - sol_m.x[k].cast<double>()) /
+                (2.0 * h);
+            if (k < N)
+            {
+                const Eigen::VectorXd du_fd =
+                    (sol_p.u[k].cast<double>() -
+                     sol_m.u[k].cast<double>()) / (2.0 * h);
+                max_du = std::max(max_du,
+                                  (du_an - du_fd).cwiseAbs().maxCoeff());
+            }
+            max_dx = std::max(max_dx,
+                              (dx_an - dx_fd).cwiseAbs().maxCoeff());
+        }
+        check(max_du < tol, pfx + ": du/dx0 matches FD < " +
+                                std::to_string(tol) + " (got " +
+                                std::to_string(max_du) + ")");
+        check(max_dx < tol, pfx + ": dx/dx0 matches FD < " +
+                                std::to_string(tol) + " (got " +
+                                std::to_string(max_dx) + ")");
+        std::printf("  %s: max |du diff| = %.3e, max |dx diff| = %.3e\n",
+                    pfx.c_str(), max_du, max_dx);
+    }
+}
+
 }  // namespace
 
 int run_sens_x0_5f_tests()
 {
     test_sens_x0_fd();
+    test_sens_x0_fd_dense();
     if (failures == 0)
     {
         std::printf("All sens_x0 (5f) checks passed.\n");

@@ -118,6 +118,7 @@ int run_lq_itref_3d_tests();
 int run_abs_form_3e_tests();
 int run_seed_4d_tests();
 int run_sqrt_alg_5a_tests();
+int run_dense_seed_5g_tests();
 
 int main()
 {
@@ -137,6 +138,7 @@ int main()
     failures += run_abs_form_3e_tests();
     failures += run_seed_4d_tests();
     failures += run_sqrt_alg_5a_tests();
+    failures += run_dense_seed_5g_tests();
 
     if (failures == 0)
     {
