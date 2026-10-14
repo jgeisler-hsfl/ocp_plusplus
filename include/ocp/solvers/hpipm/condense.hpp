@@ -483,7 +483,12 @@ void condense_full(const Qp<P, NH>& in, DenseQp<P, NH>& out)
 /// the inhomogeneous forward simulation `x_{k+1} = BA [u_k; x_k] + b_k`.
 /// For a sensitivity STEP of a converged QP pass false: the seeded KKT
 /// enforces the homogeneous dynamics `x_{k+1} = BA [u_k; x_k]` (the seed has
-/// no `b` field), so the affine offset must not be added.
+/// no `b` field), so the affine offset must not be added.  The dynamics
+/// multipliers are recovered accordingly: for the normal (absolute) solution
+/// the sweep uses the KKT residual `(H z + g + DC' lambda)_x`; for a step it
+/// uses the linearized stationarity `(H dz + DC' dlam)_x` (the QP gradient is
+/// not part of the step equation; the solver-internal reg-primal correction
+/// is O(reg) ~ 1e-15 and is omitted).
 template <class P, int NH>
 void expand_full_sol(const Qp<P, NH>& staged, const DenseQp<P, NH>& dense,
                      const DenseQpSol<P, NH>& dsol, QpSol<P, NH>& sol,
@@ -714,8 +719,13 @@ void expand_full_sol(const Qp<P, NH>& staged, const DenseQp<P, NH>& dense,
     // ------------------------------------------------------------------
     // Dynamics multipliers: terminal seed + backward sweep
     //
+    // Normal solution (include_b = true): the KKT residual
     //   (res_g_k^{no-pi})_x = (H_k z_k + g_k)_x + DC_k,x'(lam_hi - lam_lo)
     //   (masked);  pi_{k-1} = (res_g_k^{no-pi})_x + A_k' pi_k
+    // Sensitivity step (include_b = false): the step satisfies the
+    // LINEARIZED stationarity (no g term, no solver-internal reg, which
+    // is O(reg) ~ 1e-15):
+    //   pi_{k-1} = (H_k dz_k)_x + DC_k,x'(dlam_hi - dlam_lo) + A_k' pi_k
     // ------------------------------------------------------------------
     auto res_x_ux = [&](const auto& st, const V& z, const V& lam_m,
                         const QpLayout& lay, int nrow, int xoff)
@@ -730,7 +740,13 @@ void expand_full_sol(const Qp<P, NH>& staged, const DenseQp<P, NH>& dense,
         const V Hz = st.hess * z;
         // .eval(): the returned expression must not reference the
         // lambda-local Hz / w (lifetime ends on return)
-        return (Hz.segment(xoff, nx) + st.grad.segment(xoff, nx)
+        if (include_b)
+        {
+            return (Hz.segment(xoff, nx) + st.grad.segment(xoff, nx)
+                    + st.DC.block(0, xoff, nrow, nx).transpose() * w)
+                   .eval();
+        }
+        return (Hz.segment(xoff, nx)
                 + st.DC.block(0, xoff, nrow, nx).transpose() * w)
                .eval();
     };

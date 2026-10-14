@@ -670,9 +670,11 @@ public:
     /// instance; `sol` its converged solution. The first call after a
     /// `solve()` refactors at the final iterate (HPIPM `update_fact_exit`
     /// refactor); later calls with other seeds reuse the factors.
-    /// Staged data only (Dim = QpDim<P>).
+    /// The seed must match this solver's Dim: `QpSeed<P, NH>` (staged) or
+    /// `QpSeed<P, NH, BlockQpDim<P, NB>>` (block, 5h).
+    template <class SeedT>
     Status sens_forward(const QpT& in, const QpSolT& sol,
-                        const QpSeed<P, NH>& seed, QpSolT& sens)
+                        const SeedT& seed, QpSolT& sens)
     {
         return sens_solve<false>(in, sol, seed, sens);
     }
@@ -681,9 +683,10 @@ public:
     /// x_ocp_qp_ipm.c:3455): same KKT re-solve, except the `m` seed is
     /// scaled by the converged slacks `sol.t` before the solve, and the
     /// resulting `sens.t` is scaled by 1/sol.t afterwards. Same
-    /// preconditions as `sens_forward`.
+    /// preconditions as `sens_forward` (including the seed/Dim match).
+    template <class SeedT>
     Status sens_adj(const QpT& in, const QpSolT& sol,
-                    const QpSeed<P, NH>& seed, QpSolT& sens)
+                    const SeedT& seed, QpSolT& sens)
     {
         return sens_solve<true>(in, sol, seed, sens);
     }
@@ -2668,12 +2671,14 @@ private:
     /// `Adjoint = true`: the m seed is pre-scaled by the converged slacks
     /// sol.t and the resulting sens.t is post-scaled by 1/sol.t (HPIPM
     /// SENS_ADJ). Skipped when no side is active (t is undefined there).
-    template <bool Adjoint>
+    /// Works for any Dim (staged QpDim<P> or block BlockQpDim<P, NB>;
+    /// 5h): the implementation is Dim-generic (eq rows, gamma, KKT all
+    /// derive from the solver's Dim), and the seed type is generic too —
+    /// it must be `QpSeed<P, NH, Dim>` matching this solver's Dim.
+    template <bool Adjoint, class SeedT>
     Status sens_solve(const QpT& in, const QpSolT& sol,
-                      const QpSeed<P, NH>& seed, QpSolT& sens)
+                      const SeedT& seed, QpSolT& sens)
     {
-        static_assert(std::is_same_v<Dim, QpDim<P>>,
-            "sens_forward / sens_adj: staged QP data only (Dim = QpDim<P>)");
         if (!solved_)
         {
             return Status::kQpFailure;

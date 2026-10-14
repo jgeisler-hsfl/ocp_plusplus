@@ -1087,11 +1087,11 @@ public:
     /// `dsol` carries the QP-space response (ux = (u; x; s) per stage,
     /// pi, lam, t), i.e. d(x*, u*)/dx0 * dx0 to first order.
     ///
-    /// Requires `P::fixed_initial_state` and `qp_mode` of kStaged or
-    /// kFullCondensed (kPartialCondensed inherits the staged sens path only
-    /// once BlockQpDim exposes eq rows; out of scope here); returns
-    /// kAborted otherwise. The internal QP solve needs kSolved or
-    /// kMaxIterations (same policy as the driver).
+    /// Requires `P::fixed_initial_state`; supports `qp_mode` kStaged,
+    /// kFullCondensed (5g) and kPartialCondensed (5h: the block QP inherits
+    /// the staged 5f hard-equality KKT sens path through BlockQpDim's eq
+    /// rows).  The internal QP solve needs kSolved or kMaxIterations (same
+    /// policy as the driver); kAborted is returned for other modes.
     Status sens_x0(const P& problem, const Solution<P, NH>& sol,
                    const typename P::state_t& dx0, QpSol<P, NH>& dsol)
     {
@@ -1099,11 +1099,12 @@ public:
                       "AcadosSolver::sens_x0: requires "
                       "fixed_initial_state");
         if (opts_.qp_mode != QpMode::kStaged
-                && opts_.qp_mode != QpMode::kFullCondensed)
+                && opts_.qp_mode != QpMode::kFullCondensed
+                && opts_.qp_mode != QpMode::kPartialCondensed)
         {
             std::fprintf(stderr,
-                         "AcadosSolver::sens_x0: kStaged / kFullCondensed "
-                         "only\n");
+                         "AcadosSolver::sens_x0: kStaged / kFullCondensed / "
+                         "kPartialCondensed only\n");
             return Status::kAborted;
         }
         const int N = sol.N;
@@ -1119,7 +1120,22 @@ public:
         {
             return sens_x0_full_condensed(q, N, dx0, dsol);
         }
+        if (opts_.qp_mode == QpMode::kPartialCondensed)
+        {
+            return sens_x0_partial_condensed(q, N, dx0, dsol);
+        }
+        return sens_x0_staged(q, N, dx0, dsol);
+    }
 
+    /// kStaged `sens_x0` (5f): re-solve the QP at the converged iterate on
+    /// a throwaway solver, then one seeded KKT re-solve.  Only the x_0 pin
+    /// rows are perturbed: the stage-0 dynamics matrix (BA) carries the x_0
+    /// column, so the pin-row perturbation alone propagates dx0 through the
+    /// trajectory (seeding b[0] with df_dx*dx0 would double-count it).
+    Status sens_x0_staged(const Qp<P, NH>& q, int N,
+                          const typename P::state_t& dx0,
+                          QpSol<P, NH>& dsol)
+    {
         QpSolver sens_qp;
         QpSol<P, NH> qsol(N);
         const Status qs = sens_qp.solve(q, qsol);
@@ -1129,10 +1145,6 @@ public:
         }
 
         QpSeed<P, NH> seed(N);
-        // Only the x_0 pin rows are perturbed: the stage-0 dynamics matrix
-        // (BA) carries the x_0 column, so the pin-row perturbation alone
-        // propagates dx0 through the trajectory. Seeding b[0] with
-        // df_dx*dx0 as well would double-count the perturbation.
         const auto& lay = D::lay_first;
         for (int r = 0; r < D::nx; ++r)
         {
@@ -1140,6 +1152,69 @@ public:
             seed.d_first(lay.side_hi(r)) -= dx0(r);
         }
         return sens_qp.sens_forward(q, qsol, seed, dsol);
+    }
+
+    /// kPartialCondensed `sens_x0` (5h): condense the staged QP into the
+    /// block QP, re-solve it on a throwaway block solver, seed the x_0 pin
+    /// rows (block first stage, rows 0 .. nx-1), run the staged 5f
+    /// block-KKT sens path (BlockQpDim exposes the eq rows, so the
+    /// hard-equality KKT is inherited), and expand the block step back into
+    /// the staged layout (expand_block_step).  Falls back to the staged
+    /// path when the block size does not match this solver's compile-time
+    /// NB (NB == 0, N2 >= N, N % N2 != 0, N / N2 != NB) — the same fallback
+    /// as solve_qp_partial_condensed.
+    Status sens_x0_partial_condensed(const Qp<P, NH>& q, int N,
+                                     const typename P::state_t& dx0,
+                                     QpSol<P, NH>& dsol)
+    {
+        if constexpr (NB > 0)
+        {
+            const int N2 = (opts_.qp_cond_N > 0) ? opts_.qp_cond_N : N;
+            if (!(N2 < N && N % N2 == 0 && N / N2 == NB))
+            {
+                return sens_x0_staged(q, N, dx0, dsol);
+            }
+            using BDim = BlockQpDim<P, NB>;
+            using BQp = Qp<P, Eigen::Dynamic, BDim>;
+            using BQpSol = QpSol<P, Eigen::Dynamic, BDim>;
+            using BQpSeed = QpSeed<P, Eigen::Dynamic, BDim>;
+
+            BQp bq;
+            bq.resize(N2);
+            condense_block<P, NH, NB>(q, bq);
+
+            BQpSol bsol;
+            bsol.resize(N2);
+            HpipmQpSolver<P, Eigen::Dynamic, BDim> sens_block;
+            const Status qs = sens_block.solve(bq, bsol);
+            if (qs != Status::kSolved && qs != Status::kMaxIterations)
+            {
+                return Status::kQpFailure;
+            }
+
+            BQpSeed bseed(N2);
+            const auto& blay = BDim::lay_first;
+            for (int r = 0; r < D::nx; ++r)
+            {
+                bseed.d_first(blay.side_lo(r)) += dx0(r);
+                bseed.d_first(blay.side_hi(r)) -= dx0(r);
+            }
+            BQpSol bsens;
+            bsens.resize(N2);
+            const Status ss =
+                sens_block.sens_forward(bq, bsol, bseed, bsens);
+            if (ss != Status::kSolved)
+            {
+                return ss;
+            }
+            expand_block_step<P, NH, Eigen::Dynamic, NB>(q, bsens, dsol);
+            return Status::kSolved;
+        }
+        else
+        {
+            // NB == 0: partial condensing disabled; staged sens path.
+            return sens_x0_staged(q, N, dx0, dsol);
+        }
     }
 
     /// kFullCondensed `sens_x0` (5g): condense the staged QP, solve it on a
