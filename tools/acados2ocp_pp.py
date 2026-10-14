@@ -1159,6 +1159,9 @@ struct {name}Dims
     static constexpr int ng_t = {ng_t};
     static constexpr int ne_t = {ne_t};
     static constexpr int nl_t = {nl_t};
+    static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
+    // (the casadi model parameter p_ below is a user-managed scalar; it is
+    //  NOT part of the problem-interface sensitivity parameter vector)
 
     static constexpr bool fixed_initial_state = {str(fixed).lower()};
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
