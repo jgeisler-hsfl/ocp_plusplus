@@ -240,9 +240,7 @@ Gate: warning-free build, full regression, FD tests green.
   and `examples/pendulum_on_cart/example_ocp.py` now state the reality:
   `PARTIAL_CONDENSING_HPIPM` with default `qp_cond_N = 0` runs HPIPM's
   staged two-pass Riccati on the uncondensed QP (the ocp++ port's
-  `QpMode::kStaged` default). *Pending (blocked):* "register new options
-  per `DUAL_ACCESS_PLAN.md`" — that plan (named-value registry) is not
-  implemented yet; revisit when it lands.
+  `QpMode::kStaged` default).
 
 ## 9. Open items (verify at implementation time, not design decisions)
 
