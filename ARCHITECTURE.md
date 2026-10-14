@@ -204,3 +204,22 @@ run the forward/backward sweeps, so repeated seeds cost one O(N) pass.
 Hessian perturbations are expressed as the equivalent grad seed
 `grad = E z*`; the returned response carries the KKT's internal negative
 sign, i.e. dz/dH = -K^{-1} (E z*).
+
+The dense (full-condensing) QP solver has an equivalent sensitivity layer
+(`HpipmDenseQpSolver::sens_forward` / `sens_adj`, seeds in
+`DenseQpSeed`, `solvers/hpipm/seed.hpp`), mirroring HPIPM's
+`DENSE_QP_IPM_SENS_FRW` / `SENS_ADJ`. Because the dense barrier LHS
+`W = H + A'ΓA` is ill-conditioned at the converged iterate (Γ = λ/t ~ 1e9..1e18
+on every pinned side, cond ~ 1e15), the sens solve uses a **hybrid block
+KKT**: `split_sides` classifies each present side as *hard* (pinned:
+`t < 1e-9` or `Γ > 1e6`) or *moderate* (finite Γ). The hard sides become
+exact rows of the KKT (Eigen LDLT, cached in the workspace keyed by the
+side split); the moderate sides stay in the barrier term
+`W_mod = H + reg·I + A_mod'Γ_mod A_mod`, keeping W well-conditioned.
+`sens.v` is the KKT primal; moderate sides get the closed-form `dt`/`dlam`;
+hard sides carry the free KKT multipliers with `t = 0`. The adjoint
+pre-scales the m-seed by t and post-scales `sens.t` by 1/t (HPIPM parity).
+`AcadosSolver::sens_x0` supports both `kStaged` and `kFullCondensed`
+(dense path: condense → solve → seed the pin box rows coherently →
+`sens_forward` → `expand_full_sol`; `kPartialCondensed` remains
+`kAborted` until 5h).

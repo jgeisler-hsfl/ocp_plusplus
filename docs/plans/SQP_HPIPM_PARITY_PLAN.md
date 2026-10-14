@@ -41,7 +41,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | **PARTIAL_CONDENSING** (block grouping, `N2`/`block_size`) | done (Phase 2; uniform `NB`, non-uniform `block_size` deferred) |
 | **FULL_CONDENSING** (dense QP + dense IPM) | done (Phase 1) |
 | **RTI SQP** (standard `sqp_rti`: LHS+RHS per call, full step, no line search) | done (Phase 3, `RtiSolver` in `solvers/acados/rti.hpp`; `_reversible` / `_merit` variants out of scope) |
-| **QP sensitivities** (forward/adjoint, HPIPM seed module) | done (Phase 4, staged forward + adjoint; dense / partial-condensed deferred) |
+| **QP sensitivities** (forward/adjoint, HPIPM seed module) | done (Phase 4 staged; 5f staged `sens_x0` + hard-eq KKT; 5g dense `kFullCondensed` via hybrid block KKT; partial-condensed deferred to 5h) |
 | `print_level = 2` (detailed per-iteration printout) | done (5b) |
 | condensing/expansion time in statistics | done (`SqpIteration::cond_time`) |
 
