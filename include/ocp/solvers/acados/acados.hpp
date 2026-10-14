@@ -915,6 +915,31 @@ template <class P>
 struct BlockQpWorkspaces<P, 0>
 {
 };
+
+/// 5i: p-derivative of a (NRow x NVar) constraint Jacobian, column-stacked
+/// in p (`dJ_dp(r * NVar + i, j) = dJ(r, i) / dp_j`), contracted with the
+/// direction `dp` and multiplied from the left by the multiplier `lam`:
+/// adds `(sum_j dp_j * dJ / dp_j)' * lam` to `gs(Off..Off + NVar - 1)`.
+/// Used by `fill_param_seed` for the (dJ/dp)' lam stationarity terms of the
+/// parameter-sensitivity seed (SQP_HPIPM_PARITY_PHASE5_5I plan sec. 2.1).
+/// Scalar accumulation keeps this type-safe for unit dimensions (Eigen
+/// treats 1x1 products as matrices, not vectors).
+template <int NRow, int NVar, int Off, class GS, class J, class V, class L>
+void jacp_t_lam_add(GS& gs, const J& dJ_dp, const V& dp, const L& lam)
+{
+    // jdp(r * NVar + i) = (dJ / dp * dp)(r, i)  (row-major column-stack).
+    const auto jdp = (dJ_dp * dp).eval();
+    for (int i = 0; i < NVar; ++i)
+    {
+        typename L::Scalar acc = 0;
+        for (int r = 0; r < NRow; ++r)
+        {
+            acc += lam(r) * jdp(r * NVar + i);
+        }
+        gs(Off + i) += acc;
+    }
+}
+
 }  // namespace detail
 
 /// SQP driver (phase 2).
@@ -1260,6 +1285,466 @@ public:
         }
         expand_full_sol(q, dq, dsens, dsol, /*include_b=*/false);
         return Status::kSolved;
+    }
+
+    /// 5i: NLP-level first-order parameter sensitivity (staged),
+    /// SQP_HPIPM_PARITY_PHASE5_5I_SENS_PARAM_PLAN.md sec. 2.
+    ///
+    /// `sol` must be the converged SQP solution at the problem's current
+    /// parameter state; `dp` is a direction in the parameter vector
+    /// (Dims::np > 0). Reassembles the staged QP at `sol`, re-solves it on
+    /// a throwaway solver (caching the exit KKT factors), then runs one
+    /// seeded KKT re-solve: the NLP KKT linearization keeps the converged
+    /// Hessian / Jacobian LHS and forces the RHS with the p-derivative of
+    /// the QP data (seed.grad / seed.b / seed.d from `fill_param_seed`).
+    /// `dsol` carries the QP-space response, i.e. d(x*, u*)/dp * dp (ux /
+    /// pi / lam / t), in the same layout as `sens_x0`.
+    ///
+    /// Active-set gating (plan 5i sec. 2.3): a d-seed on a constraint side
+    /// that is inactive at the converged solution is dropped, because the
+    /// first-order response of an inactive constraint's value / bound is
+    /// zero and the barrier KKT would otherwise leak an O(mu_exit) artifact
+    /// through its nearly-singular row.
+    ///
+    /// kStaged only (dense / block seed condensing is 5j); other qp_modes
+    /// return kAborted.
+    Status sens_param(const P& problem, const Solution<P, NH>& sol,
+                      const typename P::param_t& dp, QpSol<P, NH>& dsol)
+    {
+        static_assert(P::np > 0,
+                      "AcadosSolver::sens_param: requires Dims::np > 0 "
+                      "(a parameter-vector sensitivity interface).");
+        if (opts_.qp_mode != QpMode::kStaged)
+        {
+            std::fprintf(stderr,
+                "AcadosSolver::sens_param: kStaged only (dense / block "
+                "seed condensing not yet implemented)\n");
+            return Status::kAborted;
+        }
+        const int N = sol.N;
+        resize(N);
+        const Status st = assemble_qp(problem, sol);
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+
+        QpSolver sens_qp;
+        QpSol<P, NH> qsol(N);
+        const Status qs = sens_qp.solve(qp_in_, qsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+        QpSeed<P, NH> seed(N);
+        fill_param_seed(problem, sol, dp, qsol, seed);
+        return sens_qp.sens_forward(qp_in_, qsol, seed, dsol);
+    }
+
+    /// 5i: fill the staged QP seed for `sens_param` (plan sec. 2.1).
+    ///
+    /// All `*_sens_p` problem entries are evaluated at the converged
+    /// iterate `(x*, u*)`; the seed is contracted with the direction `dp`.
+    /// Because the QP is in the step formulation and the converged QP
+    /// solution is the zero step, p-derivatives of the LHS data
+    /// (Hessian / BA / DC) contribute no `(dLHS/dp) * z*` term: the seed
+    /// carries only the p-derivatives of the QP RHS (grad / b / d) plus the
+    /// `(dJ/dp)' lambda` stationarity couplings.
+    /// Sign conventions (verified against compute_residuals /
+    /// globalize.hpp): QP dynamics multiplier pi = -sol.lambda_dyn,
+    /// constraint multiplier delta_lam = sol.lambda_{ineq,eq,lin}
+    /// (hi - lo); res_b = BA z + b - x_next; res_d(hi) = d + t + v,
+    /// res_d(lo) = d + t - v.
+    ///
+    /// Active-set gating: a first-order sensitivity cannot flow through a
+    /// constraint row that is inactive at the converged solution. In the
+    /// barrier KKT an inactive row is nearly singular (large slack `t`,
+    /// lambda ~ mu / t), so seeding its p-derivative injects an
+    /// O(mu_exit) artifact into the response instead of the active-set
+    /// result (zero for an inactive constraint's value / bound). The d
+    /// seed is therefore only written on sides whose converged slack
+    /// (from the throwaway QP re-solve `qsol`) is below `t_act`; the
+    /// `(dJ/dp)' lambda` grad couplings are unaffected by this (for an
+    /// inactive row lambda ~ mu / t ~ O(mu_exit), negligible).
+    void fill_param_seed(const P& problem, const Solution<P, NH>& sol,
+                         const typename P::param_t& dp,
+                         const QpSol<P, NH>& qsol,
+                         QpSeed<P, NH>& seed) const
+    {
+        const int N = sol.N;
+        // Barrier-side activeness threshold (converged slack magnitude).
+        const S t_act = S(1e-3);
+        auto sact = [&](detail::QpGroup g, int s, const auto& dm,
+                        const auto& tv)
+        {
+            if (g == detail::g_pin || g == detail::g_eq)
+            {
+                return true;  // equalities: always active, never masked
+            }
+            const S m = dm(s);
+            if (m > S(1.5))
+            {
+                return true;  // hard-equality side
+            }
+            if (m < S(0.5))
+            {
+                return false;  // absent side
+            }
+            return tv(s) < t_act;  // barrier side: active iff small slack
+        };
+
+        // p-derivative of the fixed initial state (pin rows, first stage).
+        typename P::state_t dx0 = P::state_t::Zero();
+        if constexpr (P::fixed_initial_state)
+        {
+            dx0 = problem.initial_state_sens_p() * dp;
+        }
+
+        for (int k = 0; k < N; ++k)
+        {
+            const auto& x = sol.x[k];
+            const auto& u = sol.u[k];
+
+            // ---- model p-derivatives at (x*, u*) ---------------------
+            typename P::dyn_df_dp_t f_p;
+            typename P::dyn_dA_dp_t A_p;
+            typename P::dyn_dB_dp_t B_p;
+            if constexpr (D::nx > 0)
+            {
+                problem.dynamics_sens_p(k, x, u, f_p, A_p, B_p);
+            }
+
+            typename P::param_t L_p;
+            typename P::stage_grad_dp_t cg_p;
+            problem.stage_cost_sens_p(k, x, u, L_p, cg_p);
+
+            typename P::ineq_dg_dp_t ig_p;
+            typename P::ineq_dg_dx_dp_t igdx_p;
+            typename P::ineq_dg_du_dp_t igdu_p;
+            if constexpr (D::ng > 0)
+            {
+                problem.stage_inequality_sens_p(k, x, u, ig_p, igdx_p,
+                                                igdu_p);
+            }
+            typename P::eq_de_dp_t eg_p;
+            typename P::eq_de_dx_dp_t egdx_p;
+            typename P::eq_de_du_dp_t egdu_p;
+            if constexpr (D::ne > 0)
+            {
+                problem.stage_equality_sens_p(k, x, u, eg_p, egdx_p, egdu_p);
+            }
+            typename P::stage_linear_sensp_t lin_sp{};
+            if constexpr (D::nl > 0)
+            {
+                lin_sp = problem.stage_linear_sens_p(k);
+            }
+            typename P::stage_state_box_sensp_t bsx_sp{};
+            if constexpr (D::nbx > 0)
+            {
+                bsx_sp = problem.stage_state_box_sens_p(k);
+            }
+            typename P::stage_control_box_sensp_t bsu_sp{};
+            if constexpr (D::nbu > 0)
+            {
+                bsu_sp = problem.stage_control_box_sens_p(k);
+            }
+
+            // ---- grad / b / d seed for this stage ---------------------
+            // The first- and path-stage seed vectors can differ in extent
+            // (the slack count changes when x_0 is fixed), so a generic
+            // lambda keeps the fill logic type-safe for both stage types.
+            auto fill_stage = [&](auto& gs, auto& dv,
+                                  const detail::QpLayout& lay,
+                                  const auto& dm, const auto& tv)
+            {
+                // grad seed (stationarity RHS), layout (u; x; s); the cost
+                // p-derivative is laid out [g_x; g_u].
+                {
+                    const auto cgdp = (cg_p * dp).eval();  // (nx + nu, 1)
+                    for (int i = 0; i < D::nu; ++i)
+                    {
+                        gs(i) += cgdp(D::nx + i);
+                    }
+                    for (int i = 0; i < D::nx; ++i)
+                    {
+                        gs(D::nu + i) += cgdp(i);
+                    }
+                }
+                // dynamics coupling, QP convention pi = -lambda_dyn
+                if constexpr (D::nx > 0)
+                {
+                    const auto pi = -sol.lambda_dyn[k];
+                    detail::jacp_t_lam_add<D::nx, D::nu, 0>(
+                        gs, B_p, dp, pi);
+                    detail::jacp_t_lam_add<D::nx, D::nx, D::nu>(
+                        gs, A_p, dp, pi);
+                }
+                if constexpr (D::ng > 0)
+                {
+                    const auto& lam = sol.lambda_ineq_stage[k];
+                    detail::jacp_t_lam_add<D::ng, D::nu, 0>(
+                        gs, igdu_p, dp, lam);
+                    detail::jacp_t_lam_add<D::ng, D::nx, D::nu>(
+                        gs, igdx_p, dp, lam);
+                }
+                if constexpr (D::ne > 0)
+                {
+                    const auto& lam = sol.lambda_eq_stage[k];
+                    detail::jacp_t_lam_add<D::ne, D::nu, 0>(
+                        gs, egdu_p, dp, lam);
+                    detail::jacp_t_lam_add<D::ne, D::nx, D::nu>(
+                        gs, egdx_p, dp, lam);
+                }
+                if constexpr (D::nl > 0)
+                {
+                    const auto& lam = sol.lambda_lin_stage[k];
+                    detail::jacp_t_lam_add<D::nl, D::nu, 0>(
+                        gs, lin_sp.dB_dp, dp, lam);
+                    detail::jacp_t_lam_add<D::nl, D::nx, D::nu>(
+                        gs, lin_sp.dA_dp, dp, lam);
+                }
+
+                // b seed (dynamics RHS): db_k/dp = df_k/dp
+                if constexpr (D::nx > 0)
+                {
+                    seed.b[k] = f_p * dp;
+                }
+
+                // d seed (bound offsets: d_lo = lo - w, d_hi = w - hi)
+                if constexpr (P::fixed_initial_state)
+                {
+                    for (int j = 0; j < D::nx; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_pin) + j;
+                        dv(lay.side_lo(r)) += dx0(j);
+                        dv(lay.side_hi(r)) -= dx0(j);
+                    }
+                }
+                // state box (absent at the first stage when x_0 is fixed)
+                if constexpr (D::nbx > 0)
+                {
+                    const auto dlo = bsx_sp.dlo_dp * dp;
+                    const auto dhi = bsx_sp.dhi_dp * dp;
+                    for (int j = 0; j < lay.rows[detail::g_bx]; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_bx) + j;
+                        if (sact(detail::g_bx, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j);
+                        }
+                        if (sact(detail::g_bx, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) -= dhi(j);
+                        }
+                    }
+                }
+                // control box
+                if constexpr (D::nbu > 0)
+                {
+                    const auto dlo = bsu_sp.dlo_dp * dp;
+                    const auto dhi = bsu_sp.dhi_dp * dp;
+                    for (int j = 0; j < D::nbu; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_bu) + j;
+                        if (sact(detail::g_bu, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j);
+                        }
+                        if (sact(detail::g_bu, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) -= dhi(j);
+                        }
+                    }
+                }
+                // ineq (one-sided, hi only)
+                if constexpr (D::ng > 0)
+                {
+                    const auto dg = ig_p * dp;
+                    for (int j = 0; j < D::ng; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_ineq) + j;
+                        if (sact(detail::g_ineq, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) += dg(j);
+                        }
+                    }
+                }
+                // eq (d_lo = -e, d_hi = +e)
+                if constexpr (D::ne > 0)
+                {
+                    const auto de = eg_p * dp;
+                    for (int j = 0; j < D::ne; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_eq) + j;
+                        dv(lay.side_lo(r)) -= de(j);
+                        dv(lay.side_hi(r)) += de(j);
+                    }
+                }
+                // linear (two-sided; w = A x + B u so dw/dp shifts both)
+                if constexpr (D::nl > 0)
+                {
+                    const auto dlo = lin_sp.dlo_dp * dp;
+                    const auto dhi = lin_sp.dhi_dp * dp;
+                    const auto dA = (lin_sp.dA_dp * dp).eval();
+                    const auto dB = (lin_sp.dB_dp * dp).eval();
+                    Eigen::Matrix<S, D::nl, 1> w_p;
+                    for (int j = 0; j < D::nl; ++j)
+                    {
+                        w_p(j) = dA.segment(j * D::nx, D::nx).dot(x)
+                                + dB.segment(j * D::nu, D::nu).dot(u);
+                    }
+                    for (int j = 0; j < D::nl; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_lin) + j;
+                        if (sact(detail::g_lin, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j) - w_p(j);
+                        }
+                        if (sact(detail::g_lin, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) += -dhi(j) + w_p(j);
+                        }
+                    }
+                }
+            };
+            if (k == 0)
+            {
+                fill_stage(seed.grad_first, seed.d_first, D::lay_first,
+                           qp_in_.first.d_mask, qsol.t_first);
+            }
+            else
+            {
+                fill_stage(seed.grad_path[k - 1], seed.d_path[k - 1],
+                           D::lay_path, qp_in_.path[k - 1].d_mask,
+                           qsol.t_path[k - 1]);
+            }
+        }
+
+        // ---- terminal stage (k = N): grad_term over (x; s) -----------
+        {
+            const auto& xN = sol.x[N];
+
+            typename P::param_t L_p;
+            typename P::term_grad_dp_t tg_p;
+            problem.terminal_cost_sens_p(xN, L_p, tg_p);
+
+            typename P::ineq_term_dg_dp_t gt_p;
+            typename P::ineq_term_dg_dx_dp_t gtdx_p;
+            if constexpr (D::ng_t > 0)
+            {
+                problem.terminal_inequality_sens_p(xN, gt_p, gtdx_p);
+            }
+            typename P::eq_term_de_dp_t et_p;
+            typename P::eq_term_de_dx_dp_t etdx_p;
+            if constexpr (D::ne_t > 0)
+            {
+                problem.terminal_equality_sens_p(xN, et_p, etdx_p);
+            }
+            typename P::term_linear_sensp_t tlin_sp{};
+            if constexpr (D::nl_t > 0)
+            {
+                tlin_sp = problem.terminal_linear_sens_p();
+            }
+            typename P::term_state_box_sensp_t bsxt_sp{};
+            if constexpr (D::nbx_t > 0)
+            {
+                bsxt_sp = problem.terminal_state_box_sens_p();
+            }
+
+            {
+                const auto tgdp = (tg_p * dp).eval();  // (nx, 1)
+                for (int i = 0; i < D::nx; ++i)
+                {
+                    seed.grad_term(i) += tgdp(i);
+                }
+            }
+            if constexpr (D::ng_t > 0)
+            {
+                detail::jacp_t_lam_add<D::ng_t, D::nx, 0>(
+                    seed.grad_term, gtdx_p, dp, sol.lambda_ineq_term);
+            }
+            if constexpr (D::ne_t > 0)
+            {
+                detail::jacp_t_lam_add<D::ne_t, D::nx, 0>(
+                    seed.grad_term, etdx_p, dp, sol.lambda_eq_term);
+            }
+            if constexpr (D::nl_t > 0)
+            {
+                detail::jacp_t_lam_add<D::nl_t, D::nx, 0>(
+                    seed.grad_term, tlin_sp.dA_dp, dp, sol.lambda_lin_term);
+            }
+
+            // terminal d seed
+            const auto& tlay = D::lay_term;
+            auto& dtv = seed.d_term;
+            if constexpr (D::nbx_t > 0)
+            {
+                const auto dlo = bsxt_sp.dlo_dp * dp;
+                const auto dhi = bsxt_sp.dhi_dp * dp;
+                for (int j = 0; j < D::nbx_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_bx) + j;
+                    if (sact(detail::g_bx, tlay.side_lo(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_lo(r)) += dlo(j);
+                    }
+                    if (sact(detail::g_bx, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) -= dhi(j);
+                    }
+                }
+            }
+            if constexpr (D::ng_t > 0)
+            {
+                const auto dg = gt_p * dp;
+                for (int j = 0; j < D::ng_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_ineq) + j;
+                    if (sact(detail::g_ineq, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) += dg(j);
+                    }
+                }
+            }
+            if constexpr (D::ne_t > 0)
+            {
+                const auto de = et_p * dp;
+                for (int j = 0; j < D::ne_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_eq) + j;
+                    dtv(tlay.side_lo(r)) -= de(j);
+                    dtv(tlay.side_hi(r)) += de(j);
+                }
+            }
+            if constexpr (D::nl_t > 0)
+            {
+                const auto dlo = tlin_sp.dlo_dp * dp;
+                const auto dhi = tlin_sp.dhi_dp * dp;
+                const auto dA = (tlin_sp.dA_dp * dp).eval();
+                Eigen::Matrix<S, D::nl_t, 1> w_p;
+                for (int j = 0; j < D::nl_t; ++j)
+                {
+                    w_p(j) = dA.segment(j * D::nx, D::nx).dot(xN);
+                }
+                for (int j = 0; j < D::nl_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_lin) + j;
+                    if (sact(detail::g_lin, tlay.side_lo(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_lo(r)) += dlo(j) - w_p(j);
+                    }
+                    if (sact(detail::g_lin, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) += -dhi(j) + w_p(j);
+                    }
+                }
+            }
+        }
     }
 
     /// NLP objective at the iterate: the problem's stage + terminal costs
