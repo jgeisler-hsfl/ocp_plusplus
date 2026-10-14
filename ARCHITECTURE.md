@@ -219,7 +219,26 @@ side split); the moderate sides stay in the barrier term
 `sens.v` is the KKT primal; moderate sides get the closed-form `dt`/`dlam`;
 hard sides carry the free KKT multipliers with `t = 0`. The adjoint
 pre-scales the m-seed by t and post-scales `sens.t` by 1/t (HPIPM parity).
-`AcadosSolver::sens_x0` supports both `kStaged` and `kFullCondensed`
-(dense path: condense → solve → seed the pin box rows coherently →
-`sens_forward` → `expand_full_sol`; `kPartialCondensed` remains
-`kAborted` until 5h).
+The block (partial-condensing) QP solver has an equivalent sensitivity
+layer: `HpipmQpSolver<..., BlockQpDim<P, NB>>::sens_forward` / `sens_adj`
+(5h) reuse the staged 5f hard-equality KKT path verbatim — `BlockQpDim`
+exposes the hard-equality rows (`eq_rows_*`), so the staged
+`fact_solve_kkt_hardeq` is Dim-generic and the seed type is generic too
+(`QpSeed<P, NH, Dim>`; the block seed is sized by `BlockQpDim`). The block
+step is mapped back to the staged layout by `expand_block_step`
+(`solvers/hpipm/block_condense.hpp`): controls/slacks and block-start
+states transfer directly, internal state increments are forward-simulated
+**homogeneously** (the seeded KKT enforces the step dynamics without the
+affine offset `b`), `dlam`/`dt` transfer row-group by row-group
+(`copy_block_duals`), and the internal dynamics multipliers come from a
+*linearized* stationarity backward sweep (no grad term; the reg-primal
+correction is O(reg) ~ 1e-15 and is omitted). The same linearized sweep
+is used by `expand_full_sol` when called in step mode (`include_b =
+false`).
+
+`AcadosSolver::sens_x0` supports all three QP modes: `kStaged` (5f),
+`kFullCondensed` (5g: condense → solve → seed the pin box rows coherently
+→ `sens_forward` → `expand_full_sol`), and `kPartialCondensed` (5h:
+condense to the block QP → solve → seed the pin rows of block 0 →
+`sens_forward` → `expand_block_step`; falls back to the staged path when
+the block size does not match the solver's compile-time `NB`).
