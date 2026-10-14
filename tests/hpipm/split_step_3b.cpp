@@ -275,7 +275,7 @@ void split_predictor_loop(const char* name, int N)
               p + ": alpha_prim > alpha_min iter " + std::to_string(it));
         check(solver.alpha_dual() > alpha_min,
               p + ": alpha_dual > alpha_min iter " + std::to_string(it));
-        solver.update_vars(iter, step);
+        solver.update_vars(qp, iter, step);
 
         check(all_ge(iter.lam_first, lam_min, 1e-12),
               p + ": lam_first >= lam_min iter " + std::to_string(it));
@@ -374,7 +374,7 @@ int run_split_step_3b_tests()
                      "update_vars: alpha_prim (primal free)");
         check_scalar(solver.alpha_dual(), 0.5, 1e-12,
                      "update_vars: alpha_dual (dual binding)");
-        solver.update_vars(iter, step);
+        solver.update_vars(qp, iter, step);
 
         // min(1, 0.5) < 1 -> both damped independently.
         const double ap = 1.0 * (0.99 * (1.0 - 1.0) + 0.9999999 * 1.0);

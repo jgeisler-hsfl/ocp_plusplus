@@ -292,7 +292,7 @@ void predictor_loop(const char* name, int N)
         const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check(alpha > alpha_min,
               p + ": alpha > alpha_min iter " + std::to_string(it));
-        solver.update_vars(iter, step);
+        solver.update_vars(qp, iter, step);
 
         check(all_ge(iter.lam_first, lam_min, 1e-12),
               p + ": lam_first >= lam_min iter " + std::to_string(it));
@@ -413,7 +413,7 @@ int run_alpha_1f_tests()
         solver.compute_alpha(qp, iter, step);
         const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 0.5, 1e-12, "update_vars: alpha (dual binding)");
-        solver.update_vars(iter, step);
+        solver.update_vars(qp, iter, step);
 
         const double alpha_p =
             alpha * (0.99 * (1.0 - alpha) + 0.9999999 * alpha);
@@ -448,7 +448,7 @@ int run_alpha_1f_tests()
         solver.compute_alpha(qp, iter, step);
         const double alpha = solver.alpha_dual();  // split_step = 0: both equal
         check_scalar(alpha, 1.0, 1e-12, "update_vars clip: alpha = 1");
-        solver.update_vars(iter, step);
+        solver.update_vars(qp, iter, step);
         const double lam_min = solver.options().lam_min;
         check_scalar(iter.lam_first(0), lam_min, 0.0,
                      "update_vars clip: lam -> lam_min");
