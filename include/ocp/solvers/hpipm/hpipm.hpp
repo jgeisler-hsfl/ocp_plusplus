@@ -4670,6 +4670,22 @@ public:
         S preg_last = S(0);
         bool npd_reg_hess = false;
 
+        // 5g: hybrid block-KKT factor (sens path, fact_solve_kkt_active).
+        // K is the assembled (indefinite) dense KKT LHS with the hard-side
+        // rows as exact constraints and the moderate sides in the barrier
+        // term; kkt_ldlt is its Eigen LDLT factor.  Valid only while
+        // (kkt_N, kkt_act, kkt_mod, kkt_reg) match the current call (the
+        // LHS is evaluated at the converged iterate and is constant across
+        // sens calls on the same QP and side split).
+        Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic> kkt_K;
+        Eigen::LDLT<Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>>
+            kkt_ldlt;
+        bool kkt_valid = false;
+        int kkt_N = -1;
+        S kkt_reg = S(0);
+        std::vector<int> kkt_act;
+        std::vector<int> kkt_mod;
+
         /// (Re)allocate the runtime-extent storage for a horizon of `n`.
         /// Fixed-extent NH: only a consistency check.
         void resize(int n)
@@ -4714,10 +4730,14 @@ public:
         assert(out.N == in.N);
         stat_.init(opts_.stat_max);
         ws_.resize(in.N);
+        solved_ = false;
+        ws_.kkt_valid = false;  // 5g: invalidate the block-KKT cache.
 
         if (!has_active_side(in))
         {
-            return solve_unconstr(in, out);
+            const Status st = solve_unconstr(in, out);
+            solved_ = (st == Status::kSolved);
+            return st;
         }
 
         init_point(in, out);
@@ -4844,6 +4864,7 @@ public:
         // status mapping (mirrors the staged solver)
         if (stat_.iter == opts_.iter_max)
         {
+            solved_ = true;  // a (max-iter) iterate is available for sens
             stat_.status = Status::kMaxIterations;
             return Status::kMaxIterations;
         }
@@ -4858,6 +4879,7 @@ public:
             stat_.status = Status::kNanDetected;
             return Status::kNanDetected;
         }
+        solved_ = true;
         stat_.status = Status::kSolved;
         return Status::kSolved;
     }
@@ -4980,6 +5002,29 @@ public:
         closed_form_step(in, iter, res, step);
     }
 
+    /// Forward dense-QP sensitivity (HPIPM `DENSE_QP_IPM_SENS_FRW`,
+    /// x_dense_qp_ipm.c:2817): one KKT re-solve at the last converged
+    /// iterate, with the seed vectors as the KKT forcing.  `new_sol ~
+    /// sol + sens`.  Precondition: `solve()` converged on `in` (the LHS
+    /// and the iterate live in the workspace).  See `sens_solve`.
+    Status sens_forward(const DenseQp<P, NH>& in,
+                        const DenseQpSol<P, NH>& sol,
+                        const DenseQpSeed<P, NH>& seed,
+                        DenseQpSol<P, NH>& sens)
+    {
+        return sens_solve<false>(in, sol, seed, sens);
+    }
+
+    /// Adjoint dense-QP sensitivity (HPIPM `DENSE_QP_IPM_SENS_ADJ`,
+    /// x_dense_qp_ipm.c:2883): as `sens_forward`, but `seed_m` is
+    /// pre-scaled by the converged slacks `sol.t` and `sens.t` is
+    /// post-scaled by `1/sol.t`.
+    Status sens_adj(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& sol,
+                    const DenseQpSeed<P, NH>& seed, DenseQpSol<P, NH>& sens)
+    {
+        return sens_solve<true>(in, sol, seed, sens);
+    }
+
     const HpipmStatistics& statistics() const { return stat_; }
     const HpipmOptions& options() const { return opts_; }
 
@@ -5004,6 +5049,229 @@ private:
     HpipmOptions opts_;
     HpipmStatistics stat_;
     Workspace ws_;
+    bool solved_ = false;  // a solve() has converged on the current QP
+
+    /// 5g: side classification for the dense sens KKT.  Present sides
+    /// (d_mask > 0.5) are split into two groups:
+    ///
+    ///   hard     -- the barrier pins them essentially exactly at the
+    ///               converged iterate: the slack has collapsed onto the
+    ///               solver floor (t < t_hard) or the barrier weight
+    ///               Gamma = lam/t exceeds gamma_hard.  These enter the
+    ///               sens KKT as exact rows.  A true hard-equality row
+    ///               (lo == hi) has BOTH sides hard; both rows enter as a
+    ///               pair, consistent under a coherent (opposite-sign)
+    ///               seed on the pair.
+    ///   moderate -- finite barrier weight (Gamma <= gamma_hard); kept in
+    ///               the barrier part of the LHS (A' Gamma A) with the
+    ///               closed-form dlam / dt, exactly as the main IPM treats
+    ///               them.  Soft-constraint slacks land here (small lam and
+    ///               t, Gamma ~ O(1..1e2)): making them exact rows would
+    ///               over-constrain the step, and their Gamma is too large
+    ///               to drop from W.
+    ///
+    /// A t-threshold alone misses active sides sitting just above the
+    /// floor; a Gamma-only threshold misclassifies soft slacks (Gamma ~
+    /// 1e2).  The two tests combined cover both error modes.
+    static void split_sides(const DenseQp<P, NH>& in,
+                            const DenseQpSol<P, NH>& sol,
+                            std::vector<int>& hard,
+                            std::vector<int>& moderate)
+    {
+        constexpr S t_hard     = S(1e-9);  // slack below: pinned
+        constexpr S gamma_hard = S(1e6);   // barrier weight above: pinned
+        hard.clear();
+        moderate.clear();
+        for (int i = 0; i < in.nside; ++i)
+        {
+            if (in.d_mask(i) <= S(0.5))
+            {
+                continue;
+            }
+            if (sol.t(i) < t_hard ||
+                (sol.t(i) > S(0) && sol.lam(i) / sol.t(i) > gamma_hard))
+            {
+                hard.push_back(i);
+            }
+            else
+            {
+                moderate.push_back(i);
+            }
+        }
+    }
+
+    /// 5g: hybrid block-KKT for one dense sens re-solve (HPIPM
+    /// DENSE_QP_IPM_SENS_FRW / _ADJ).  The IPM Newton-step LHS
+    /// W = H + reg*I + A' Gamma A is ill-conditioned at the converged
+    /// iterate (Gamma ~ 1e9..1e18 on the pinned sides, cond(W) ~ 1e15;
+    /// the H-dominated part of the step is lost).  The sens LHS keeps the
+    /// same mathematics with the pinned sides moved out of W into exact
+    /// KKT rows:
+    ///
+    ///   K = [ W_mod   A_hard' ]      (nv + nhard) x (nv + nhard)
+    ///       [ A_hard    0     ]
+    ///
+    ///   W_mod = H + reg*I_(x0;u) + A_mod' Gamma_mod A_mod
+    ///
+    /// (only moderate sides carry Gamma, bounded by gamma_hard, so W_mod
+    /// stays well-conditioned, cond ~ 1e2..1e4).  RHS:
+    /// [ -seed_g - A_mod' gamma_mod ; seed_d(hard) ].  dlam / dt on the
+    /// moderate sides follow from the closed-form barrier update
+    /// (closed_form_step); the hard sides carry the free KKT multipliers
+    /// with t = 0 (as in the staged eq-row treatment).  Factored with
+    /// Eigen LDLT and cached in `ws_` keyed by (N, hard set, moderate set,
+    /// reg).  The seed_m (complementarity) channel is a no-op at first
+    /// order for a fixed active set and is not carried.
+    /// Returns kSolved / kQpFailure.
+    Status fact_solve_kkt_active(const DenseQp<P, NH>& in,
+                                 const DenseQpSol<P, NH>& sol,
+                                 const DenseQpRes<P, NH>& rhs,
+                                 DenseQpSol<P, NH>& sens, S reg)
+    {
+        using VecD = Eigen::Matrix<S, Eigen::Dynamic, 1>;
+        using MatD = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+        const int nv = in.nv;
+        const int nside = in.nside;
+
+        std::vector<int> hard, moderate;
+        split_sides(in, sol, hard, moderate);
+        const int nhard = static_cast<int>(hard.size());
+
+        build_side_matrix(in, ws_.A);
+
+        // Gamma / gamma for the barrier part; the hard sides are excluded
+        // (their A' Gamma A moves into the KKT block instead).
+        compute_gamma(in, sol, rhs);
+        for (int i : hard)
+        {
+            ws_.Gamma(i) = S(0);
+            ws_.gamma(i) = S(0);
+        }
+
+        const bool assemble_K = !ws_.kkt_valid || ws_.kkt_N != in.N ||
+                                ws_.kkt_reg != reg || ws_.kkt_act != hard ||
+                                ws_.kkt_mod != moderate;
+        if (assemble_K)
+        {
+            ws_.kkt_K.resize(nv + nhard, nv + nhard);
+            ws_.kkt_K.setZero();
+            // Diagonal block: H + reg*I_(x0;u) + A_mod' Gamma_mod A_mod
+            MatD W = in.H;
+            const int nvh = D::nx + in.N * D::nu;
+            for (int j = 0; j < nvh; ++j)
+            {
+                W(j, j) += reg;
+            }
+            if (nside > 0)
+            {
+                W += ws_.A.transpose() * (ws_.Gamma.asDiagonal() * ws_.A);
+            }
+            for (int i = 0; i < nv; ++i)
+            {
+                for (int j = 0; j < nv; ++j)
+                {
+                    ws_.kkt_K(i, j) = W(i, j);
+                }
+            }
+            // A_hard <-> stationarity coupling.
+            for (int j = 0; j < nhard; ++j)
+            {
+                const int i = hard[j];
+                for (int c = 0; c < nv; ++c)
+                {
+                    const S v = ws_.A(i, c);
+                    ws_.kkt_K(c, nv + j) = v;
+                    ws_.kkt_K(nv + j, c) = v;
+                }
+            }
+            ws_.kkt_ldlt.compute(ws_.kkt_K);
+            if (ws_.kkt_ldlt.info() != Eigen::Success)
+            {
+                ws_.kkt_valid = false;
+                return Status::kQpFailure;
+            }
+            ws_.kkt_valid = true;
+            ws_.kkt_N = in.N;
+            ws_.kkt_reg = reg;
+            ws_.kkt_act = hard;
+            ws_.kkt_mod = moderate;
+        }
+
+        VecD b(nv + nhard);
+        b.head(nv) = -rhs.res_g - ws_.A.transpose() * ws_.gamma;
+        for (int j = 0; j < nhard; ++j)
+        {
+            b(nv + j) = rhs.res_d(hard[j]);
+        }
+        const VecD x = ws_.kkt_ldlt.solve(b);
+        sens.v = x.head(nv);
+
+        // Closed-form dt / dlam on the moderate (and masked) sides, then
+        // overwrite the hard sides with the free KKT multipliers (t = 0),
+        // as in the staged eq-row treatment.
+        sens.lam.setZero();
+        sens.t.setZero();
+        closed_form_step(in, sol, rhs, sens);
+        for (int j = 0; j < nhard; ++j)
+        {
+            sens.lam(hard[j]) = x(nv + j);
+            sens.t(hard[j]) = S(0);
+        }
+        return Status::kSolved;
+    }
+
+    /// Shared dense sens_forward / sens_adj implementation (HPIPM
+    /// DENSE_QP_IPM_SENS_FRW / _ADJ, x_dense_qp_ipm.c:2817/2883): one KKT
+    /// re-solve at the last converged iterate, the seed vectors as the KKT
+    /// forcing (res_g = seed_g, res_d = seed_d; the adjoint pre-scales m
+    /// by t, which this KKT does not use - complementarity is a
+    /// second-order effect for a fixed active set).  The LHS is the hybrid
+    /// block KKT (fact_solve_kkt_active): pinned sides (split_sides:
+    /// t < 1e-9 or Gamma > 1e6) as exact rows, the remaining sides in the
+    /// barrier term.  `sens` is the KKT step (dv, dt, dlam) = the
+    /// sensitivity for a unit seed; `new_sol ~ sol + sens`.
+    template <bool Adjoint>
+    Status sens_solve(const DenseQp<P, NH>& in, const DenseQpSol<P, NH>& sol,
+                      const DenseQpSeed<P, NH>& seed,
+                      DenseQpSol<P, NH>& sens)
+    {
+        if (!solved_)
+        {
+            return Status::kQpFailure;
+        }
+        assert(in.N == sol.N && seed.N == sol.N);
+        ensure_sized(in);
+        sens.resize(seed.N);
+
+        // seed forcing: the seeds ARE the KKT right-hand side
+        DenseQpRes<P, NH> rhs;
+        rhs.resize(in.N);
+        rhs.res_g = seed.seed_g;
+        rhs.res_d = seed.seed_d;
+        rhs.res_m = Adjoint ? seed.seed_m.cwiseProduct(sol.t)
+                            : seed.seed_m;
+
+        const Status st =
+            fact_solve_kkt_active(in, sol, rhs, sens, ws_.preg_last);
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+        if constexpr (Adjoint)
+        {
+            // post-scale t by 1/sol.t (HPIPM SENS_ADJ); hard sides carry
+            // sens.t = 0 and stay 0.
+            for (int i = 0; i < in.nside; ++i)
+            {
+                if (in.d_mask(i) > S(0.5))
+                {
+                    sens.t(i) = sens.t(i) / sol.t(i);
+                }
+            }
+        }
+        return Status::kSolved;
+    }
+
 
     template <class V>
     static S inf_norm(const V& v)

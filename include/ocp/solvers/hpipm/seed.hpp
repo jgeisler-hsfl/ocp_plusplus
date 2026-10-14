@@ -21,6 +21,7 @@
 #pragma once
 
 #include "qp.hpp"
+#include "dense_qp.hpp"
 
 namespace ocp
 {
@@ -127,6 +128,91 @@ struct QpSeed
             m_path[i].setZero();
         }
         m_term.setZero();
+    }
+};
+
+/// Right-hand-side seed of a condensed dense QP (HPIPM `d_dense_qp_seed`
+/// analogue, x_dense_qp_seed.c).  Carries only the dense QP's RHS fields:
+/// the linear cost term (`seed_g`), the bound offsets (`seed_d`, same side
+/// layout as DenseQp::d: [lo; hi]), and the complementarity RHS (`seed_m`,
+/// zero in v1; used by the adjoint scaling).  There is NO `seed_b`: the
+/// condensed model has eliminated the dynamics by substitution, so there is
+/// no dynamics-offset field (HPIPM's `seed_b` slot stays unused).
+///
+/// NH = Eigen::Dynamic (default): runtime horizon, `resize(int)`
+/// allocates. NH >= 1: compile-time horizon, fixed-extent storage and
+/// `resize(int)` only asserts that the argument matches NH.  Same
+/// mechanism as DenseQp / DenseQpSol.
+template <class P, int NH = Eigen::Dynamic>
+struct DenseQpSeed
+{
+    static_assert(NH == Eigen::Dynamic || NH >= 1,
+        "ocp::DenseQpSeed: the horizon must be at least 1 (one dynamics "
+        "step) or Eigen::Dynamic.");
+
+    using D = DenseQpDim<P>;
+    using S = typename P::scalar_t;
+    static constexpr bool kDyn = (NH == Eigen::Dynamic);
+
+    static constexpr int nv_ext = (NH >= 1) ? D::nv_total(NH) : 0;
+    static constexpr int nside_ext = (NH >= 1) ? D::nside_total(NH) : 0;
+
+    using V_t = typename detail::DenseVec<S, kDyn, nv_ext>::type;
+    using Side_t = typename detail::DenseVec<S, kDyn, nside_ext>::type;
+
+    int N = kDyn ? 0 : NH;
+    int nv = 0;
+    int nside = 0;
+
+    /// Linear cost term seed (HPIPM `seed_g`), over the dense variable v.
+    V_t seed_g{};
+    /// Bound-offset seed (HPIPM `seed_d`), side layout [lo; hi].
+    Side_t seed_d{};
+    /// Complementarity RHS seed (HPIPM `seed_m`), side layout [lo; hi].
+    Side_t seed_m{};
+
+    /// All seed vectors are zero-initialized (an unset seed contributes
+    /// nothing to the KKT right-hand side).
+    DenseQpSeed()
+    {
+        setZero();
+    }
+    /// Dynamic horizon: allocate for `n_stages` stages; fixed horizon:
+    /// assert that `n_stages` matches NH.
+    explicit DenseQpSeed(int n_stages)
+    {
+        resize(n_stages);
+    }
+
+    void resize(int n_stages)
+    {
+        if constexpr (kDyn)
+        {
+            assert(n_stages >= 1);
+            N = n_stages;
+        }
+        else
+        {
+            assert(n_stages == NH);
+            N = NH;
+        }
+        nv = D::nv_total(N);
+        nside = D::nside_total(N);
+        if constexpr (kDyn)
+        {
+            seed_g.resize(nv);
+            seed_d.resize(nside);
+            seed_m.resize(nside);
+        }
+        setZero();
+    }
+
+    /// Zero all seed vectors.
+    void setZero()
+    {
+        seed_g.setZero();
+        seed_d.setZero();
+        seed_m.setZero();
     }
 };
 

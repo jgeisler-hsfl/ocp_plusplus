@@ -1087,20 +1087,23 @@ public:
     /// `dsol` carries the QP-space response (ux = (u; x; s) per stage,
     /// pi, lam, t), i.e. d(x*, u*)/dx0 * dx0 to first order.
     ///
-    /// Requires `P::fixed_initial_state` and `qp_mode == kStaged` (the
-    /// staged QP sensitivity data); returns kAborted otherwise. The
-    /// internal QP solve needs kSolved or kMaxIterations (same policy
-    /// as the driver).
+    /// Requires `P::fixed_initial_state` and `qp_mode` of kStaged or
+    /// kFullCondensed (kPartialCondensed inherits the staged sens path only
+    /// once BlockQpDim exposes eq rows; out of scope here); returns
+    /// kAborted otherwise. The internal QP solve needs kSolved or
+    /// kMaxIterations (same policy as the driver).
     Status sens_x0(const P& problem, const Solution<P, NH>& sol,
                    const typename P::state_t& dx0, QpSol<P, NH>& dsol)
     {
         static_assert(P::fixed_initial_state,
                       "AcadosSolver::sens_x0: requires "
                       "fixed_initial_state");
-        if (opts_.qp_mode != QpMode::kStaged)
+        if (opts_.qp_mode != QpMode::kStaged
+                && opts_.qp_mode != QpMode::kFullCondensed)
         {
             std::fprintf(stderr,
-                         "AcadosSolver::sens_x0: kStaged only\n");
+                         "AcadosSolver::sens_x0: kStaged / kFullCondensed "
+                         "only\n");
             return Status::kAborted;
         }
         const int N = sol.N;
@@ -1111,6 +1114,11 @@ public:
             return st;
         }
         const Qp<P, NH>& q = qp_in_;
+
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            return sens_x0_full_condensed(q, N, dx0, dsol);
+        }
 
         QpSolver sens_qp;
         QpSol<P, NH> qsol(N);
@@ -1132,6 +1140,51 @@ public:
             seed.d_first(lay.side_hi(r)) -= dx0(r);
         }
         return sens_qp.sens_forward(q, qsol, seed, dsol);
+    }
+
+    /// kFullCondensed `sens_x0` (5g): condense the staged QP, solve it on a
+    /// throwaway dense solver, seed the x_0 pin box rows, run the dense
+    /// forward sensitivity, and expand the dense step back into the staged
+    /// layout. The pin rows are the first `nx` dense box rows (stage-0 box
+    /// block, x_0 fixed): lo side index `r`, hi side `nb + ng + r`,
+    /// `idxb[r] = r`.  Only they are perturbed — the condensing already maps
+    /// x_0 through the flow-map into the dense Hessian, so a dynamics seed
+    /// would double-count dx0 (as in the staged path, no seed.b).
+    Status sens_x0_full_condensed(const Qp<P, NH>& q, int N,
+                                  const typename P::state_t& dx0,
+                                  QpSol<P, NH>& dsol)
+    {
+        DenseQp<P, NH> dq;
+        dq.resize(N);
+        condense_full(q, dq);
+
+        HpipmDenseQpSolver<P, NH> sens_dense;
+        DenseQpSol<P, NH> dsol_dense;
+        dsol_dense.resize(N);
+        const Status qs = sens_dense.solve(dq, dsol_dense);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        DenseQpSeed<P, NH> seed(N);
+        const int nb = dq.nb;
+        const int ng = dq.ng;
+        for (int r = 0; r < D::nx; ++r)
+        {
+            seed.seed_d(r) += dx0(r);
+            seed.seed_d(nb + ng + r) -= dx0(r);
+        }
+        DenseQpSol<P, NH> dsens;
+        dsens.resize(N);
+        const Status ss =
+            sens_dense.sens_forward(dq, dsol_dense, seed, dsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        expand_full_sol(q, dq, dsens, dsol, /*include_b=*/false);
+        return Status::kSolved;
     }
 
     /// NLP objective at the iterate: the problem's stage + terminal costs

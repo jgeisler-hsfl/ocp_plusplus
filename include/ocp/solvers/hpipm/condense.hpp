@@ -477,9 +477,17 @@ void condense_full(const Qp<P, NH>& in, DenseQp<P, NH>& out)
 /// the same staged QP that was condensed (the dynamics BA / b and the stage
 /// Hessians / gradients / Jacobians are needed for the primal simulation and
 /// the dynamics-multiplier recovery).
+/// Expand a dense-QP solution back to the staged layout.
+///
+/// `include_b`: when true (the normal solution) the states are recovered by
+/// the inhomogeneous forward simulation `x_{k+1} = BA [u_k; x_k] + b_k`.
+/// For a sensitivity STEP of a converged QP pass false: the seeded KKT
+/// enforces the homogeneous dynamics `x_{k+1} = BA [u_k; x_k]` (the seed has
+/// no `b` field), so the affine offset must not be added.
 template <class P, int NH>
 void expand_full_sol(const Qp<P, NH>& staged, const DenseQp<P, NH>& dense,
-                     const DenseQpSol<P, NH>& dsol, QpSol<P, NH>& sol)
+                     const DenseQpSol<P, NH>& dsol, QpSol<P, NH>& sol,
+                     bool include_b = true)
 {
     using D = DenseQpDim<P>;
     using SD = QpDim<P>;
@@ -527,7 +535,11 @@ void expand_full_sol(const Qp<P, NH>& staged, const DenseQp<P, NH>& dense,
         V uz(nu + nx);
         uz.head(nu) = v.segment(D::u_off(k), nu);
         uz.tail(nx) = x;
-        x = BA * uz + b;
+        x = BA * uz;
+        if (include_b)
+        {
+            x += b;
+        }
         if (k + 1 < N)
         {
             auto& uxp = sol.ux_path[k];
