@@ -324,6 +324,18 @@ public:
         Trajectory<v_path_t, detail::traj_extent<NH, -1>()> rtilde_path;
         v_term_t rtilde_term{};
 
+
+        // 5f: hard-equality block KKT factor (sens path, fact_solve_kkt_hardeq).
+        // K is the assembled (indefinite) staged KKT LHS with the equality rows
+        // as exact constraints; kkt_ldlt is its Eigen LDLT factor.  Valid only
+        // while (kkt_N, kkt_reg) match the current solve (the LHS is evaluated
+        // at the converged iterate and is constant across sens calls).
+        Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic> kkt_K;
+        Eigen::LDLT<Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>> kkt_ldlt;
+        bool kkt_valid = false;
+        int kkt_N = -1;
+        S kkt_reg = S(0);
+
         // KKT residuals (HPIPM d_ocp_qp_res analogue)
         QpResT res;
         // unshifted complementarity residual backup (HPIPM res_m_bkp,
@@ -463,6 +475,7 @@ public:
         ws_.resize(N);
         stat_.init(opts_.stat_max);
         has_factors_ = false;
+        ws_.kkt_valid = false;  // 5f: invalidate the block-KKT cache.
         solved_ = false;
 
         if (!has_active_side(in))
@@ -603,7 +616,7 @@ public:
             }
 
             // 5) update the iterate (worklog 1f)
-            update_vars(out, step);
+            update_vars(in, out, step);
 
             // 6) fresh residuals + stat row kk+1
             compute_residuals(in, out, ws_.res);
@@ -782,25 +795,29 @@ public:
         res.res_m_max = std::max(res.res_m_max,
             inf_norm(res.res_m_term));
 
-        // res_mu = masked mean of |res_m| (HPIPM x_ocp_qp_res.c:520-527)
+        // res_mu = masked mean of |res_m| (HPIPM x_ocp_qp_res.c:520-527).
+        // 5f: only barrier sides count (hard-equality sides have res_m = 0).
         res.res_mu_sum = res.res_m_first.cwiseAbs().sum();
         int nc_mask = 0;
         for (int i = 0; i < D::nside_first; ++i)
         {
-            nc_mask += (in.first.d_mask(i) > 0.5) ? 1 : 0;
+            nc_mask += (in.first.d_mask(i) > 0.5 && in.first.d_mask(i) < 1.5)
+                ? 1 : 0;
         }
         for (int k = 1; k < N; ++k)
         {
             res.res_mu_sum += res.res_m_path[k - 1].cwiseAbs().sum();
             for (int i = 0; i < D::nside_path; ++i)
             {
-                nc_mask += (in.path[k - 1].d_mask(i) > 0.5) ? 1 : 0;
+                nc_mask += (in.path[k - 1].d_mask(i) > 0.5
+                             && in.path[k - 1].d_mask(i) < 1.5) ? 1 : 0;
             }
         }
         res.res_mu_sum += res.res_m_term.cwiseAbs().sum();
         for (int i = 0; i < D::nside_term; ++i)
         {
-            nc_mask += (in.term.d_mask(i) > 0.5) ? 1 : 0;
+            nc_mask += (in.term.d_mask(i) > 0.5 && in.term.d_mask(i) < 1.5)
+                ? 1 : 0;
         }
         res.res_mu = (nc_mask > 0) ? res.res_mu_sum / nc_mask : 0.0;
         res.obj = obj;
@@ -845,7 +862,8 @@ public:
                             linres.res_g_first, linres.res_d_first,
                             linres.res_m_first, &linres.res_b[0], dummy_obj,
                             dummy_gap);
-            linres.res_m_first = in.first.d_mask.cwiseProduct(
+            // 5f: barrier sides only (hard-eq complementarity is 0).
+            linres.res_m_first = barrier_mask(in.first.d_mask).cwiseProduct(
                 in.first.m + iter.lam_first.cwiseProduct(step.t_first)
                 + step.lam_first.cwiseProduct(iter.t_first));
         }
@@ -873,9 +891,11 @@ public:
                             linres.res_g_path[i], linres.res_d_path[i],
                             linres.res_m_path[i], &linres.res_b[k], dummy_obj,
                             dummy_gap);
-            linres.res_m_path[i] = in.path[i].d_mask.cwiseProduct(
-                in.path[i].m + iter.lam_path[i].cwiseProduct(step.t_path[i])
-                + step.lam_path[i].cwiseProduct(iter.t_path[i]));
+            // 5f: barrier sides only (hard-eq complementarity is 0).
+            linres.res_m_path[i] =
+                barrier_mask(in.path[i].d_mask).cwiseProduct(
+                    in.path[i].m + iter.lam_path[i].cwiseProduct(step.t_path[i])
+                    + step.lam_path[i].cwiseProduct(iter.t_path[i]));
         }
 
         // terminal stage (k = N)
@@ -890,7 +910,8 @@ public:
                             linres.res_g_term, linres.res_d_term,
                             linres.res_m_term, /*res_b*/ nullptr, dummy_obj,
                             dummy_gap);
-            linres.res_m_term = in.term.d_mask.cwiseProduct(
+            // 5f: barrier sides only (hard-eq complementarity is 0).
+            linres.res_m_term = barrier_mask(in.term.d_mask).cwiseProduct(
                 in.term.m + iter.lam_term.cwiseProduct(step.t_term)
                 + step.lam_term.cwiseProduct(iter.t_term));
         }
@@ -973,11 +994,16 @@ public:
         };
         auto clip_lam_t = [&](S lam_flo, S t_flo)
         {
-            auto clip = [&](auto& lam, auto& t)
+            auto clip = [&](const auto& dmask, auto& lam, auto& t)
             {
                 const int n = static_cast<int>(lam.size());
                 for (int i = 0; i < n; ++i)
                 {
+                    if (dmask(i) > S(1.5))
+                    {
+                        // 5f: hard-eq side - free multiplier, t stays 0.
+                        continue;
+                    }
                     if (lam(i) < lam_flo)
                     {
                         lam(i) = lam_flo;
@@ -988,12 +1014,13 @@ public:
                     }
                 }
             };
-            clip(out.lam_first, out.t_first);
+            clip(in.first.d_mask, out.lam_first, out.t_first);
             for (int k = 1; k < N; ++k)
             {
-                clip(out.lam_path[k - 1], out.t_path[k - 1]);
+                clip(in.path[k - 1].d_mask, out.lam_path[k - 1],
+                     out.t_path[k - 1]);
             }
-            clip(out.lam_term, out.t_term);
+            clip(in.term.d_mask, out.lam_term, out.t_term);
         };
 
         // Hot start (warm_start >= 3, x_ocp_qp_ipm.c:1658-1675): keep the
@@ -1086,6 +1113,28 @@ public:
                        in.term.DC, lay, D::idxs_lo_term, D::idxs_hi_term,
                        bound, D::nx, D::nslack_term, thr0, mu0);
         }
+
+        // 5f: hard-equality sides carry no barrier - t = 0, lam = 0
+        // (the free KKT multiplier is driven by the saddle KKT solve).
+        auto zero_eq = [&](const auto& dmask, auto& lam, auto& t)
+        {
+            const int n = static_cast<int>(lam.size());
+            for (int i = 0; i < n; ++i)
+            {
+                if (dmask(i) > S(1.5))
+                {
+                    lam(i) = S(0);
+                    t(i) = S(0);
+                }
+            }
+        };
+        zero_eq(in.first.d_mask, out.lam_first, out.t_first);
+        for (int k = 1; k < N; ++k)
+        {
+            zero_eq(in.path[k - 1].d_mask, out.lam_path[k - 1],
+                    out.t_path[k - 1]);
+        }
+        zero_eq(in.term.d_mask, out.lam_term, out.t_term);
     }
 
     // ==================================================================
@@ -1505,20 +1554,22 @@ public:
     /// x_ocp_qp_ipm.c:2284-2285).
     void mask_step(const QpT& in, QpSolT& step) const
     {
-        step.lam_first = step.lam_first.cwiseProduct(in.first.d_mask);
+        // 5f: lambda step is kept on every present side (weight 1); the t
+        // step is zero on hard-equality sides (no barrier variable).
+        const auto pm_f = present_mask(in.first.d_mask);
+        const auto bm_f = barrier_mask(in.first.d_mask);
+        step.lam_first = step.lam_first.cwiseProduct(pm_f);
+        step.t_first = step.t_first.cwiseProduct(bm_f);
         for (int k = 1; k < in.N; ++k)
         {
-            step.lam_path[k - 1] =
-                step.lam_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
+            const auto pm = present_mask(in.path[k - 1].d_mask);
+            const auto bm = barrier_mask(in.path[k - 1].d_mask);
+            step.lam_path[k - 1] = step.lam_path[k - 1].cwiseProduct(pm);
+            step.t_path[k - 1] = step.t_path[k - 1].cwiseProduct(bm);
         }
-        step.lam_term = step.lam_term.cwiseProduct(in.term.d_mask);
-        step.t_first = step.t_first.cwiseProduct(in.first.d_mask);
-        for (int k = 1; k < in.N; ++k)
-        {
-            step.t_path[k - 1] =
-                step.t_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
-        }
-        step.t_term = step.t_term.cwiseProduct(in.term.d_mask);
+        step.lam_term =
+            step.lam_term.cwiseProduct(present_mask(in.term.d_mask));
+        step.t_term = step.t_term.cwiseProduct(barrier_mask(in.term.d_mask));
     }
 
     /// Maximum step length keeping λ ≥ 0, t ≥ 0, and (when m ≠ 0)
@@ -1561,14 +1612,20 @@ public:
             if (m_zero)
             {
                 // Separate feasibility pass
-                // (x_core_qp_ipm_aux.c:222-239).
+                // (x_core_qp_ipm_aux.c:222-239).  5f: hard-equality sides
+                // (d_mask = 2) have a free multiplier (no lambda >= 0) and
+                // no t, so they are excluded.
                 auto feas =
                     [&](const auto& lam, const auto& t, const auto& dlam,
-                        const auto& dt)
+                        const auto& dt, const auto& dmask)
                 {
                     const int n = static_cast<int>(lam.size());
                     for (int i = 0; i < n; ++i)
                     {
+                        if (dmask(i) > S(1.5))
+                        {
+                            continue;
+                        }
                         if (lam(i) + a_d * dlam(i) < S(0))
                         {
                             a_d = -lam(i) / dlam(i);
@@ -1580,14 +1637,15 @@ public:
                     }
                 };
                 feas(iter.lam_first, iter.t_first, step.lam_first,
-                     step.t_first);
+                     step.t_first, in.first.d_mask);
                 for (int k = 1; k < in.N; ++k)
                 {
                     feas(iter.lam_path[k - 1], iter.t_path[k - 1],
-                         step.lam_path[k - 1], step.t_path[k - 1]);
+                         step.lam_path[k - 1], step.t_path[k - 1],
+                         in.path[k - 1].d_mask);
                 }
                 feas(iter.lam_term, iter.t_term, step.lam_term,
-                     step.t_term);
+                     step.t_term, in.term.d_mask);
             }
             else
             {
@@ -1599,6 +1657,10 @@ public:
                     const int n = static_cast<int>(lam.size());
                     for (int i = 0; i < n; ++i)
                     {
+                        if (dmask(i) > S(1.5))
+                        {
+                            continue;  // 5f: hard-equality side (free lam).
+                        }
                         S lam1 = lam(i) + a_d * dlam(i);
                         S t1 = t(i) + a_p * dt(i);
                         if (lam1 < S(0))
@@ -1648,6 +1710,10 @@ public:
                     const int n = static_cast<int>(lam.size());
                     for (int i = 0; i < n; ++i)
                     {
+                        if (dmask(i) > S(1.5))
+                        {
+                            continue;  // 5f: hard-eq side (free lam, t = 0).
+                        }
                         if (!(dlam(i) < S(0) and dt(i) < S(0)))
                         {
                             continue;
@@ -1714,6 +1780,10 @@ public:
                     const int n = static_cast<int>(lam.size());
                     for (int i = 0; i < n; ++i)
                     {
+                        if (dmask(i) > S(1.5))
+                        {
+                            continue;  // 5f: hard-eq side (free lam, t = 0).
+                        }
                         const S lam1 = lam(i) + a_d * dlam(i);
                         const S t1 = t(i) + a_p * dt(i);
                         const S m1 = m_safe * (m(i) * dmask(i));
@@ -1758,6 +1828,10 @@ public:
             const int n = static_cast<int>(lam.size());
             for (int i = 0; i < n; ++i)
             {
+                if (dmask(i) > S(1.5))
+                {
+                    continue;  // 5f: hard-eq side (free lam, t = 0).
+                }
                 S lam1 = lam(i) + alpha * dlam(i);
                 S t1 = t(i) + alpha * dt(i);
                 if (lam1 < S(0))
@@ -1823,7 +1897,8 @@ public:
     /// Applied: ux += α_p·δz, π += α_d·δπ,
     /// λ += α_d·δλ (clip ≥ lam_min), t += α_p·δt (clip ≥ t_min).
     /// With split_step = 0, α_p = α_d so behaviour is identical.
-    void update_vars(QpSolT& iter, const QpSolT& step) const
+    void update_vars(const QpT& in, QpSolT& iter,
+                     const QpSolT& step) const
     {
         const int N = iter.N;
         S alpha_p = ws_.alpha_prim;
@@ -1849,15 +1924,17 @@ public:
         }
 
         update_lam_t(iter.lam_first, iter.t_first,
-                     step.lam_first, step.t_first, alpha_d, alpha_p);
+                     step.lam_first, step.t_first, alpha_d, alpha_p,
+                     in.first.d_mask);
         for (int k = 1; k < N; ++k)
         {
             update_lam_t(iter.lam_path[k - 1], iter.t_path[k - 1],
                          step.lam_path[k - 1], step.t_path[k - 1],
-                         alpha_d, alpha_p);
+                         alpha_d, alpha_p, in.path[k - 1].d_mask);
         }
         update_lam_t(iter.lam_term, iter.t_term,
-                     step.lam_term, step.t_term, alpha_d, alpha_p);
+                     step.lam_term, step.t_term, alpha_d, alpha_p,
+                     in.term.d_mask);
     }
 
     // ==================================================================
@@ -1888,7 +1965,9 @@ public:
             const int n = static_cast<int>(lam.size());
             for (int i = 0; i < n; ++i)
             {
-                if (dmask(i) > 0.5)
+                // 5f: barrier sides only (d_mask == 1); hard-eq sides
+                // have no complementarity.
+                if (dmask(i) > S(0.5) && dmask(i) < S(1.5))
                 {
                     const S lam1 = lam(i) + a_d * dlam(i);
                     const S t1 = t(i) + a_p * dt(i);
@@ -1949,7 +2028,8 @@ public:
                 {
                     v += dt(i) * dlam(i);
                 }
-                out(i) = (dmask(i) > 0.5) ? v : 0.0;
+                // 5f: hard-eq sides carry no complementarity (res_m = 0).
+                out(i) = (dmask(i) > S(0.5) && dmask(i) < S(1.5)) ? v : S(0);
             }
         };
         center(res_bkp.res_m_first, step.lam_first, step.t_first,
@@ -2004,12 +2084,46 @@ private:
         return v.size() > 0 ? v.cwiseAbs().maxCoeff() : S(0);
     }
 
+    /// Presence mask (5f): 1 where a side is active (d_mask > 0.5), 0 for
+    /// absent sides.  Includes hard-equality sides (d_mask = 2): their
+    /// multiplier and feasibility residual still contribute to the KKT
+    /// residuals, but they carry no barrier.  Drives the multiplier term of
+    /// res_g, the res_d feasibility mask and the lambda step mask.
+    template <class V>
+    static V present_mask(const V& dm)
+    {
+        V m;
+        for (int i = 0; i < static_cast<int>(dm.size()); ++i)
+        {
+            m(i) = (dm(i) > S(0.5)) ? S(1) : S(0);
+        }
+        return m;
+    }
+
+    /// Barrier mask (5f): 1 only on interior-point sides (d_mask == 1), 0 on
+    /// absent sides and hard-equality sides (d_mask = 2).  Drives everything
+    /// tied to the complementarity / barrier: Gamma / gamma, res_m, the mu
+    /// statistics, centering, the t step, the lambda / t line-search floors
+    /// and the res_m shift / exit test.
+    template <class V>
+    static V barrier_mask(const V& dm)
+    {
+        V m;
+        for (int i = 0; i < static_cast<int>(dm.size()); ++i)
+        {
+            m(i) = (dm(i) > S(0.5) && dm(i) < S(1.5)) ? S(1) : S(0);
+        }
+        return m;
+    }
+
     /// Update one stage's λ / t with the (already damped) step, applying the
     /// t_lam_min = 2 floors (x_core_qp_ipm_aux.c:545-578). `dlam` / `dt` are
-    /// assumed already masked by d_mask (see mask_step).
+    /// assumed already masked (see mask_step). Hard-equality sides (d_mask =
+    /// 2) are excluded from the floors (5f): their multiplier is a free KKT
+    /// variable (may be negative) and their t stays 0.
     template <class V>
     void update_lam_t(V& lam, V& t, const V& dlam, const V& dt, S alpha_d,
-                      S alpha_p) const
+                      S alpha_p, const V& dmask) const
     {
         lam += alpha_d * dlam;
         t += alpha_p * dt;
@@ -2017,6 +2131,10 @@ private:
         {
             for (int i = 0; i < static_cast<int>(lam.size()); ++i)
             {
+                if (dmask(i) > S(1.5))
+                {
+                    continue;
+                }
                 if (lam(i) <= S(opts_.lam_min))
                 {
                     lam(i) = S(opts_.lam_min);
@@ -2061,6 +2179,471 @@ private:
     // ==================================================================
     //  4b/4c: QP sensitivities (HPIPM OCP_QP_IPM_SENS_FRW / SENS_ADJ)
     // ==================================================================
+
+    // 5f: hard-equality block-KKT for the sensitivity path. The staged
+    // barrier two-pass KKT (Riccati + Schur) is singular at the converged
+    // iterate when a hard equality acts purely on x (the barrier dual on
+    // the eq sides drives Gamma = lam/t -> inf as t -> 0, and Mtilde^{-1}
+    // loses its x-x block, see the phase-5 5f plan + HPIPM audit). Instead
+    // of the Riccati elimination we assemble the FULL staged KKT with the
+    // equality rows as first-class KKT rows (free multipliers dmu) and
+    // factor it with an indefinite LDLT (Eigen). Sign conventions follow
+    // the baseline residuals (res_b = BA z + b - x_next, res_g carries
+    // +BA' pi_k - E pi_{k-1}):
+    //
+    //   stationarity k : M_k dz_k + B_k' dpi_k - E_k dpi_{k-1}
+    //                    + C_eq_k' dmu_k = rtilde_k
+    //   dynamics k     : B_k dz_k - I_x dz_{k+1} = -res_b_k
+    //   eq k           : C_eq_k dz_k = res_d_k(hi side)
+    //
+    // with M_k = hess + c' Gamma c + reg (u;x) [Gamma = 0 on eq sides],
+    // rtilde_k = -res_g_k - c' gamma [gamma = 0 on eq sides] and C_eq the
+    // signed hi-side DC rows (usx column order). The system is symmetric,
+    // hence LDLT is valid.
+    /// 5f gate: true iff every hard-equality row (D::eq_rows_*) is a genuine
+    /// equality in the QP data, i.e. its lo and hi bounds coincide. In the
+    /// offset form d(sl) + d(sh) == 0 (assemble.hpp sets lo == hi for the
+    /// pin rows and the eq rows). Ordinary inactive box rows that merely sit
+    /// in the eq group (the wide-box rows of the 4d sensitivity test, where
+    /// the barrier two-pass is the correct and well-conditioned path) fail
+    /// this check and fall through to the two-pass.
+    template <class QpT>
+    static bool eqs_hard(const QpT& qp)
+    {
+        constexpr double tol = 1e-8;
+        const auto& lay_f = D::lay_first;
+        for (int j : D::eq_rows_first)
+        {
+            const int sl = lay_f.side_lo(j);
+            const int sh = lay_f.side_hi(j);
+            if (sl < 0 || sh < 0 ||
+                std::abs(qp.first.d(sl) + qp.first.d(sh)) > tol)
+            {
+                return false;
+            }
+        }
+        for (int k = 1; k < qp.N; ++k)
+        {
+            const auto& lay = D::lay_path;
+            for (int j : D::eq_rows_path)
+            {
+                const int sl = lay.side_lo(j);
+                const int sh = lay.side_hi(j);
+                if (sl < 0 || sh < 0 ||
+                    std::abs(qp.path[k - 1].d(sl) + qp.path[k - 1].d(sh)) >
+                        tol)
+                {
+                    return false;
+                }
+            }
+        }
+        const auto& lay_t = D::lay_term;
+        for (int j : D::eq_rows_term)
+        {
+            const int sl = lay_t.side_lo(j);
+            const int sh = lay_t.side_hi(j);
+            if (sl < 0 || sh < 0 ||
+                std::abs(qp.term.d(sl) + qp.term.d(sh)) > tol)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    /// One dynamics-carrying stage (k = 0..N-1) of the hard-eq block-KKT:
+    /// LHS blocks into `K` (nullptr: skip), RHS into `b` (always).
+    template <int NU, int NX, int NSK, int NEQ, class H, class Dc, class Dv,
+              class Ba, class EqRows, class IdxLo, class IdxHi, class Rg,
+              class Rb, class Rd>
+    static void fill_hardeq_dyn_stage(
+        int k, int zo, int mo, int poff, int pp, int zo_next, int nw_next,
+        Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>* K,
+        Eigen::Matrix<S, Eigen::Dynamic, 1>& b, const H& hess, const Dc& dc,
+        const Dv& gamma, const Dv& Gamma, const Ba& ba,
+        detail::QpLayout lay, const IdxLo& idxs_lo, const IdxHi& idxs_hi,
+        const EqRows& eq_rows, const Rg& res_g, const Rb& res_b,
+        const Rd& res_d, S reg)
+    {
+        constexpr int nv = NU + NX + NSK;
+        const int nw = NU + NSK;  // x offset in (u;s;x).
+        const auto c = usx_build_side_dc(dc, Gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        // RHS: rtilde_k = -res_g - c' gamma (usx).
+        Eigen::Matrix<S, nv, 1> rtilde = -res_g - c.transpose() * gamma;
+        const auto rtilde_usx = usx_permute_vec(rtilde, NU, NX, NSK);
+        for (int i = 0; i < nv; ++i)
+        {
+            b(zo + i) += rtilde_usx(i);
+        }
+        // RHS: eq rows (seed d at the hi side) and dynamics (seed b).
+        for (int j = 0; j < NEQ; ++j)
+        {
+            b(mo + j) = res_d(lay.side_hi(eq_rows[j]));
+        }
+        for (int j = 0; j < NX; ++j)
+        {
+            b(poff + j) = -res_b(j);
+        }
+        if (K == nullptr)
+        {
+            return;
+        }
+        // LHS: M_k (usx) into the (z_k, z_k) block.
+        H m_nat = hess + c.transpose() * (Gamma.asDiagonal() * c);
+        auto m_usx = usx_permute_mat(m_nat, NU, NX, NSK);
+        for (int i = 0; i < NU; ++i)
+        {
+            m_usx(i, i) += reg;
+        }
+        for (int i = 0; i < NX; ++i)
+        {
+            m_usx(nw + i, nw + i) += reg;
+        }
+        for (int i = 0; i < nv; ++i)
+        {
+            for (int j = 0; j < nv; ++j)
+            {
+                (*K)(zo + i, zo + j) += m_usx(i, j);
+            }
+        }
+        // LHS: eq rows -> +C' dmu (stationarity) and C dz (eq row).
+        for (int j = 0; j < NEQ; ++j)
+        {
+            const auto c_usx = usx_permute_cols(c, NU, NX, NSK);
+            const int sh = lay.side_hi(eq_rows[j]);
+            for (int i = 0; i < nv; ++i)
+            {
+                const S v = c_usx(sh, i);
+                (*K)(zo + i, mo + j) += v;
+                (*K)(mo + j, zo + i) += v;
+            }
+        }
+        // LHS: dynamics + costate coupling (k < N always here).
+        Eigen::Matrix<S, NX, nv> dk;
+        dk.setZero();
+        if (NU > 0)
+        {
+            dk.block(0, 0, NX, NU) = ba.block(0, 0, NX, NU);
+        }
+        dk.block(0, nw, NX, NX) = ba.block(0, NU, NX, NX);
+        for (int j = 0; j < NX; ++j)
+        {
+            for (int i = 0; i < nv; ++i)
+            {
+                const S v = dk(j, i);
+                (*K)(zo + i, poff + j) += v;  // +B' dpi_k
+                (*K)(poff + j, zo + i) += v;  // dynamics B dz_k
+            }
+            (*K)(poff + j, zo_next + nw_next + j) += S(-1);  // -I_x dz_{k+1}
+        }
+        // LHS: previous costate coupling (k > 0): -E dpi_{k-1}.
+        if (k > 0)
+        {
+            for (int i = 0; i < NX; ++i)
+            {
+                (*K)(zo + nw + i, pp + i) += S(-1);
+            }
+        }
+    }
+
+    /// Terminal stage (k = N, no dynamics) of the hard-eq block-KKT.
+    template <int NX, int NSK, int NEQ, class H, class Dc, class Dv,
+              class EqRows, class IdxLo, class IdxHi, class Rg, class Rd>
+    static void fill_hardeq_term_stage(
+        int zo, int mo, int pp,
+        Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>* K,
+        Eigen::Matrix<S, Eigen::Dynamic, 1>& b, const H& hess, const Dc& dc,
+        const Dv& gamma, const Dv& Gamma, detail::QpLayout lay,
+        const IdxLo& idxs_lo, const IdxHi& idxs_hi, const EqRows& eq_rows,
+        const Rg& res_g, const Rd& res_d, S reg)
+    {
+        constexpr int nv = NX + NSK;
+        const auto c = usx_build_side_dc(dc, Gamma, lay, idxs_lo, idxs_hi,
+                                         NSK);
+        Eigen::Matrix<S, nv, 1> rtilde = -res_g - c.transpose() * gamma;
+        const auto rtilde_usx = usx_permute_vec(rtilde, 0, NX, NSK);
+        for (int i = 0; i < nv; ++i)
+        {
+            b(zo + i) += rtilde_usx(i);
+        }
+        for (int j = 0; j < NEQ; ++j)
+        {
+            b(mo + j) = res_d(lay.side_hi(eq_rows[j]));
+        }
+        if (K == nullptr)
+        {
+            return;
+        }
+        H m_nat = hess + c.transpose() * (Gamma.asDiagonal() * c);
+        auto m_usx = usx_permute_mat(m_nat, 0, NX, NSK);
+        for (int i = 0; i < NX; ++i)
+        {
+            m_usx(NSK + i, NSK + i) += reg;
+        }
+        for (int i = 0; i < nv; ++i)
+        {
+            for (int j = 0; j < nv; ++j)
+            {
+                (*K)(zo + i, zo + j) += m_usx(i, j);
+            }
+        }
+        for (int j = 0; j < NEQ; ++j)
+        {
+            const auto c_usx = usx_permute_cols(c, 0, NX, NSK);
+            const int sh = lay.side_hi(eq_rows[j]);
+            for (int i = 0; i < nv; ++i)
+            {
+                const S v = c_usx(sh, i);
+                (*K)(zo + i, mo + j) += v;
+                (*K)(mo + j, zo + i) += v;
+            }
+        }
+        // LHS: previous costate coupling (k = N > 0): -E dpi_{N-1}.
+        for (int i = 0; i < NX; ++i)
+        {
+            (*K)(zo + NSK + i, pp + i) += S(-1);
+        }
+    }
+
+    /// 5f: factor + solve the hard-equality block-KKT for one seeded KKT
+    /// re-solve (sens path). `in` carries the LHS (hess / BA / DC / d_mask)
+    /// and the seed RHS, `iter` the converged iterate (lam / t for Gamma),
+    /// `res` the seed forcing (res_g / res_b / res_d / res_m). The LHS is
+    /// cached in `ws_` across calls (keyed by N and reg); the RHS and the
+    /// LDLT solve run every call. On success `step` holds the full KKT
+    /// step (ux, pi, lam, t) with the eq sides overwritten (lam_hi = dmu,
+    /// lam_lo = 0, t = 0).
+    Status fact_solve_kkt_hardeq(const QpT& in, const QpSolT& iter,
+                                 const QpResT& res, QpSolT& step, S reg)
+    {
+        using VecD = Eigen::Matrix<S, Eigen::Dynamic, 1>;
+        using MatD = Eigen::Matrix<S, Eigen::Dynamic, Eigen::Dynamic>;
+        const int N = in.N;
+        const int nx = D::nx;
+        auto nvar_at = [&](int k)
+        {
+            return k == 0 ? D::nvar_first :
+                   (k == N ? D::nvar_term : D::nvar_path);
+        };
+        auto neq_at = [&](int k)
+        {
+            return k == 0 ? D::n_eq_first :
+                   (k == N ? D::n_eq_term : D::n_eq_path);
+        };
+        auto nsl_at = [&](int k)
+        {
+            return k == 0 ? D::nslack_first :
+                   (k == N ? D::nslack_term : D::nslack_path);
+        };
+        auto nu_at = [&](int k) { return k == N ? 0 : D::nu; };
+        int nz = 0;
+        int nmu = 0;
+        for (int k = 0; k <= N; ++k)
+        {
+            nz += nvar_at(k);
+            nmu += neq_at(k);
+        }
+        const int npi = N * nx;
+        const int ntot = nz + npi + nmu;
+
+        // Gamma / gamma: barrier treatment, then zero the eq sides.
+        compute_gamma(in, iter, res);
+        auto zero_eq = [](auto& Gamma, auto& gamma, const auto& eq_rows,
+                          detail::QpLayout lay)
+        {
+            for (int r : eq_rows)
+            {
+                const int sl = lay.side_lo(r);
+                const int sh = lay.side_hi(r);
+                if (sl >= 0)
+                {
+                    Gamma(sl) = S(0);
+                    gamma(sl) = S(0);
+                }
+                Gamma(sh) = S(0);
+                gamma(sh) = S(0);
+            }
+        };
+        zero_eq(ws_.Gamma_first, ws_.gamma_first, D::eq_rows_first,
+                D::lay_first);
+        for (int k = 1; k < N; ++k)
+        {
+            zero_eq(ws_.Gamma_path[k - 1], ws_.gamma_path[k - 1],
+                    D::eq_rows_path, D::lay_path);
+        }
+        zero_eq(ws_.Gamma_term, ws_.gamma_term, D::eq_rows_term,
+                D::lay_term);
+
+        const bool assemble_K = !ws_.kkt_valid || ws_.kkt_N != N ||
+                                ws_.kkt_reg != reg;
+        if (assemble_K)
+        {
+            ws_.kkt_K.resize(ntot, ntot);
+            ws_.kkt_K.setZero();
+        }
+        MatD* K = assemble_K ? &ws_.kkt_K : nullptr;
+        VecD b(ntot);
+        b.setZero();
+
+        int zo = 0;
+        int mo = nz + npi;
+        for (int k = 0; k <= N; ++k)
+        {
+            const int zo_cur = zo;
+            const int mo_cur = mo;
+            const int zo_next = zo + nvar_at(k);
+            if (k < N)
+            {
+                const int poff = nz + k * nx;
+                const int pp = (k > 0) ? nz + (k - 1) * nx : 0;
+                const int nw_next = nu_at(k + 1) + nsl_at(k + 1);
+                if (k == 0)
+                {
+                    fill_hardeq_dyn_stage<D::nu, D::nx, D::nslack_first,
+                                          D::n_eq_first>(
+                        0, zo_cur, mo_cur, poff, 0, zo_next, nw_next, K, b,
+                        in.first.hess, in.first.DC, ws_.gamma_first,
+                        ws_.Gamma_first, in.first.BA, D::lay_first,
+                        D::idxs_lo_first, D::idxs_hi_first,
+                        D::eq_rows_first, res.res_g_first, res.res_b[0],
+                        res.res_d_first, reg);
+                }
+                else
+                {
+                    fill_hardeq_dyn_stage<D::nu, D::nx, D::nslack_path,
+                                          D::n_eq_path>(
+                        k, zo_cur, mo_cur, poff, pp, zo_next, nw_next, K, b,
+                        in.path[k - 1].hess, in.path[k - 1].DC,
+                        ws_.gamma_path[k - 1], ws_.Gamma_path[k - 1],
+                        in.path[k - 1].BA, D::lay_path, D::idxs_lo_path,
+                        D::idxs_hi_path, D::eq_rows_path,
+                        res.res_g_path[k - 1], res.res_b[k],
+                        res.res_d_path[k - 1], reg);
+                }
+            }
+            else
+            {
+                fill_hardeq_term_stage<D::nx, D::nslack_term, D::n_eq_term>(
+                    zo_cur, mo_cur, nz + (N - 1) * nx, K, b, in.term.hess,
+                    in.term.DC, ws_.gamma_term, ws_.Gamma_term, D::lay_term,
+                    D::idxs_lo_term, D::idxs_hi_term, D::eq_rows_term,
+                    res.res_g_term, res.res_d_term, reg);
+            }
+            zo = zo_next;
+            mo += neq_at(k);
+        }
+
+        if (assemble_K)
+        {
+            ws_.kkt_ldlt.compute(ws_.kkt_K);
+            if (ws_.kkt_ldlt.info() != Eigen::Success)
+            {
+                ws_.kkt_valid = false;
+                return Status::kQpFailure;
+            }
+            ws_.kkt_valid = true;
+            ws_.kkt_N = N;
+            ws_.kkt_reg = reg;
+        }
+        const VecD x = ws_.kkt_ldlt.solve(b);
+
+        // Extract dz (usx -> natural), dpi; barrier closed form on all
+        // sides; overwrite the eq sides with the free multipliers.
+        int zo2 = 0;
+        int mo2 = nz + npi;
+        for (int k = 0; k <= N; ++k)
+        {
+            if (k == 0)
+            {
+                VecD dz_usx = x.segment(zo2, nvar_at(0));
+                usx_unpermute_into(dz_usx, D::nu, nx, D::nslack_first,
+                                   step.ux_first);
+                if (N > 0)
+                {
+                    step.pi[0] = x.segment(nz, nx);
+                }
+                closed_form_one_stage(in.first.DC, in.first.d_mask,
+                                      iter.lam_first, iter.t_first,
+                                      res.res_d_first, res.res_m_first,
+                                      D::lay_first, D::idxs_lo_first,
+                                      D::idxs_hi_first, D::nslack_first,
+                                      step.ux_first, step.t_first,
+                                      step.lam_first);
+                for (int j = 0; j < D::n_eq_first; ++j)
+                {
+                    const int r = D::eq_rows_first[j];
+                    const int sh = D::lay_first.side_hi(r);
+                    const int sl = D::lay_first.side_lo(r);
+                    step.lam_first(sh) = x(mo2 + j);
+                    step.t_first(sh) = S(0);
+                    if (sl >= 0)
+                    {
+                        step.lam_first(sl) = S(0);
+                        step.t_first(sl) = S(0);
+                    }
+                }
+            }
+            else if (k < N)
+            {
+                VecD dz_usx = x.segment(zo2, nvar_at(k));
+                usx_unpermute_into(dz_usx, D::nu, nx, D::nslack_path,
+                                   step.ux_path[k - 1]);
+                step.pi[k] = x.segment(nz + k * nx, nx);
+                closed_form_one_stage(in.path[k - 1].DC,
+                                      in.path[k - 1].d_mask,
+                                      iter.lam_path[k - 1],
+                                      iter.t_path[k - 1],
+                                      res.res_d_path[k - 1],
+                                      res.res_m_path[k - 1], D::lay_path,
+                                      D::idxs_lo_path, D::idxs_hi_path,
+                                      D::nslack_path, step.ux_path[k - 1],
+                                      step.t_path[k - 1],
+                                      step.lam_path[k - 1]);
+                for (int j = 0; j < D::n_eq_path; ++j)
+                {
+                    const int r = D::eq_rows_path[j];
+                    const int sh = D::lay_path.side_hi(r);
+                    const int sl = D::lay_path.side_lo(r);
+                    step.lam_path[k - 1](sh) = x(mo2 + j);
+                    step.t_path[k - 1](sh) = S(0);
+                    if (sl >= 0)
+                    {
+                        step.lam_path[k - 1](sl) = S(0);
+                        step.t_path[k - 1](sl) = S(0);
+                    }
+                }
+            }
+            else
+            {
+                VecD dz_usx = x.segment(zo2, nvar_at(N));
+                usx_unpermute_into(dz_usx, 0, nx, D::nslack_term,
+                                   step.ux_term);
+                closed_form_one_stage(in.term.DC, in.term.d_mask,
+                                      iter.lam_term, iter.t_term,
+                                      res.res_d_term, res.res_m_term,
+                                      D::lay_term, D::idxs_lo_term,
+                                      D::idxs_hi_term, D::nslack_term,
+                                      step.ux_term, step.t_term,
+                                      step.lam_term);
+                for (int j = 0; j < D::n_eq_term; ++j)
+                {
+                    const int r = D::eq_rows_term[j];
+                    const int sh = D::lay_term.side_hi(r);
+                    const int sl = D::lay_term.side_lo(r);
+                    step.lam_term(sh) = x(mo2 + j);
+                    step.t_term(sh) = S(0);
+                    if (sl >= 0)
+                    {
+                        step.lam_term(sl) = S(0);
+                        step.t_term(sl) = S(0);
+                    }
+                }
+            }
+            zo2 += nvar_at(k);
+            mo2 += neq_at(k);
+        }
+        return Status::kSolved;
+    }
 
     /// Shared implementation of sens_forward / sens_adj (HPIPM
     /// OCP_QP_IPM_SENS_FRW / _ADJ, x_ocp_qp_ipm.c:3383/3455): a single KKT
@@ -2161,6 +2744,27 @@ private:
         Status st;
         if (constr)
         {
+            if constexpr (D::has_eq)
+            {
+                // 5f: the barrier two-pass KKT is singular at the converged
+                // iterate for genuine hard-equality rows (Gamma = lam/t ->
+                // inf as t -> 0). When the eq rows are true equalities
+                // (lo == hi in the QP data) use the hard-equality block-KKT
+                // (Eigen LDLT; it caches the LHS across sens calls). When
+                // the eq-group rows are ordinary inactive boxes (the barrier
+                // path is then well-conditioned and is the QP being
+                // differentiated), fall through to the two-pass.
+                if (eqs_hard(in))
+                {
+                    st = fact_solve_kkt_hardeq(in_seed, sol, rhs, sens,
+                                                ws_.preg_last);
+                    if (st == Status::kSolved)
+                    {
+                        has_factors_ = true;
+                    }
+                    return st;
+                }
+            }
             if (!has_factors_)
             {
                 // exit refactor at the final iterate (HPIPM
@@ -2193,9 +2797,12 @@ private:
                 }
                 return st;
             }
-            compute_gamma(in_seed, sol, rhs);
-            solve_kkt_reuse_gamma(in_seed, sol, rhs, sens);
-            st = Status::kSolved;
+            else
+            {
+                compute_gamma(in_seed, sol, rhs);
+                solve_kkt_reuse_gamma(in_seed, sol, rhs, sens);
+                st = Status::kSolved;
+            }
         }
         else
         {
@@ -2223,6 +2830,7 @@ private:
 
     /// ||res_m − tau_min ∘ d_mask||_∞ across all stages (HPIPM's
     /// res_m_tau exit-test quantity, x_ocp_qp_ipm.c:3114-3116).
+    /// 5f: hard-equality sides (d_mask = 2) are excluded (no complementarity).
     S res_m_tau(const QpT& in, const QpResT& res) const
     {
         S m = 0;
@@ -2230,6 +2838,10 @@ private:
         {
             for (int i = 0; i < static_cast<int>(rm.size()); ++i)
             {
+                if (dm(i) > S(1.5))
+                {
+                    continue;  // 5f: hard-eq side (no complementarity).
+                }
                 m = std::max(m, std::fabs(rm(i) - opts_.tau_min * dm(i)));
             }
         };
@@ -2246,26 +2858,29 @@ private:
     /// after init; t is kept for all sides to stay interior).
     void mask_abs_lam(const QpT& in, QpSolT& sol) const
     {
-        sol.lam_first = sol.lam_first.cwiseProduct(in.first.d_mask);
+        // 5f: presence mask (weight 1) - hard-eq multipliers are kept.
+        sol.lam_first =
+            sol.lam_first.cwiseProduct(present_mask(in.first.d_mask));
         for (int k = 1; k < in.N; ++k)
         {
-            sol.lam_path[k - 1] =
-                sol.lam_path[k - 1].cwiseProduct(in.path[k - 1].d_mask);
+            sol.lam_path[k - 1] = sol.lam_path[k - 1].cwiseProduct(
+                present_mask(in.path[k - 1].d_mask));
         }
-        sol.lam_term = sol.lam_term.cwiseProduct(in.term.d_mask);
+        sol.lam_term = sol.lam_term.cwiseProduct(present_mask(in.term.d_mask));
     }
 
     /// res_m -= tau * d_mask on every stage (COMPUTE_TAU_MIN_QP,
     /// x_core_qp_ipm_aux.c:756-778).
     void shift_res_m(const QpT& in, QpResT& res, S tau) const
     {
-        res.res_m_first.array() -= tau * in.first.d_mask.array();
+        // 5f: barrier sides only (hard-eq sides have res_m = 0).
+        res.res_m_first.array() -= tau * barrier_mask(in.first.d_mask).array();
         for (int k = 1; k < in.N; ++k)
         {
             res.res_m_path[k - 1].array() -=
-                tau * in.path[k - 1].d_mask.array();
+                tau * barrier_mask(in.path[k - 1].d_mask).array();
         }
-        res.res_m_term.array() -= tau * in.term.d_mask.array();
+        res.res_m_term.array() -= tau * barrier_mask(in.term.d_mask).array();
     }
 
     /// Fill the residual / objective fields of a stat row (HPIPM cols 7-12).
@@ -2581,7 +3196,7 @@ private:
                 }
             }
 
-            update_vars(out, step);
+            update_vars(in, out, step);
             mask_abs_lam(in, out);
 
             mu = inline_mu(in, out);
@@ -2659,7 +3274,11 @@ private:
         const int xoff = nvar - nslack - D::nx;  // x-part column offset
         const int nux = nvar - nslack;  // (u;x)-part width
 
-        const auto lam_m = d_mask.cwiseProduct(lam);
+        // 5f: hard-equality sides (d_mask = 2) contribute their multiplier
+        // (weight 1) to res_g but carry no complementarity (res_m = 0).
+        const auto pres = present_mask(d_mask);
+        const auto barr = barrier_mask(d_mask);
+        const auto lam_m = pres.cwiseProduct(lam);
 
         res_g = hess * z + grad;
         const auto Hz = hess * z;
@@ -2731,10 +3350,11 @@ private:
             const int si = lo + nrow + j;
             res_d(si) = d(si) + t(si) - z(s0 + j);
         }
-        res_d = d_mask.cwiseProduct(res_d);
+        res_d = pres.cwiseProduct(res_d);
 
-        // res_m = d_mask ∘ (λ ∘ t − m) (x_ocp_qp_res.c:513-516)
-        res_m = d_mask.cwiseProduct(lam.cwiseProduct(t) - m);
+        // res_m = d_mask ∘ (λ ∘ t − m) (x_ocp_qp_res.c:513-516); 5f:
+        // hard-equality sides (no complementarity) -> 0.
+        res_m = barr.cwiseProduct(lam.cwiseProduct(t) - m);
 
         // Dynamics coupling (x_ocp_qp_res.c:440, 505-510)
         if (ba != nullptr)
@@ -2931,6 +3551,19 @@ private:
         return out;
     }
 
+    /// Permute a (u;s;x)-ordered vector `v` back to (u;x;s) order, writing
+    /// into a pre-sized target `out` (needed when `v` is dynamic-size and
+    /// the return-by-value would default-construct a zero-size vector).
+    template <class V, class W>
+    static void usx_unpermute_into(const V& v, int nu, int nx, int nsk, W& out)
+    {
+        const int nv = static_cast<int>(v.size());
+        for (int i = 0; i < nv; ++i)
+        {
+            out(usx_old_idx(i, nu, nx, nsk)) = v(i);
+        }
+    }
+
     /// Permute a square matrix from (u;x;s) to (u;s;x) order (rows + cols).
     template <class M>
     static M usx_permute_mat(const M& m, int nu, int nx, int nsk)
@@ -3015,6 +3648,9 @@ private:
     /// Per-side gamma / Gamma / t_inv (HPIPM COMPUTE_GAMMA_GAMMA_QP,
     /// x_core_qp_ipm_aux.c:38): gamma_i = (res_m_i - lam_i res_d_i)/t_i,
     /// Gamma_i = lam_i/t_i, both masked by d_mask (absent sides -> 0).
+    /// Hard-equality sides (d_mask = 2) carry no barrier: Gamma = gamma
+    /// = t_inv = 0 (5f); their multiplier is a free KKT variable handled
+    /// by the saddle stages.
     void compute_gamma(const QpT& in, const QpSolT& iter,
                        const QpResT& res)
     {
@@ -3025,14 +3661,15 @@ private:
             const int nside = static_cast<int>(gamma.size());
             for (int i = 0; i < nside; ++i)
             {
-                t_inv(i) = 1.0 / t(i);
-                if (dmask(i) > 0.5)
+                if (dmask(i) > 0.5 && dmask(i) < 1.5)
                 {
+                    t_inv(i) = 1.0 / t(i);
                     Gamma(i) = lam(i) * t_inv(i);
                     gamma(i) = t_inv(i) * (res_m(i) - lam(i) * res_d(i));
                 }
                 else
                 {
+                    t_inv(i) = 0.0;
                     Gamma(i) = 0.0;
                     gamma(i) = 0.0;
                 }
@@ -3057,10 +3694,15 @@ private:
     /// triangular solver (same GCC 13 -O2 maybe-uninitialized workaround as
     /// reduce_one_stage / forward_one_stage).
     template <class Lm, class Bm>
-    static Bm tri_forward(const Lm& L, const Bm& b)
+    static Eigen::Matrix<typename Bm::Scalar, Bm::RowsAtCompileTime,
+                         Bm::ColsAtCompileTime>
+    tri_forward(const Lm& L, const Bm& b)
     {
+        using X =
+            Eigen::Matrix<typename Bm::Scalar, Bm::RowsAtCompileTime,
+                          Bm::ColsAtCompileTime>;
         const int n = static_cast<int>(b.rows());
-        Bm x;
+        X x;
         for (int col = 0; col < b.cols(); ++col)
         {
             for (int i = 0; i < n; ++i)
@@ -3079,10 +3721,14 @@ private:
     /// Explicit backward substitution: x = L^{-T} b for a lower-triangular
     /// L (i.e. the transpose solve) and a (possibly multi-column) RHS b.
     template <class Lm, class Bm>
-    static Bm tri_backward(const Lm& L, const Bm& b)
+    static Eigen::Matrix<typename Bm::Scalar, Bm::RowsAtCompileTime,
+                         Bm::ColsAtCompileTime>
+    tri_backward(const Lm& L, const Bm& b)
     {
+        using X = Eigen::Matrix<typename Bm::Scalar, Bm::RowsAtCompileTime,
+                                Bm::ColsAtCompileTime>;
         const int n = static_cast<int>(b.rows());
-        Bm x;
+        X x;
         for (int col = 0; col < b.cols(); ++col)
         {
             for (int i = n - 1; i >= 0; --i)
@@ -3858,8 +4504,9 @@ private:
             const Pi_t& q_next = (N == 1) ? ws_.q_term : ws_.q_path[0];
             v_first_t dz_usx;
             forward_step<D::nu, D::nx, D::nslack_first>(
-                true, ws_.M_first, ws_.L_first, ws_.rtilde_first, dpi_prev,
-                p_next, q_next, &res.res_b[0], &st.BA, dz_usx, &step.pi[0]);
+                true, ws_.M_first, ws_.L_first, ws_.rtilde_first,
+                dpi_prev, p_next, q_next, &res.res_b[0], &st.BA, dz_usx,
+                &step.pi[0]);
             step.ux_first = usx_unpermute_vec(dz_usx, D::nu, D::nx,
                                               D::nslack_first);
         }
@@ -3891,7 +4538,7 @@ private:
     }
 
     void closed_form_stage(int k, const QpT& in, const QpResT& res,
-                           const QpSolT& iter, QpSolT& step)
+                            const QpSolT& iter, QpSolT& step)
     {
         const int N = in.N;
         if (k == 0)
@@ -3902,7 +4549,8 @@ private:
                                   iter.t_first, res.res_d_first,
                                   res.res_m_first, D::lay_first,
                                   D::idxs_lo_first, D::idxs_hi_first,
-                                  D::nslack_first, step.ux_first, dt, dlam);
+                                  D::nslack_first, step.ux_first, dt,
+                                  dlam);
             step.t_first = dt;
             step.lam_first = dlam;
         }
@@ -3912,9 +4560,9 @@ private:
             c_term_t dt, dlam;
             closed_form_one_stage(st.DC, st.d_mask, iter.lam_term,
                                   iter.t_term, res.res_d_term,
-                                  res.res_m_term, D::lay_term, D::idxs_lo_term,
-                                  D::idxs_hi_term, D::nslack_term,
-                                  step.ux_term, dt, dlam);
+                                  res.res_m_term, D::lay_term,
+                                  D::idxs_lo_term, D::idxs_hi_term,
+                                  D::nslack_term, step.ux_term, dt, dlam);
             step.t_term = dt;
             step.lam_term = dlam;
         }
@@ -3923,7 +4571,8 @@ private:
             const auto& st = in.path[k - 1];
             c_path_t dt, dlam;
             closed_form_one_stage(st.DC, st.d_mask, iter.lam_path[k - 1],
-                                  iter.t_path[k - 1], res.res_d_path[k - 1],
+                                  iter.t_path[k - 1],
+                                  res.res_d_path[k - 1],
                                   res.res_m_path[k - 1], D::lay_path,
                                   D::idxs_lo_path, D::idxs_hi_path,
                                   D::nslack_path, step.ux_path[k - 1], dt,

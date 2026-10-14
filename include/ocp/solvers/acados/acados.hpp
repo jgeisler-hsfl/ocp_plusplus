@@ -1072,6 +1072,68 @@ public:
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
+    /// First-order sensitivity of the OCP solution w.r.t. the fixed
+    /// initial state (HPIPM QP sensitivities, ARCHITECTURE sec. 8).
+    ///
+    /// Assembles the staged QP at the (converged) iterate `sol`, solves
+    /// it on a throwaway `QpSolver` instance (caching the exit KKT
+    /// factors), then re-solves the KKT system with the seed induced by
+    /// the perturbation `dx0`:
+    ///   seed.d_first: x_0 pin rows, lo side +dx0, hi side -dx0
+    /// The x_0 column of the stage-0 dynamics (BA) already propagates the
+    /// pin-row perturbation dx0 into the interior states, so no dynamics
+    /// seed (seed.b) is needed; adding df_dx*dx0 there would count the
+    /// perturbation twice.
+    /// `dsol` carries the QP-space response (ux = (u; x; s) per stage,
+    /// pi, lam, t), i.e. d(x*, u*)/dx0 * dx0 to first order.
+    ///
+    /// Requires `P::fixed_initial_state` and `qp_mode == kStaged` (the
+    /// staged QP sensitivity data); returns kAborted otherwise. The
+    /// internal QP solve needs kSolved or kMaxIterations (same policy
+    /// as the driver).
+    Status sens_x0(const P& problem, const Solution<P, NH>& sol,
+                   const typename P::state_t& dx0, QpSol<P, NH>& dsol)
+    {
+        static_assert(P::fixed_initial_state,
+                      "AcadosSolver::sens_x0: requires "
+                      "fixed_initial_state");
+        if (opts_.qp_mode != QpMode::kStaged)
+        {
+            std::fprintf(stderr,
+                         "AcadosSolver::sens_x0: kStaged only\n");
+            return Status::kAborted;
+        }
+        const int N = sol.N;
+        resize(N);
+        const Status st = assemble_qp(problem, sol);
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+        const Qp<P, NH>& q = qp_in_;
+
+        QpSolver sens_qp;
+        QpSol<P, NH> qsol(N);
+        const Status qs = sens_qp.solve(q, qsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        QpSeed<P, NH> seed(N);
+        // Only the x_0 pin rows are perturbed: the stage-0 dynamics matrix
+        // (BA) carries the x_0 column, so the pin-row perturbation alone
+        // propagates dx0 through the trajectory. Seeding b[0] with
+        // df_dx*dx0 as well would double-count the perturbation.
+        const auto& lay = D::lay_first;
+        for (int r = 0; r < D::nx; ++r)
+        {
+            seed.d_first(lay.side_lo(r)) += dx0(r);
+            seed.d_first(lay.side_hi(r)) -= dx0(r);
+        }
+        return sens_qp.sens_forward(q, qsol, seed, dsol);
+    }
+
     /// NLP objective at the iterate: the problem's stage + terminal costs
     /// plus the slack penalty 0.5 * quad * s^2 + lin * s per soft side
     /// (sec. 1.6; the problem cost functions exclude the solver-internal
