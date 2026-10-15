@@ -5064,9 +5064,10 @@ private:
     ///               solver floor (t < t_hard) or the barrier weight
     ///               Gamma = lam/t exceeds gamma_hard.  These enter the
     ///               sens KKT as exact rows.  A true hard-equality row
-    ///               (lo == hi) has BOTH sides hard; both rows enter as a
-    ///               pair, consistent under a coherent (opposite-sign)
-    ///               seed on the pair.
+    ///               (lo == hi) has BOTH sides hard; the caller
+    ///               (fact_solve_kkt_active) dedups such a pair to the hi
+    ///               side only (the two exact rows would be linearly
+    ///               dependent, A_hi = -A_lo).
     ///   moderate -- finite barrier weight (Gamma <= gamma_hard); kept in
     ///               the barrier part of the LHS (A' Gamma A) with the
     ///               closed-form dlam / dt, exactly as the main IPM treats
@@ -5140,14 +5141,53 @@ private:
 
         std::vector<int> hard, moderate;
         split_sides(in, sol, hard, moderate);
+        // Dedup hard-equality rows: a constraint row whose lo AND hi sides
+        // are both hard is a lo == hi row (a non-pinned row can only be
+        // tight on one side); build_side_matrix emits A_hi = -A_lo, so the
+        // two exact KKT rows would be linearly dependent and the
+        // multiplier pair only determined up to a split.  Keep the hi
+        // side only (staged fact_solve_kkt_hardeq convention: the
+        // multiplier lives on the hi side; the lo side is zeroed below).
+        std::vector<int> dropped;
+        {
+            std::vector<int> in_hard(nside, 0);
+            for (int i : hard)
+            {
+                in_hard[i] = 1;
+            }
+            const int nrow = in.nb + in.ng;  // side layout: [lo sides; hi]
+            for (int r = 0; r < nrow; ++r)
+            {
+                if (in_hard[r] && in_hard[in.nb + in.ng + r])
+                {
+                    in_hard[r] = 0;
+                    dropped.push_back(r);
+                }
+            }
+            std::vector<int> keep;
+            for (int i : hard)
+            {
+                if (in_hard[i])
+                {
+                    keep.push_back(i);
+                }
+            }
+            hard.swap(keep);
+        }
         const int nhard = static_cast<int>(hard.size());
 
         build_side_matrix(in, ws_.A);
 
-        // Gamma / gamma for the barrier part; the hard sides are excluded
-        // (their A' Gamma A moves into the KKT block instead).
+        // Gamma / gamma for the barrier part; the hard sides (and the
+        // deduped lo-side partners) are excluded (their A' Gamma A moves
+        // into the KKT block instead; t = 0 would give Gamma = inf).
         compute_gamma(in, sol, rhs);
         for (int i : hard)
+        {
+            ws_.Gamma(i) = S(0);
+            ws_.gamma(i) = S(0);
+        }
+        for (int i : dropped)
         {
             ws_.Gamma(i) = S(0);
             ws_.gamma(i) = S(0);
@@ -5221,6 +5261,14 @@ private:
         {
             sens.lam(hard[j]) = x(nv + j);
             sens.t(hard[j]) = S(0);
+        }
+        // lo-side partners of the deduped hard-equality rows: the
+        // closed-form update divides by t = 0 and is meaningless there;
+        // zero them (the multiplier lives on the hi side, as staged).
+        for (int i : dropped)
+        {
+            sens.lam(i) = S(0);
+            sens.t(i) = S(0);
         }
         return Status::kSolved;
     }
