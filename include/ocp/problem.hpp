@@ -267,12 +267,18 @@ struct SoftPenalty
 /// adds to the stage cost for that row (per side, see `SoftPenalty`). The
 /// numerical treatment of soft rows is the solver's business; the problem
 /// only declares them.
+// NOTE: Eigen 3.3 `Matrix()` is a user-provided default constructor, so
+// value-initialization (`T{}` / `{}` NSDMI) does NOT zero the coefficients.
+// All Eigen members in the spec/sens structs below are therefore
+// initialized with an explicit `::Zero()` NSDMI; never rely on `{}`.
 template <class Scalar, int Dim>
 struct BoxSpec
 {
-    Eigen::Matrix<Scalar, Dim, 1> lo{};      // lower bounds
-    Eigen::Matrix<Scalar, Dim, 1> hi{};      // upper bounds
-    SoftPenalty<Scalar, Dim>      penalty;   // per-row slack penalty weights
+    Eigen::Matrix<Scalar, Dim, 1> lo =
+        Eigen::Matrix<Scalar, Dim, 1>::Zero();  // lower bounds
+    Eigen::Matrix<Scalar, Dim, 1> hi =
+        Eigen::Matrix<Scalar, Dim, 1>::Zero();  // upper bounds
+    SoftPenalty<Scalar, Dim>      penalty;      // per-row slack penalty
 };
 
 /// Linear two-sided stage constraint  lo <= A x + B u <= hi  (stage k);
@@ -280,8 +286,10 @@ struct BoxSpec
 template <class Scalar, int NRow, int Nx, int Nu>
 struct LinearSpec
 {
-    Eigen::Matrix<Scalar, NRow, Nx> A{};
-    Eigen::Matrix<Scalar, NRow, Nu> B{};
+    Eigen::Matrix<Scalar, NRow, Nx> A =
+        Eigen::Matrix<Scalar, NRow, Nx>::Zero();
+    Eigen::Matrix<Scalar, NRow, Nu> B =
+        Eigen::Matrix<Scalar, NRow, Nu>::Zero();
     BoxSpec<Scalar, NRow>           bounds{};
 };
 
@@ -290,7 +298,8 @@ struct LinearSpec
 template <class Scalar, int NRow, int Nx>
 struct TerminalLinearSpec
 {
-    Eigen::Matrix<Scalar, NRow, Nx> A{};
+    Eigen::Matrix<Scalar, NRow, Nx> A =
+        Eigen::Matrix<Scalar, NRow, Nx>::Zero();
     BoxSpec<Scalar, NRow>           bounds{};
 };
 
@@ -300,8 +309,10 @@ struct TerminalLinearSpec
 template <class Scalar, int NRow, int NParam>
 struct BoxSensP
 {
-    Eigen::Matrix<Scalar, NRow, NParam> dlo_dp{};
-    Eigen::Matrix<Scalar, NRow, NParam> dhi_dp{};
+    Eigen::Matrix<Scalar, NRow, NParam> dlo_dp =
+        Eigen::Matrix<Scalar, NRow, NParam>::Zero();
+    Eigen::Matrix<Scalar, NRow, NParam> dhi_dp =
+        Eigen::Matrix<Scalar, NRow, NParam>::Zero();
 };
 
 /// Parameter-vector (p) derivatives of a linear spec's coefficients and
@@ -315,10 +326,14 @@ struct BoxSensP
 template <class Scalar, int NRow, int Nx, int Nu, int NParam>
 struct LinearSensP
 {
-    Eigen::Matrix<Scalar, NRow * Nx, NParam> dA_dp{};
-    Eigen::Matrix<Scalar, NRow * Nu, NParam> dB_dp{};
-    Eigen::Matrix<Scalar, NRow, NParam>      dlo_dp{};
-    Eigen::Matrix<Scalar, NRow, NParam>      dhi_dp{};
+    Eigen::Matrix<Scalar, NRow * Nx, NParam> dA_dp =
+        Eigen::Matrix<Scalar, NRow * Nx, NParam>::Zero();
+    Eigen::Matrix<Scalar, NRow * Nu, NParam> dB_dp =
+        Eigen::Matrix<Scalar, NRow * Nu, NParam>::Zero();
+    Eigen::Matrix<Scalar, NRow, NParam> dlo_dp =
+        Eigen::Matrix<Scalar, NRow, NParam>::Zero();
+    Eigen::Matrix<Scalar, NRow, NParam> dhi_dp =
+        Eigen::Matrix<Scalar, NRow, NParam>::Zero();
 };
 
 // =========================================================================

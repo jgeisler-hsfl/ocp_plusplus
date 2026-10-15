@@ -370,7 +370,8 @@ public:
 
     x0_dp_t initial_state_sens_p() const
     {
-        // x0 = [1; 0.5] (p-independent)
-        return x0_dp_t{};
+        // x0 = [1; 0.5] (p-independent).  Explicit ::Zero(): value-init
+        // (`x0_dp_t{}`) does not zero Eigen 3.3 fixed-size matrices.
+        return x0_dp_t::Zero();
     }
 };
