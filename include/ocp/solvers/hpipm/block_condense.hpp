@@ -791,15 +791,20 @@ void expand_block_sol(const Qp<P, NH>& staged,
 /// Expand a block-condensed-QP sensitivity STEP (the linearized-KKT step
 /// dv / dt / dlam / dpi of a converged block QP, as returned by
 /// `HpipmQpSolver<..., BlockQpDim>::sens_forward` / `sens_adj`) back into
-/// the staged `QpSol` layout.  `staged` must be the staged QP that was
+/// the staged `QpSol` layout.  `staged` must be the staged QP whose LHS was
 /// condensed (its BA / hess / DC drive the primal forward simulation and
-/// the dynamics-multiplier sweep).
+/// the dynamics-multiplier sweep); for parameter sensitivities this is the
+/// SEED QP (same LHS as the base, whose `b` field is the p-derivative of
+/// the dynamics), mirroring `expand_full_sol(..., include_b = true)`.
 ///
 /// Primal: the controls and slacks are read directly from the block step
 /// vectors; dx_{k0} comes from the block; the internal state increments
-/// dx_{k0+1} ... dx_{k0+NB-1} are forward-simulated HOMOGENEOUSLY,
-/// `dx_{k+1} = BA [du_k; dx_k]` (the seeded KKT enforces the step
-/// dynamics without the affine offset b, so it must not be added).
+/// dx_{k0+1} ... dx_{k0+NB-1} are forward-simulated from the step
+/// dynamics.  With `include_b` the affine seed offset is carried,
+/// `dx_{k+1} = BA [du_k; dx_k] + b_k` (the seed `b` = d(b_k)/dp of the
+/// condensed stage QP); with `include_b == false` the simulation is
+/// homogeneous (the x_0 sensitivity path, whose seed carries no dynamics
+/// offset — the dx_0 perturbation enters through the pin rows).
 ///
 /// Dual: dlam / dt are copied row group by row group (copy_block_duals;
 /// the flow map is a feasible-set bijection, so the step transfers
@@ -814,7 +819,7 @@ void expand_block_sol(const Qp<P, NH>& staged,
 template <class P, int NH, int NH2, int NB>
 void expand_block_step(const Qp<P, NH>& staged,
                        const QpSol<P, NH2, BlockQpDim<P, NB>>& bstep,
-                       QpSol<P, NH>& sol)
+                       QpSol<P, NH>& sol, bool include_b = false)
 {
     using B = BlockQpDim<P, NB>;
     using SD = QpDim<P>;
@@ -838,7 +843,7 @@ void expand_block_step(const Qp<P, NH>& staged,
     struct Stage
     {
         M BA, hess, DC;
-        V d_mask;
+        V b, d_mask;
         QpLayout lay;
     };
     auto stage_at = [&](int k) -> Stage
@@ -849,6 +854,7 @@ void expand_block_step(const Qp<P, NH>& staged,
             s.BA = staged.first.BA;
             s.hess = staged.first.hess;
             s.DC = staged.first.DC;
+            s.b = staged.first.b;
             s.d_mask = staged.first.d_mask;
             s.lay = SD::lay_first;
         }
@@ -857,6 +863,7 @@ void expand_block_step(const Qp<P, NH>& staged,
             s.BA = staged.path[k - 1].BA;
             s.hess = staged.path[k - 1].hess;
             s.DC = staged.path[k - 1].DC;
+            s.b = staged.path[k - 1].b;
             s.d_mask = staged.path[k - 1].d_mask;
             s.lay = SD::lay_path;
         }
@@ -865,7 +872,8 @@ void expand_block_step(const Qp<P, NH>& staged,
 
     // ---------------------------------------------------------------
     // Primal: du / ds sliced from the block vectors; internal dx by
-    // homogeneous forward simulation.
+    // forward simulation of the step dynamics (with the seed b offset
+    // when include_b).
     // ---------------------------------------------------------------
     for (int ii = 0; ii < N2; ++ii)
     {
@@ -890,6 +898,10 @@ void expand_block_step(const Qp<P, NH>& staged,
             uz.head(nu) = ub.segment(j * nu, nu);
             uz.tail(nx) = xs[j];
             xs[j + 1] = sj.BA * uz;
+            if (include_b)
+            {
+                xs[j + 1] += sj.b;
+            }
         }
 
         for (int j = 0; j < NB; ++j)

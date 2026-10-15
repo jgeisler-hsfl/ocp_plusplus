@@ -5,9 +5,10 @@
 //   K_j = d(x*, u*)/dp_j  from one sens_param call (dp = e_j),
 //   FD  = (sol(p + h e_j) - sol(p - h e_j)) / (2 h).
 // The DoubleIntegrator's x_0 is p-independent and pinned, so its
-// response component must stay exactly zero.  5i is kStaged only: the
-// condensing modes must return kAborted.  A zero direction must give a
-// zero response (zero seed -> zero step).
+// response component must stay exactly zero.  5j made the condensing
+// modes work (they must return kSolved; the dense/block FD checks live
+// in sens_param_5j.cpp).  A zero direction must give a zero response
+// (zero seed -> zero step).
 //
 // FD step / tolerance per parameter:
 //   p_0 (Ts): enters the dynamics quadratically, so central-FD truncation
@@ -170,29 +171,69 @@ void test_sens_param_zero_dp()
               ")");
 }
 
-// 5i scope: kStaged only; the condensing modes must return kAborted.
-void test_sens_param_non_staged_aborted()
+// 5j: the condensing modes must now solve (the full FD checks for them
+// live in sens_param_5j.cpp); here we only check status + a sane,
+// non-trivial response for Ts (p_0).
+void test_sens_param_condensed_modes_solved()
 {
     const std::string name = "sens_param DI N=10 non-staged ";
     const int N = 10;
     DoubleIntegrator p;
     Solution<DoubleIntegrator> sol = make_start(p, N);
-    AcadosOptions opts;
-    opts.qp_mode = QpMode::kFullCondensed;
-    AcadosSolver<DoubleIntegrator, Eigen::Dynamic> solver(opts);
-    if (solver.solve(p, sol) != Status::kSolved)
+
+    for (int dense = 0; dense < 2; ++dense)
     {
-        check(false, name + ": base solve kSolved");
-        return;
+        AcadosOptions opts;
+        if (dense)
+        {
+            opts.qp_mode = QpMode::kFullCondensed;
+        }
+        else
+        {
+            opts.qp_mode = QpMode::kPartialCondensed;
+            // NB == 0 default solver: 5j falls back to the staged path.
+        }
+        AcadosSolver<DoubleIntegrator, Eigen::Dynamic> solver(opts);
+        if (solver.solve(p, sol) != Status::kSolved)
+        {
+            check(false, name + (dense ? "dense" : "block-fallback") +
+                          ": base solve kSolved");
+            return;
+        }
+        DoubleIntegrator::param_t dp;
+        dp.setZero();
+        dp(0) = 1.0;
+        QpSol<DoubleIntegrator, Eigen::Dynamic> dsol(N);
+        const Status ss = solver.sens_param(p, sol, dp, dsol);
+        const std::string tag =
+            name + (dense ? "kFullCondensed" : "kPartialCondensed (NB=0)");
+        check(ss == Status::kSolved,
+              tag + " -> kSolved (got " + std::to_string(static_cast<int>(ss)) +
+                  ")");
+        if (ss != Status::kSolved)
+        {
+            return;
+        }
+        // dx_0 must stay exactly zero (p-independent pinned state).
+        const Eigen::VectorXd dx0 =
+            dsol.ux_first.segment(QpDim<DoubleIntegrator>::nu,
+                                  QpDim<DoubleIntegrator>::nx);
+        check(dx0.cwiseAbs().maxCoeff() < 1e-12,
+              tag + ": dx_0 == 0 (got " +
+                  std::to_string(dx0.cwiseAbs().maxCoeff()) + ")");
+        // Ts moves the trajectory: at least one du/dTs entry must be
+        // O(1), not numerically zero.
+        double mx = 0.0;
+        for (int k = 0; k < N; ++k)
+        {
+            Eigen::VectorXd du, dx;
+            ux_block(dsol, N, k, du, dx);
+            mx = std::max(mx, du.cwiseAbs().maxCoeff());
+        }
+        check(mx > 1e-3,
+              tag + ": d(u)/dTs is non-trivial (got max |du| = " +
+                  std::to_string(mx) + ")");
     }
-    DoubleIntegrator::param_t dp;
-    dp.setZero();
-    dp(0) = 1.0;
-    QpSol<DoubleIntegrator, Eigen::Dynamic> dsol(N);
-    const Status ss = solver.sens_param(p, sol, dp, dsol);
-    check(ss == Status::kAborted,
-          name + ": kFullCondensed -> kAborted (got " +
-              std::to_string(static_cast<int>(ss)) + ")");
 }
 
 void test_sens_param_fd()
@@ -300,7 +341,7 @@ void test_sens_param_fd()
 int run_sens_param_5i_tests()
 {
     test_sens_param_zero_dp();
-    test_sens_param_non_staged_aborted();
+    test_sens_param_condensed_modes_solved();
     test_sens_param_fd();
     if (failures == 0)
     {

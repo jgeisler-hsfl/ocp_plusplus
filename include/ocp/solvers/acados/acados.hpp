@@ -1232,7 +1232,12 @@ public:
             {
                 return ss;
             }
-            expand_block_step<P, NH, Eigen::Dynamic, NB>(q, bsens, dsol);
+            // x_0 sensitivity seed carries no dynamics offset (the dx_0
+            // enters through the pin rows), so the base QP with the
+            // homogeneous expansion is correct (mirrors
+            // sens_x0_full_condensed, include_b = false).
+            expand_block_step<P, NH, Eigen::Dynamic, NB>(q, bsens, dsol,
+                                                         /*include_b=*/false);
             return Status::kSolved;
         }
         else
@@ -1306,21 +1311,18 @@ public:
     /// zero and the barrier KKT would otherwise leak an O(mu_exit) artifact
     /// through its nearly-singular row.
     ///
-    /// kStaged only (dense / block seed condensing is 5j); other qp_modes
-    /// return kAborted.
+    /// kStaged (5i); kFullCondensed / kPartialCondensed (5j) condense the
+    /// staged sensitivity QP (converged LHS + staged seed as RHS) with the
+    /// same flow-map machinery as the QP data and seed-solve the condensed
+    /// QP. kPartialCondensed falls back to the staged path when the block
+    /// size does not match this solver's compile-time NB (same policy as
+    /// sens_x0_partial_condensed).
     Status sens_param(const P& problem, const Solution<P, NH>& sol,
                       const typename P::param_t& dp, QpSol<P, NH>& dsol)
     {
         static_assert(P::np > 0,
                       "AcadosSolver::sens_param: requires Dims::np > 0 "
                       "(a parameter-vector sensitivity interface).");
-        if (opts_.qp_mode != QpMode::kStaged)
-        {
-            std::fprintf(stderr,
-                "AcadosSolver::sens_param: kStaged only (dense / block "
-                "seed condensing not yet implemented)\n");
-            return Status::kAborted;
-        }
         const int N = sol.N;
         resize(N);
         const Status st = assemble_qp(problem, sol);
@@ -1338,7 +1340,186 @@ public:
         }
         QpSeed<P, NH> seed(N);
         fill_param_seed(problem, sol, dp, qsol, seed);
+
+        if (opts_.qp_mode == QpMode::kStaged)
+        {
+            return sens_qp.sens_forward(qp_in_, qsol, seed, dsol);
+        }
+
+        // 5j: condensed modes — condense the staged sensitivity QP and
+        // seed-solve the condensed QP.
+        Qp<P, NH> qseed(N);
+        build_seed_qp(qp_in_, seed, qseed);
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            return sens_param_full_condensed(qp_in_, qseed, dsol);
+        }
+        if constexpr (NB > 0)
+        {
+            const int N2 = (opts_.qp_cond_N > 0) ? opts_.qp_cond_N : N;
+            if (N2 < N && N % N2 == 0 && N / N2 == NB)
+            {
+                return sens_param_block_condensed(qp_in_, qseed, N2, dsol);
+            }
+        }
+        // kPartialCondensed with a non-matching block size: staged fallback
+        // (same policy as solve_qp_partial_condensed / sens_x0).
         return sens_qp.sens_forward(qp_in_, qsol, seed, dsol);
+    }
+
+    /// 5j: staged sensitivity QP = converged LHS (hess / BA / DC / d_mask)
+    /// + staged seed as RHS (grad / b / d / m) — the same `in_seed`
+    /// construction as HpipmQpSolver::sens_solve. Condensing this QP
+    /// (condense_full / condense_block) yields the dense / block
+    /// sensitivity QP; its RHS fields are the condensed seeds (the seed
+    /// `b` flows through the flow-map elimination into the condensed
+    /// `g` / `d`, 5i plan sec. 6).
+    void build_seed_qp(const Qp<P, NH>& q, const QpSeed<P, NH>& seed,
+                       Qp<P, NH>& out) const
+    {
+        out.first.hess   = q.first.hess;
+        out.first.BA     = q.first.BA;
+        out.first.DC     = q.first.DC;
+        out.first.d_mask = q.first.d_mask;
+        out.first.grad   = seed.grad_first;
+        out.first.b      = seed.b[0];
+        out.first.d      = seed.d_first;
+        out.first.m      = seed.m_first;
+        for (int k = 1; k < seed.N; ++k)
+        {
+            const int i = k - 1;
+            out.path[i].hess   = q.path[i].hess;
+            out.path[i].BA     = q.path[i].BA;
+            out.path[i].DC     = q.path[i].DC;
+            out.path[i].d_mask = q.path[i].d_mask;
+            out.path[i].grad   = seed.grad_path[i];
+            out.path[i].b      = seed.b[k];
+            out.path[i].d      = seed.d_path[i];
+            out.path[i].m      = seed.m_path[i];
+        }
+        out.term.hess   = q.term.hess;
+        out.term.DC     = q.term.DC;
+        out.term.d_mask = q.term.d_mask;
+        out.term.grad   = seed.grad_term;
+        out.term.d      = seed.d_term;
+        out.term.m      = seed.m_term;
+    }
+
+    /// 5j: kFullCondensed `sens_param` — condense the staged QP and the
+    /// sensitivity QP, solve the converged dense QP on a throwaway solver
+    /// (factors the LHS + hybrid block KKT cache), seed-solve with the
+    /// condensed seed, and expand the dense step into the staged layout
+    /// (mirrors sens_x0_full_condensed, 5g).
+    Status sens_param_full_condensed(const Qp<P, NH>& q,
+                                     const Qp<P, NH>& qseed,
+                                     QpSol<P, NH>& dsol) const
+    {
+        const int N = q.N;
+        DenseQp<P, NH> dq;
+        dq.resize(N);
+        condense_full(q, dq);
+
+        HpipmDenseQpSolver<P, NH> sens_dense;
+        DenseQpSol<P, NH> dsol_dense;
+        dsol_dense.resize(N);
+        const Status qs = sens_dense.solve(dq, dsol_dense);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        DenseQp<P, NH> dqseed;
+        dqseed.resize(N);
+        condense_full(qseed, dqseed);
+
+        // The dense sensitivity forcing is the condensed seed itself:
+        // the staged sens QP has RHS = seed (not converged + seed), so
+        // its dense condensation carries the same pure-seed RHS.
+        DenseQpSeed<P, NH> dseed(N);
+        dseed.seed_g = dqseed.g;
+        dseed.seed_d = dqseed.d;
+        dseed.seed_m = dqseed.m;
+
+        DenseQpSol<P, NH> dsens;
+        dsens.resize(N);
+        const Status ss =
+            sens_dense.sens_forward(dq, dsol_dense, dseed, dsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        // Expand with the SEED's b (the p-derivative of the dynamics): the
+        // state step obeys x_{k+1} = BA [u_k; x_k] + db_k, where db_k is
+        // the seed's b field.  Passing qseed (whose BA blocks are identical
+        // to q's and whose b is the seed) with include_b = true yields
+        // exactly that forward step, and the dynamics-multiplier sweep uses
+        // the seeded stationarity (H dz + seed.grad + DC' dlam)_x.
+        expand_full_sol(qseed, dq, dsens, dsol, /*include_b=*/true);
+        return Status::kSolved;
+    }
+
+    /// 5j: kPartialCondensed `sens_param` (NB > 0, N2 matches) — mirror of
+    /// the dense path on the block QP: the block seed is
+    /// condense_block of the staged sensitivity QP (mirrors
+    /// sens_x0_partial_condensed, 5h).
+    Status sens_param_block_condensed(const Qp<P, NH>& q,
+                                      const Qp<P, NH>& qseed, int N2,
+                                      QpSol<P, NH>& dsol) const
+    {
+        using BDim    = BlockQpDim<P, NB>;
+        using BQp     = Qp<P, Eigen::Dynamic, BDim>;
+        using BQpSol  = QpSol<P, Eigen::Dynamic, BDim>;
+        using BQpSeed = QpSeed<P, Eigen::Dynamic, BDim>;
+
+        BQp bq;
+        bq.resize(N2);
+        condense_block<P, NH, NB>(q, bq);
+
+        BQpSol bsol;
+        bsol.resize(N2);
+        HpipmQpSolver<P, Eigen::Dynamic, BDim> sens_block;
+        const Status qs = sens_block.solve(bq, bsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        BQp bqseed;
+        bqseed.resize(N2);
+        condense_block<P, NH, NB>(qseed, bqseed);
+
+        BQpSeed bseed(N2);
+        bseed.grad_first = bqseed.first.grad;
+        bseed.b[0]       = bqseed.first.b;
+        bseed.d_first    = bqseed.first.d;
+        bseed.m_first    = bqseed.first.m;
+        for (int k = 1; k < N2; ++k)
+        {
+            const int i = k - 1;
+            bseed.grad_path[i] = bqseed.path[i].grad;
+            bseed.b[k]         = bqseed.path[i].b;
+            bseed.d_path[i]    = bqseed.path[i].d;
+            bseed.m_path[i]    = bqseed.path[i].m;
+        }
+        bseed.grad_term = bqseed.term.grad;
+        bseed.d_term    = bqseed.term.d;
+        bseed.m_term    = bqseed.term.m;
+
+        BQpSol bsens;
+        bsens.resize(N2);
+        const Status ss =
+            sens_block.sens_forward(bq, bsol, bseed, bsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        // Expand with the SEED's b (the p-derivative of the dynamics): the
+        // internal block state step obeys x_{k+1} = BA [u_k; x_k] + db_k, so
+        // pass the seed QP (same LHS as q) with include_b = true, mirroring
+        // sens_param_full_condensed.
+        expand_block_step<P, NH, Eigen::Dynamic, NB>(qseed, bsens, dsol,
+                                                     /*include_b=*/true);
+        return Status::kSolved;
     }
 
     /// 5i: fill the staged QP seed for `sens_param` (plan sec. 2.1).
@@ -1563,9 +1744,10 @@ public:
                     for (int j = 0; j < D::ng; ++j)
                     {
                         const int r = lay.row_off(detail::g_ineq) + j;
-                        if (sact(detail::g_ineq, lay.side_hi(r), dm, tv))
+                        const int sh = lay.side_hi(r);
+                        if (sact(detail::g_ineq, sh, dm, tv))
                         {
-                            dv(lay.side_hi(r)) += dg(j);
+                            dv(sh) += dg(j);
                         }
                     }
                 }
