@@ -214,7 +214,10 @@ on every pinned side, cond ~ 1e15), the sens solve uses a **hybrid block
 KKT**: `split_sides` classifies each present side as *hard* (pinned:
 `t < 1e-9` or `Γ > 1e6`) or *moderate* (finite Γ). The hard sides become
 exact rows of the KKT (Eigen LDLT, cached in the workspace keyed by the
-side split); the moderate sides stay in the barrier term
+side split); a `lo == hi` row (pinned box / hard-equality) has both sides
+hard with `A_hi = -A_lo`, so its lo side is deduplicated away (kept hi
+side only, as in the staged hard-eq KKT) to keep the KKT full rank. The
+moderate sides stay in the barrier term
 `W_mod = H + reg·I + A_mod'Γ_mod A_mod`, keeping W well-conditioned.
 `sens.v` is the KKT primal; moderate sides get the closed-form `dt`/`dlam`;
 hard sides carry the free KKT multipliers with `t = 0`. The adjoint
@@ -228,8 +231,11 @@ exposes the hard-equality rows (`eq_rows_*`), so the staged
 step is mapped back to the staged layout by `expand_block_step`
 (`solvers/hpipm/block_condense.hpp`): controls/slacks and block-start
 states transfer directly, internal state increments are forward-simulated
-**homogeneously** (the seeded KKT enforces the step dynamics without the
-affine offset `b`), `dlam`/`dt` transfer row-group by row-group
+by default **homogeneously** (`dx_{k+1} = BA [du_k; dx_k]` — the x_0
+sensitivity path, whose seed carries no dynamics offset), or with the
+affine seed offset (`include_b = true`: `dx_{k+1} = BA [du_k; dx_k] + b_k`,
+used by `sens_param` 5j, where the seed `b` is the dynamics p-derivative);
+`dlam`/`dt` transfer row-group by row-group
 (`copy_block_duals`), and the internal dynamics multipliers come from a
 *linearized* stationarity backward sweep (no grad term; the reg-primal
 correction is O(reg) ~ 1e-15 and is omitted). The same linearized sweep
@@ -243,29 +249,26 @@ condense to the block QP → solve → seed the pin rows of block 0 →
 `sens_forward` → `expand_block_step`; falls back to the staged path when
 the block size does not match the solver's compile-time `NB`).
 
-`AcadosSolver::sens_param` (5i) computes the first-order sensitivity of
-the converged OCP solution to a parameter vector `p` (problems declaring
-`Dims::np > 0`). It reassembles the staged QP at the converged iterate,
-re-solves it on a throwaway solver to cache KKT factors, and runs one
-seeded KKT re-solve whose RHS is the p-derivative of the QP RHS — no
-p-derivative of the Hessian is needed because the converged step is zero.
-The seed is *active-set gated*: d-entries are written only on constraint
-sides whose converged slack `t` is below 1e-3, so parameters that only
-touch inactive constraints (e.g. a non-binding bound) yield an exactly
-zero response instead of an O(mu_exit) barrier artifact. Staged mode only
-(dense/block seed condensing is 5j).
-
-`AcadosSolver::sens_param` (5i; requires `Dims::np > 0`) is the
-NLP-level parameter sensitivity, staged mode only (dense / block seed
-condensing is deferred to 5j). It reassembles the staged QP at the
-converged iterate, re-solves it on a throwaway solver (caching the exit
-KKT factors), builds the seed from the problem's `*_sens_p` entries
-(p-derivatives of the QP RHS plus the `(dJ/dp)' lambda` stationarity
-couplings, contracted with the direction `dp`), and runs one
-`sens_forward`. Because the QP is in step form and the converged step is
-zero, no p-derivative of the LHS (Hessian / BA / DC) is needed.
-Active-set gating: the d-seed is written only on constraint sides that
-are active at the converged solution (barrier-side slack below 1e-3);
-for an inactive constraint the first-order response of its value / bound
-is exactly zero, and seeding it would otherwise leak an O(mu_exit)
-artifact through the nearly-singular barrier row.
+`AcadosSolver::sens_param` (5i/5j; requires `Dims::np > 0`) computes the
+first-order sensitivity of the converged OCP solution to a parameter
+vector `p`. It reassembles the staged QP at the converged iterate,
+re-solves it on a throwaway solver (caching the exit KKT factors), builds
+the seed from the problem's `*_sens_p` entries (p-derivatives of the QP
+RHS plus the `(dJ/dp)' lambda` stationarity couplings, contracted with
+the direction `dp`), and runs one seeded KKT re-solve. Because the QP is
+in step form and the converged step is zero, no p-derivative of the LHS
+(Hessian / BA / DC) is needed. Active-set gating: the d-seed is written
+only on constraint sides that are active at the converged solution
+(barrier-side slack below 1e-3); for an inactive constraint the
+first-order response of its value / bound is exactly zero, and seeding it
+would otherwise leak an O(mu_exit) artifact through the
+nearly-singular barrier row. All three QP modes work (5j): the staged
+seed is condensed with the same machinery as the base QP
+(`build_seed_qp` → `condense_full` / `condense_block`), the condensed
+seed solve runs on the LHS of the converged condensed QP, and the result
+is expanded back to the staged layout with
+`expand_full_sol(qseed, …, include_b = true)` /
+`expand_block_step(qseed, …, include_b = true)` — the internal-state
+forward simulation carries the seed `b` (dynamics p-derivative). The
+x0-sensitivity path (5h) keeps the default `include_b = false` (its seed
+has no dynamics offset).
