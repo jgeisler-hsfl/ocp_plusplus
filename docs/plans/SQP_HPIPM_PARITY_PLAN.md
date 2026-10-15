@@ -244,10 +244,26 @@ Gate: warning-free build, full regression, FD tests green.
 
 ## 9. Open items (verify at implementation time, not design decisions)
 
-1. acados ordering of QP scaling vs condensing — assumed
-   scale-then-condense (`ocp_nlp_sqp.c:594-597`); verify.
-2. RTI Hessian semantics per variant (`sqp_rti` vs `_reversible` vs
-   `_merit`) — verify in `ocp_nlp_sqp_rti.c` / `ocp_nlp_sqp.c`.
+1. ~~acados ordering of QP scaling vs condensing~~ verified (2026-10-15):
+   acados SQP loop order is LM -> `ocp_nlp_qpscaling_scale_qp` on the
+   STAGED `qp_in` (`ocp_nlp_sqp.c:596`) -> Hessian regularization ->
+   termination -> QP solve; the xcond solver condenses the already-scaled
+   staged QP (`ocp_qp_xcond_solver.c:551`) and applies no further scaling.
+   Our loop matches (`acados.hpp`: `add_lm_term` -> `scaler_.scale_qp` ->
+   `reg_.regularize` -> termination -> solve/condense). Note: in this
+   acados version scaling is OFF by default (Gershgorin objective +
+   row-norm constraint scaling; no x0_ref/u0_ref scaling).
+2. ~~RTI Hessian semantics per variant~~ verified (2026-10-15): this
+   acados version has a single RTI solver (`SQP_RTI`) with `rti_phase`
+   and `as_rti_level` options, NOT `_reversible` / `_merit` variants.
+   STANDARD_RTI (default) uses a fresh Hessian at the current iterate per
+   call (like plain SQP, fixed LM alpha = 1.0); AS-RTI LEVEL_A solves
+   with the previous call's (frozen) condensed LHS and condenses the
+   fresh Hessian afterwards for the next call; LEVEL_B/C run zero-order /
+   gradient-level updates with a frozen Hessian; LEVEL_D runs k full SQP
+   iterations. "Merit" is only the optional globalization module. Our
+   Phase-3 `RtiSolver` (standard sqp_rti, fresh Hessian per call,
+   prepare/feedback split) matches STANDARD_RTI.
  3. ~~NLP-level (parameter) sensitivities~~ done (5i): parameter-vector
     concept in `problem.hpp` (`np`, `param_t`, `*_sens_p`), staged
     `AcadosSolver::sens_param` with active-set-gated seed; FD-verified on
