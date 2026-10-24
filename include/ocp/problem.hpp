@@ -84,7 +84,7 @@ namespace ocp {
 ///     allocation. The sized constructor and `resize` become consistency
 ///     checks (the argument must equal `NSlots`).
 ///
-/// Extent conventions for a horizon N (see ARCHITECTURE.md, sec. 5):
+/// Extent conventions for a horizon N (see docs/ARCHITECTURE.md, sec. 5):
 ///
 ///   state trajectory        N + 1 stages   (k = 0..N)
 ///   control trajectory      N     stages   (k = 0..N-1)
@@ -372,7 +372,7 @@ struct TerminalLinearSpec
 ///     eq_term_pen_t   terminal_equality_constr_soft_penalty() const;
 ///
 /// See also:
-///  - ARCHITECTURE.md: problem/solver separation, parameter handling.
+///  - docs/ARCHITECTURE.md: problem/solver separation, parameter handling.
 ///  - acados correspondence: `has_dynamics_hess` / `has_constr_hess`
 ///    mirror acados `hessian_approx` EXACT / GAUSS_NEWTON and the runtime
 ///    gates `exact_hess_dyn` / `exact_hess_constr`; `SoftPenalty` mirrors
@@ -1096,7 +1096,7 @@ enum class Status
 /// result the solver fills in. Solver-internal quantities (slack
 /// variables, barrier/regularization parameters, multiplier orderings,
 /// ...) are *not* stored here; each solver keeps its own
-/// (ARCHITECTURE.md sec. 2 "Separation of internal variables").
+/// (docs/ARCHITECTURE.md sec. 2 "Separation of internal variables").
 ///
 /// `NH` is the horizon: `Eigen::Dynamic` (default) keeps it a runtime
 /// quantity, set via the constructor or `resize` (heap-allocated

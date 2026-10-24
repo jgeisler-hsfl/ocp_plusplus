@@ -252,7 +252,7 @@ cross-solver differences.
 - `tests/` contains a unit test per feature (options, warm start,
   funnel, SOC, timeout, scaling, integrators, DAE autodiff, ...) — the
   fastest reference for the exact semantics of an option.
-- `ARCHITECTURE.md` documents the design principles.
+- `docs/ARCHITECTURE.md` documents the design principles.
 - Not yet part of the interface (anticipated extensions): parameter
   sensitivities and algebraic (eliminated) variables; an interactive
   "discovery" mechanism for options and statistics is on the roadmap.

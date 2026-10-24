@@ -93,7 +93,7 @@ No other dependencies. C++17 required.
 - Solver-internal state (slacks, barrier/regularization params, multiplier
   orderings) stays inside each solver; only shared solution quantities
   (x, u, KKT multipliers, cost, status) go into `ocp::Solution`.
-- Further information can be found in the ARCHITECTURE.md file.
+- Further information can be found in the docs/ARCHITECTURE.md file.
 - Current development plans live in docs/plans. Finished developments are documented 
   in docs/plans/finished.
 
@@ -139,4 +139,4 @@ No other dependencies. C++17 required.
 ## Notes for changes
 - Keep `problem.hpp` self-contained (Eigen only) and keep the "Interface
   contract" comment block at the top in sync with the stubs.
-- `TODO.md` is the project roadmap; do not edit it without asking.
+- `docs/plans/TODO.md` is the project roadmap; do not edit it without asking.

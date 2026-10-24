@@ -46,8 +46,5 @@ serve as complete, runnable reference material for every feature.
 - `ARCHITECTURE.md` — the design principles behind the interface.
 - `include/ocp/problem.hpp` — the central interface contract (the comment
   block at the top is kept in sync with the code and is authoritative).
-- `../acados/docs/algorithm/` (if you have the acados repository next to
-  this one) — the algorithm documentation the reference solvers are ported
-  from.
 - `tests/` — unit tests for every solver and integrator feature; a good
   source of minimal usage snippets for each option.
