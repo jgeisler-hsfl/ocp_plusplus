@@ -68,3 +68,10 @@ Only dependency: Eigen3 (header-only). C++17 required.
   writing your first problem to advanced features (constraints, Hessian
   models, continuous-time integrators, compile-time horizons, code
   generation), with runnable companion examples under `examples/tutorial/`.
+
+## License
+
+This project is licensed under the GNU General Public License version 3
+(see [LICENSE](LICENSE)). It includes third-party components (acados,
+HPIPM, cppduals) that retain their original licenses; see
+[NOTICE](NOTICE) for the full provenance and copyright statements.

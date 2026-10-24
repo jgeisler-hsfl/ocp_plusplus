@@ -1,0 +1,30 @@
+NOTICE
+======
+
+This project is distributed under the GNU General Public License
+version 3 (see the `LICENSE` file in the project root).
+
+Third-party components
+----------------------
+
+acados (`include/ocp/solvers/acados/`)
+This project includes a translated and modified version of acados,
+originally distributed under the BSD 2-Clause License.
+
+HPIPM (`include/ocp/solvers/hpipm/`)
+This project includes a translated and modified version of HPIPM
+(High-Performance Interior Point Method), originally distributed
+under the BSD 2-Clause License.
+
+cppduals (`thirdparty/cppduals/`)
+This project includes a copied (vendored) version of cppduals,
+originally distributed under the Mozilla Public License 2.0 (MPL 2.0).
+
+For all of the above, the original copyright notices, license
+conditions, and disclaimers are preserved in accordance with the
+original licenses (see the `LICENSE` file in the respective
+directory).
+
+The modified project is distributed under the GNU General Public
+License version 3. The original authors retain their share of the
+copyright (Urheberrecht) in their respective original works.
