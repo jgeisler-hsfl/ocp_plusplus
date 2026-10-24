@@ -77,7 +77,8 @@ The most commonly used options:
 |--------|---------|---------|
 | `max_iter` | 20 | SQP iteration limit |
 | `tol_stat`, `tol_eq`, `tol_ineq`, `tol_comp` | 1e-8 | convergence tolerances on the four KKT residual norms (section 3.6) |
-| `print_level` | 0 | 0 = silent, 1 = per-iteration rows on stdout |
+| `print_level` | 0 | 0 = silent, 1 = per-iteration rows on stdout, 2 = also dump the per-QP HPIPM stat table |
+| `qp_mode` | `kStaged` | how the staged QP is solved: staged, fully condensed, or block-condensed (chapter 7.5) |
 | `levenberg_marquardt` | 0.0 | Hessian damping `mu` (chapter 5) |
 
 The remaining options, all with sensible defaults (grouped by topic):
@@ -91,6 +92,8 @@ The remaining options, all with sensible defaults (grouped by topic):
   (chapter 5).
 - **QP warm starting:** `qp_warm_start` (0 = cold, 2 = primal+dual, 3 =
   hot), `warm_start_first_qp` (chapter 7).
+- **QP condensing:** `qp_cond_N` — number of condensation blocks used by
+  `kPartialCondensed` (0 = fall back to `kStaged`); see chapter 7.5.
 - **Timeout:** `timeout_max_time` (wall-clock budget in seconds, 0 = none),
   `timeout_heuristic` (per-iteration duration estimate: 0 = ZERO, 1 =
   LAST, 2 = MAX, 3 = AVERAGE).

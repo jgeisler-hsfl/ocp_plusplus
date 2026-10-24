@@ -35,11 +35,11 @@ serve as complete, runnable reference material for every feature.
 |---|------|-------|
 | 1 | [01-getting-started.md](01-getting-started.md) | What an OCP is, what ocp++ provides, first contact |
 | 2 | [02-first-problem.md](02-first-problem.md) | Writing your first discrete-time problem |
-| 3 | [03-solving-the-ocp.md](03-solving-the-ocp.md) | The SQP solver: options, solution, statistics, multipliers |
+| 3 | [03-solving-the-ocp.md](03-solving-the-ocp.md) | The SQP solver: options, QP solve modes, solution, statistics, multipliers |
 | 4 | [04-constraints.md](04-constraints.md) | Box, linear, nonlinear and soft constraints |
 | 5 | [05-second-order-models.md](05-second-order-models.md) | Exact Hessians vs Gauss-Newton, Levenberg-Marquardt |
 | 6 | [06-continuous-time-and-integrators.md](06-continuous-time-and-integrators.md) | ODE/DAE models, Runge-Kutta integrators, automatic differentiation |
-| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals, code generation |
+| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals (condensing, sensitivities, classical Riccati), RTI solver, code generation |
 
 ## Further reading
 

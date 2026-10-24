@@ -112,6 +112,7 @@ struct SqpIteration
     int qp_status, qp_iter;                       // inner QP result
     double step_norm, alpha;                      // step norm, accepted step
     int funnel_iter_type; double funnel_width;    // funnel globalization
+    double cond_time;                             // condense+expand wall clock (s)
 };
 ```
 
@@ -125,10 +126,16 @@ solver.statistics().write_csv("tutorial_advanced_stat.csv");
 which writes a header plus one row per iteration:
 
 ```
-iter,res_stat,res_eq,res_ineq,res_comp,qp_status,qp_iter,step_norm,alpha
-0,1.3062322170e+00,1.0931058930e+00,0.0,1.0e-16,1,3,4.8890175030e+00,1.0e+00
-1,3.3750779949e-14,2.8421709430e-14,0.0,1.0e-16,1,3,4.8890175030e+00,1.0e+00
+iter,res_stat,res_eq,res_ineq,res_comp,qp_status,qp_iter,step_norm,alpha,funnel_iter_type,funnel_width,cond_time
+0,1.3062322170e+00,1.0931058930e+00,0.0,1.0e-16,1,3,4.8890175030e+00,1.0e+00,-1,0.000000,0.000000
+1,3.3750779949e-14,2.8421709430e-14,0.0,1.0e-16,1,3,4.8890175030e+00,1.0e+00,-1,0.000000,0.000000
 ```
+
+`funnel_iter_type` is `-1` when the active globalizer is not a funnel
+(`-1`, `1`=f, `2`=h, `3`=b, `4`=p for funnel accept types); `funnel_width`
+is the funnel width used in that iteration. `cond_time` is the wall-clock
+seconds spent in the condense + expand round-trip for that iteration's QP
+(non-zero only in `QpMode::kFullCondensed` / `kPartialCondensed` mode).
 
 ## 7.5 QP internals (for the curious)
 
@@ -163,6 +170,53 @@ rarely touched — the SQP driver drives them via the options of chapter 3:
 - **Timeout:** `opts.timeout_max_time` (wall-clock budget) and
   `opts.timeout_heuristic` (per-iteration estimate; exit status
   `kTimeout`).
+
+#### QP solve modes (condensing)
+
+Beyond the staged default, `opts.qp_mode` (chapter 3) selects how the staged
+QP is solved:
+
+- **`QpMode::kStaged`** (default) — the staged HPIPM IPM over
+  `(u_k; x_k; s_k)` per stage, mirroring acados `SQP_RTI_HPIPM`.
+- **`QpMode::kFullCondensed`** — the N stages are condensed into a single
+  dense QP over `v = (x_0 … x_N, u_0 … u_{N-1})` (the dynamics are
+  eliminated), solved with the dense HPIPM IPM, then expanded back to the
+  staged layout. Mirrors acados `FULL_CONDENSING_HPIPM`. Well suited to short
+  horizons; the dense matrix cost grows with `N`, so keep it modest.
+- **`QpMode::kPartialCondensed`** — the N stages are grouped into
+  `qp_cond_N` blocks of `NB = N / qp_cond_N` stages each; each block is
+  condensed to a mini QP (internal states eliminated) and the resulting
+  block-stage QP is solved with the staged HPIPM IPM. A middle ground that
+  shrinks the number of stages while staying sparse. Mirrors acados
+  `PARTIAL_CONDENSING_HPIPM`; when `qp_cond_N` is 0 the mode falls back to
+  `kStaged`.
+
+All three modes consume the same staged assembly and produce identical
+`ocp::Solution` quantities. `cond_time` in the statistics (section 7.4)
+reports the condense + expand round-trip for the condensed modes.
+
+#### QP-level sensitivities
+
+The HPIPM QP solver also exposes a sensitivity layer: given a converged
+solution and a `QpSeed` of right-hand-side perturbations
+(`grad` / `b` / `d` / `m` per stage, `include/ocp/solvers/hpipm/seed.hpp`),
+`HpipmQpSolver::sens_forward` / `sens_adj` return the linearized response of
+the full QP solution (`u`, `x`, `π`, `λ`, `t`) to that seed. The first call
+lazily re-factors the KKT system at the final iterate; later seeds reuse the
+cached factors and only recompute the constraint-force term, so repeated
+seeds cost one `O(N)` pass. Hessian perturbations are expressed as the
+equivalent gradient seed `grad = E z*`; the returned response carries the
+KKT's internal negative sign (dz/dH = −K⁻¹ (E z*)). This mirrors HPIPM's
+`OCP_QP_IPM_SENS_FRW` / `OCP_QP_IPM_SENS_ADJ`.
+
+#### Classical (non-square-root) Riccati factorization
+
+`HpipmOptions::square_root_alg` (default `true`) selects the square-root
+Riccati backward factorization. Set it to `false` for the classical
+(non-square-root) variant (HPIPM `square_root_alg = 0`), which
+Cholesky-factors only the leading `(u;s)` block and builds the state Hessian
+as an explicit Schur complement — useful for cross-checking the two
+factorizations.
 
 ## 7.6 Globalization
 
@@ -247,7 +301,41 @@ cover other combinations. The `compare.sh` scripts in the example
 directories build the acados reference and the ocp++ port and report the
 cross-solver differences.
 
-## 7.8 Where to go from here
+## 7.8 Real-time iteration (RTI) solver
+
+For embedded or tightly-timed settings where a *fixed, bounded* computation
+time matters more than full convergence, `ocp::RtiSolver<P>`
+(`include/ocp/solvers/acados/rti.hpp`) implements the standard
+real-time-iteration SQP: one Newton step per `solve()` call — no line
+search, no convergence test, no iteration loop.
+
+A single `solve()` call performs two phases:
+
+- `prepare` — assembles the QP **LHS** (Hessians + Jacobians, with a fixed
+  Levenberg-Marquardt shift) at the current iterate;
+- `feedback` — assembles the **RHS** (gradients + offsets) from the current
+  state, solves the QP once (in any `QpMode`, section 7.5), and applies the
+  full primal step (`alpha = 1`) with a full-step dual update.
+
+```cpp
+ocp::RtiOptions rti;                       // all defaults: staged QP, mu = 0
+ocp::RtiSolver<MinimalProblem> rti_solver(rti);
+// ... build/resize sol as in chapter 3 ...
+ocp::Status st = rti_solver.solve(problem, sol);   // one QP, full step
+```
+
+`RtiOptions` mirrors the relevant `AcadosOptions` fields:
+`compute_hess_dyn` / `compute_hess_constr`, `levenberg_marquardt`,
+`qp_mode` + `qp_cond_N`, `qp_warm_start` / `warm_start_first_qp`, and the
+QP tolerance strategy. `rti_solver.statistics()` returns an
+`ocp::RtiStatistics` with the pre-/post-step NLP residuals of the last call
+(populated when `rti_log_residuals` is set) and a running `n_calls` count.
+
+The shared LHS/RHS stage assembly used by both `AcadosSolver` and
+`RtiSolver` lives in `solvers/acados/assemble.hpp`; the cost and
+slack-penalty helpers are shared via `solvers/acados/cost.hpp`.
+
+## 7.9 Where to go from here
 
 - `tests/` contains a unit test per feature (options, warm start,
   funnel, SOC, timeout, scaling, integrators, DAE autodiff, ...) — the
