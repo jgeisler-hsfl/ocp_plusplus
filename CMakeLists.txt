@@ -267,6 +267,10 @@ add_executable(named_values_unit tests/registry/named_values.cpp)
 target_include_directories(named_values_unit PRIVATE include)
 target_compile_options(named_values_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(mex_api_unit tests/mex/mex_api_unit.cpp)
+target_include_directories(mex_api_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(mex_api_unit PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(sqp_double_integrator
                tests/sqp_double_integrator/sqp_double_integrator.cpp)
 target_include_directories(sqp_double_integrator
@@ -308,6 +312,41 @@ add_executable(sqp_continuous
 target_include_directories(sqp_continuous
                             PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_continuous PRIVATE ${OCP_WARN_FLAGS})
+
+# ---- MATLAB MEX wrappers (docs/plans/MATLAB_MEX_PLAN.md) ----
+# One MEX shared library per configuration. Each is the single TU
+# mex/ocp_mex_main.cpp with OCP_MEX_CONFIG selecting the config header
+# (mex/configs/<name>.hpp). The pure-C++ core (include/ocp/mex/mex_api.hpp)
+# is always built and tested via mex_api_unit without MATLAB.
+option(OCP_BUILD_MEX "Build the MATLAB MEX wrappers (requires MATLAB)" OFF)
+if(OCP_BUILD_MEX)
+  # MEX + MX libraries are found unconditionally by FindMatlab (the "MXLIB"
+  # component does not exist in the module); hint via -DMatlab_ROOT=<root>
+  # or the MATLAB environment variable if auto-detection misses the install.
+  find_package(Matlab)
+  if(Matlab_FOUND)
+    set(OCP_MEX_CONFIGS double_integrator mass_spring)
+    foreach(cfg IN LISTS OCP_MEX_CONFIGS)
+      # cpp_mexapi_version.cpp exports mexfilerequiredapiversion; without it
+      # the MATLAB gateway cannot determine the MEX API version and error
+      # marshalling fails ("Invalid MException type").
+      add_library(ocp_mex_${cfg} MODULE mex/ocp_mex_main.cpp
+                ${Matlab_ROOT_DIR}/extern/version/cpp_mexapi_version.cpp)
+      target_include_directories(ocp_mex_${cfg} PRIVATE
+                                 include examples ${EIGEN3_INCLUDE_DIR}
+                                 ${Matlab_INCLUDE_DIRS})
+      target_compile_definitions(ocp_mex_${cfg} PRIVATE
+        OCP_MEX_CONFIG="${CMAKE_SOURCE_DIR}/mex/configs/${cfg}.hpp"
+        MATLAB_MEX_FILE USE_MEX_CMD _GNU_SOURCE
+        MATLAB_DEFAULT_RELEASE=R2017b)
+      target_link_libraries(ocp_mex_${cfg} PRIVATE ${Matlab_LIBRARIES} m)
+      set_target_properties(ocp_mex_${cfg} PROPERTIES PREFIX ""
+        SUFFIX ".${Matlab_MEX_EXTENSION}")
+    endforeach()
+  else()
+    message(STATUS "MATLAB not found: skipping MEX targets (OCP_BUILD_MEX=ON)")
+  endif()
+endif()
 
 # ---- documentation (Doxygen, optional) ----
 find_package(Doxygen QUIET)
