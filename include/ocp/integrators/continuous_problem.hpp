@@ -50,8 +50,9 @@ public:
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     /// @param ode  ODE model (stored by value).
-    /// @param args forwarded to the integrator constructor (typically
-    ///             the step size h and possibly scheme options).
+    /// @param h    step size of the OCP interval.
+    /// @param args forwarded to the integrator constructor (e.g. the
+    ///             Newton options of the implicit integrator).
     template <class... Args>
     explicit ContinuousProblem(const Ode& ode, double h, Args&&... args)
         : ode_(ode), h_(h), integ_(ode_, h, std::forward<Args>(args)...)
@@ -62,6 +63,13 @@ public:
     //  dynamics: delegate to the integrator, forwarding t_k = k * h_
     // ---------------------------------------------------------------
 
+    /// One integration step of the composed map  x_{k+1} = Phi(x, u, t_k)
+    /// with  t_k = k * h.
+    ///
+    /// @param k stage index, 0..N-1.
+    /// @param x state at stage k (nx).
+    /// @param u control at stage k (nu).
+    /// @return state at stage k+1 (nx).
     state_t dynamics_next_state(int k, const state_t& x,
                                 const control_t& u) const
     {
@@ -70,6 +78,15 @@ public:
         return x_next;
     }
 
+    /// x_{k+1} plus the Jacobian blocks of the composed map at
+    /// (x, u, t_k):  df_dx (nx x nx), df_du (nx x nu).
+    ///
+    /// @param k stage index, 0..N-1.
+    /// @param x state at stage k (nx).
+    /// @param u control at stage k (nu).
+    /// @param[out] x_next state at stage k+1 (nx).
+    /// @param[out] df_dx  d(Phi)/dx at (x, u, t_k) (nx x nx).
+    /// @param[out] df_du  d(Phi)/du at (x, u, t_k) (nx x nu).
     void dynamics_value_jac(int k, const state_t& x, const control_t& u,
                             state_t& x_next, dyn_df_dx_t& df_dx,
                             dyn_df_du_t& df_du) const
@@ -77,6 +94,19 @@ public:
         integ_.value_jac(x, u, k * h_, x_next, df_dx, df_du);
     }
 
+    /// x_{k+1}, the Jacobian blocks, and the contracted (multiplier-
+    /// weighted) Hessian  w^T D^2 Phi  of the composed map at
+    /// (x, u, t_k), assembled from nIn = nx + nu unit-vector HVP columns.
+    ///
+    /// @param k stage index, 0..N-1.
+    /// @param x state at stage k (nx).
+    /// @param u control at stage k (nu).
+    /// @param w state-space multiplier weighting the Hessian (nx).
+    /// @param[out] x_next state at stage k+1 (nx).
+    /// @param[out] df_dx  d(Phi)/dx at (x, u, t_k) (nx x nx).
+    /// @param[out] df_du  d(Phi)/du at (x, u, t_k) (nx x nu).
+    /// @param[out] hess contracted Hessian (nx + nu x nx + nu), column j is
+    ///                  the HVP in the j-th unit direction of [x; u].
     void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
                                  const state_t& w, state_t& x_next,
                                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du,

@@ -1,12 +1,12 @@
 // main.cpp
 //
-// Phase-1 hand-written ocp++ port of the acados masses_chain OCP. Solves the
-// problem with the default AcadosSolver (HPIPM QP + GLM regularizer + merit
-// backtracking) and writes ocp_pp.csv in the same layout as the acados
-// reference (ref_acados.csv) for side-by-side comparison.
+// Driver for the ocp++ masses_chain problem: solves it with the default
+// AcadosSolver (interior-point QP + GLM regularizer + merit backtracking)
+// and writes ocp_pp.csv in the same layout as the acados reference
+// (ref_acados.csv) for side-by-side comparison.
 //
-// Warm start mirrors the MATLAB example: x[0] = fixed initial state (hanging),
-// x[1..N] = x_ref (spread configuration), u = 0.
+// Warm start: x[0] = fixed initial state (hanging), x[1..N] = x_ref
+// (spread configuration), u = 0.
 
 #include <cmath>
 #include <cstdio>
@@ -23,8 +23,8 @@ Solution<MassesChain> warm_start(const MassesChain& p)
 {
     Solution<MassesChain> sol(N);
     sol.x[0] = p.initial_state();
-    // x[1..N] and u: seed with the reference configuration (acados init_x /
-    // init_u); x[0] stays the fixed initial state.
+    // x[1..N] and u: seed with the reference configuration; x[0] stays the
+    // fixed initial state.
     for (int k = 0; k < N; ++k)
     {
         sol.u[k].setZero();
@@ -39,9 +39,8 @@ int main()
 
     AcadosOptions opts;
     opts.print_level = 1;
-    // Mirror the acados codegen settings (acados_ocp_nlp.json,
-    // nlp_solver_tol_* = 1e-6): with the default 1e-8 tolerances the SQP
-    // stalls in kMinStep just short of kSolved on this weakly-convex OCP.
+    // Loosened from the default 1e-8: on this weakly-convex OCP the SQP
+    // stalls in kMinStep just short of kSolved at the default tolerances.
     opts.tol_stat = 1e-6;
     opts.tol_eq = 1e-6;
     opts.tol_ineq = 1e-6;

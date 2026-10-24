@@ -93,7 +93,7 @@ No other dependencies. C++17 required.
 - Solver-internal state (slacks, barrier/regularization params, multiplier
   orderings) stays inside each solver; only shared solution quantities
   (x, u, KKT multipliers, cost, status) go into `ocp::Solution`.
-- Further information can be found in the ARCHITECTURE.md file.
+- Further information can be found in the docs/ARCHITECTURE.md file.
 - Current development plans live in docs/plans. Finished developments are documented 
   in docs/plans/finished.
 
@@ -121,6 +121,8 @@ No other dependencies. C++17 required.
 - Document new dependencies and any additional setup requirements.
 - Update documentation when behavior or public interfaces change.
 - Explain relevant design decisions when they are not obvious from the code.
+- On every merge, check and update `docs/ARCHITECTURE.md`, `README.md` and
+  the tutorial in `docs/tutorial/` so they stay in sync with the code.
 
 ## Portability and Safety
 - Do not include absolute, machine-specific filesystem paths in documentation,
@@ -139,4 +141,4 @@ No other dependencies. C++17 required.
 ## Notes for changes
 - Keep `problem.hpp` self-contained (Eigen only) and keep the "Interface
   contract" comment block at the top in sync with the stubs.
-- `TODO.md` is the project roadmap; do not edit it without asking.
+- `docs/plans/TODO.md` is the project roadmap; do not edit it without asking.

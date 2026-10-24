@@ -1,0 +1,13 @@
+NOTICE
+======
+
+This project includes a copied (vendored) version of cppduals
+(https://gitlab.com/tesch1/cppduals), originally distributed under the
+Mozilla Public License 2.0 (MPL 2.0).
+
+The original copyright notices, license conditions, and disclaimers
+are preserved in accordance with the original license (see the
+`LICENSE.txt` file in this directory).
+
+The original authors of cppduals retain their share of the copyright
+(Urheberrecht) in their original work.

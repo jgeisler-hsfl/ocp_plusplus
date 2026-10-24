@@ -1,25 +1,30 @@
 // masses_chain.hpp
 //
-// ocp++ concrete problem for the acados masses_chain OCP
-// (acados_matlab_octave/masses_chain_model, codegen 21ef639b).
+// ocp++ concrete problem: a nonlinear four-mass spring chain, driven by a
+// force on the last mass.
 //
-//   state  x = [ p1 v1 ; p2 v2 ; p3 v3 ; p4 v4 ]  (p_i, v_i in R^3),  nx = 24
+//   state   x = [ p1 v1 ; p2 v2 ; p3 v3 ; p4 v4 ]  (p_i, v_i in R^3),  nx = 24
 //   control u = force on the last mass (R^3),       nu = 3
-//   horizon  N = 40,  T = 8.0,  dt = T/N = 0.2
+//   horizon N = 40,  T = 8.0,  dt = T/N = 0.2
 //
-//   dynamics: nonlinear spring-chain ODE, integrated with the acados-matching
-//             implicit-RK collocation scheme (Gauss-Legendre, 4 stages,
-//             2 sub-steps per shooting interval).  The dynamics are the
-//             CasADi-generated DAE residual masses_chain_impl_dae_fun
-//             (see masses_chain_capi.hpp), consumed in its native implicit
-//             form; the Jacobian blocks are central finite differences
-//             (phase-1).
+//   dynamics: nonlinear spring-chain ODE in DAE residual form
+//             F(x, xdot, u) = f(x, u) - xdot (CasADi-generated residual,
+//             see masses_chain_capi.hpp), integrated by the implicit-RK
+//             collocation scheme (Gauss-Legendre, 4 stages, 2 sub-steps per
+//             shooting interval); the residual Jacobian blocks w.r.t. x,
+//             xdot and u are central finite differences (h = 1e-6).
 //
 //   stage cost    L_k(x,u) = 0.5 [ 10 ||x - x_ref||^2 + 1e-2 ||u||^2 ]
 //   terminal cost L_N(x)    = 0.5 * 10 ||x - x_ref||^2
 //   state box (stages 1..N-1, py of each mass):  -0.01 <= py_i <= 1e4
 //   control box (all stages):                    -1     <= u    <= 1
 //   initial state: fixed (x_0 = the hanging rest configuration)
+//
+//   QP Hessian: Gauss-Newton with the cost Hessian only
+//               (has_dynamics_hess = false).
+//
+// Supplementary - provenance: this model matches the acados masses_chain
+// OCP (acados_matlab_octave/masses_chain_model, codegen 21ef639b).
 //
 // Deviations from the generated acados solver (benign, verified by
 // tests/sqp_masses_chain):
@@ -75,7 +80,7 @@ struct MassesChainDims
     // py of mass i lives at state index 6*(i-1) + 1  ->  {1, 7, 13, 19}
     static constexpr std::array<int, 4> state_box_idx = {1, 7, 13, 19};
     static constexpr std::array<int, 3> control_box_idx = {0, 1, 2};
-    // acados terminal box (24 rows, +/-inf) is inactive -> dropped
+    // no terminal state-box rows (the reference terminal box is fully inactive)
     static constexpr std::array<int, 0> terminal_state_box_idx = {};
 
     static constexpr std::array<int, 0> ineq_soft_idx = {};
@@ -116,8 +121,13 @@ struct MassesChainDae
         return F;
     }
 
-    // Central finite differences of the residual w.r.t. x, xdot and u
-    // (the three DAE Jacobian blocks).
+    /// Central finite differences (h = 1e-6) of the residual w.r.t. x,
+    /// xdot and u (the three DAE Jacobian blocks).
+    /// @param  x, xdot, u  evaluation point
+    /// @param  t          time, unused by this model
+    /// @param[out] dFdx   residual Jacobian w.r.t. x (nx x nx)
+    /// @param[out] dFxdot residual Jacobian w.r.t. xdot (nx x nx)
+    /// @param[out] dFdu   residual Jacobian w.r.t. u (nx x nu)
     void F_jac(const state_t& x, const state_t& xdot, const control_t& u,
                double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
                dyn_df_du_t& dFdu) const
@@ -168,12 +178,12 @@ class MassesChain
 public:
     MassesChain() : Base(MassesChainDae{}, /*h=*/0.2)
     {
-        // x_ref: the "spread" rest configuration (acados yref / x_ref).
+        // x_ref: the "spread" rest configuration.
         x_ref_ << 0.2437127723791751, 0.0, -0.4707556301562673, 0.0, 0.0, 0.0,
                   0.5, 0.0, -0.6357704467945128, 0.0, 0.0, 0.0,
                   0.7562872276208249, 0.0, -0.4707556301562673, 0.0, 0.0, 0.0,
                   1.0, 0.0, 0.0, 0.0, 0.0, 0.0;
-        // x_0: the "hanging" rest configuration (acados lbx0/ubx0).
+        // x_0: the "hanging" rest configuration.
         x0_ << 0.0, 0.3740500601637552, -0.344560900973575, 0.0, 0.0, 0.0,
                0.0, 0.7567239589410515, -0.3750878206748779, 0.0, 0.0, 0.0,
                0.0, 1.132755245684027, -0.08869592957430722, 0.0, 0.0, 0.0,
@@ -188,9 +198,9 @@ public:
         return x0_;
     }
 
-    // The cost / terminal reference (the "spread" configuration); exposed so
-    // a driver can warm-start the interior states with it (as the acados
-    // reference does with init_x = repmat(x_ref)).
+    /// The cost / terminal reference (the "spread" configuration); exposed so
+    /// a driver can warm-start the interior states with it.
+    /// @return x_ref (nx)
     const state_t& cost_reference() const
     {
         return x_ref_;
@@ -216,6 +226,12 @@ public:
         grad.tail<MassesChainDims::nu>() = 1.0e-2 * u;
     }
 
+    /// Stage cost value, gradient and Hessian; the Hessian is block-
+    /// diagonal in (x, u) with 10*I_nx and 1e-2*I_nu.
+    /// @param  x, u  evaluation point
+    /// @param[out] value  L_k(x, u)
+    /// @param[out] grad   dL/d[x; u] (nx + nu)
+    /// @param[out] hess   d^2L/d[x; u]^2 (nx + nu x nx + nu)
     void stage_cost_value_grad_hess(int /*k*/, const state_t& x,
                                     const control_t& u, double& value,
                                     stage_grad_t& grad,

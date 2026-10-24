@@ -13,7 +13,7 @@ example is `examples/tutorial/continuous.cpp` (target
 `ocp::ContinuousProblem<Dims, Ode, Integ>` (in
 `include/ocp/integrators/continuous_problem.hpp`) derives from
 `ocp::Problem<Dims>` and provides the dynamics entries by delegating to
-the integrator. You only implement what is * yours*: cost, constraints,
+the integrator. You only implement what is *yours*: cost, constraints,
 initial state. The class template parameters:
 
 - `Dims` — the same tag struct as in chapter 2,
@@ -124,6 +124,7 @@ DuffingProblem<ErkBase> erk(ode, 0.05);
 using Dae = ocp::OdeToDae<DuffingOde, DuffingDims>;
 using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae, 4,
                                          ocp::GaussLegendre4Tag>;
+using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;
 DuffingProblem<IrkBase> irk(dae, 0.05);
 ```
 
@@ -150,7 +151,10 @@ two runs.
 ## 6.5 Automatic differentiation
 
 The explicit integrator detects at compile time whether the ODE's `f` is
-* dual-evaluable* (a template in the scalar type):
+*dual-evaluable* (a template in the scalar type) — i.e. whether it can be
+evaluated on dual numbers, the building block of forward-mode automatic
+differentiation (background:
+[Automatic differentiation using dual numbers](https://en.wikipedia.org/wiki/Automatic_differentiation#Automatic_differentiation_using_dual_numbers)):
 
 ```cpp
 template <class D>

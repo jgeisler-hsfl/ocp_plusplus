@@ -76,14 +76,14 @@ void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
 with the multiplier-contracted semantics
 
 ```
-    hess * v  =  sum_i lam_i * D^2 f_i(x, u) * v
+    hess  =  sum_i lam_i * D^2 f_i(x, u)
 ```
 
 where `lam` is the dynamics (costate) multiplier the solver passes (at
 stage `k` it is `sol.lambda_dyn[k]`), and the `[x; u]` layout applies.
 The solver permutes the result into its internal `(u; x)` ordering and
 adds it to the QP Hessian with the sign the Lagrangian requires — you
-always return `sum_i lam_i D^2 f_i v`, nothing else.
+always return `sum_i lam_i D^2 f_i`, nothing else.
 
 The same contract applies to nonlinear constraints
 (`stage_inequality_value_jac_hess`, `stage_equality_value_jac_hess` and

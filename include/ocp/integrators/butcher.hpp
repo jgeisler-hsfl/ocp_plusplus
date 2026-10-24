@@ -1,6 +1,7 @@
 // ocp/integrators/butcher.hpp
 //
-// Compile-time Butcher tableaus for the phase-4 integrators.
+// Compile-time Butcher tableaus for the Runge-Kutta integrators
+// (rk_explicit.hpp / rk_implicit.hpp).
 //
 // Each scheme is selected by a tag type. The tableau stores the coefficients
 // as `static constexpr` arrays:
@@ -11,13 +12,9 @@
 //   b : (NS,)  quadrature weights, x_next = x + h * sum_s b[s] * K_s.
 //   c : (NS,)  stage abscissas.
 //
-// Orientation matches acados: `A[s][j]` here equals `A_mat[j*ns + s]` read in
-// sim_erk_integrator.c / sim_irk_integrator.c. The explicit tableaus are
-// transcribed verbatim from `get_explicit_butcher_tableau`
-// (sim_collocation_utils.c:560-647). The Radau IIA tableaus are the standard
-// collocation coefficients a_{s,j} = int_0^{c_s} l_j, b_j = int_0^1 l_j
-// (l_j = Lagrange basis at the Radau IIA nodes; nodes hard-coded from
-// sim_collocation_utils.c:248-333, matching CasADi).
+// The Radau IIA tableaus are the standard collocation coefficients
+// a_{s,j} = int_0^{c_s} l_j, b_j = int_0^1 l_j (l_j = Lagrange basis at the
+// Radau IIA nodes on [0, 1]).
 //
 // Every stored tableau satisfies the consistency identities:
 //   sum_j A[s][j] == c[s]        (all s)
@@ -85,9 +82,9 @@ struct GaussLegendre3Tag
 {
 };
 
-/// Gauss-Legendre collocation, 4 stages (implicit; acados default for the
-/// IRK integrator). Nodes are the mapped GL4 roots in (0,1); the collocation
-/// order conditions hold for 2*ns-1 = 7 (no L-stability, unlike Radau IIA).
+/// Gauss-Legendre collocation, 4 stages (implicit). Nodes are the mapped
+/// GL4 roots in (0,1); the collocation order conditions hold for
+/// 2*ns-1 = 7 (no L-stability, unlike Radau IIA).
 struct GaussLegendre4Tag
 {
 };
@@ -112,7 +109,7 @@ struct ButcherTableau
         "matching stage count.");
 };
 
-// ---- explicit RK tableaus (acados get_explicit_butcher_tableau) ---------
+// ---- explicit RK tableaus ----------------------------------------------
 
 template <class Dims>
 struct ButcherTableau<Dims, 1, K1Tag>
@@ -207,8 +204,7 @@ struct ButcherTableau<Dims, 4, RadauIia4Tag>
 // ---- Gauss-Legendre collocation tableaus (implicit, symmetric) ----------
 //
 // Nodes are the GL roots mapped to (0,1): c_i = (1 + x_i) / 2 with x_i the
-// standard GL roots in (-1,1); b_i = w_i / 2. Matches acados
-// gauss_legendre_nodes (collocation interval [0, 1]).
+// standard GL roots in (-1,1); b_i = w_i / 2 (collocation interval [0, 1]).
 
 template <class Dims>
 struct ButcherTableau<Dims, 2, GaussLegendre2Tag>

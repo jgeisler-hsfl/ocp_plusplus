@@ -1,19 +1,17 @@
 // ocp/solvers/hpipm/qp.hpp
 //
-// Staged QP data model for the HPIPM-based solver.
+// Staged QP data model for the interior-point QP solver.
 //
-// Mirrors HPIPM's flat OCP-QP interface (hpipm_d_ocp_qp_dim.h,
-// hpipm_d_ocp_qp.h, x_ocp_qp_res.c). HPIPM carries per-stage dimension
-// arrays; since ocp++ stages are uniform (the problem data is constant
-// over k except for the terminal), the horizon splits into three
-// compile-time STAGE TYPES, each with its own row/side layout:
+// Because the problem data is constant over the stage index k (except for
+// the terminal stage), the horizon splits into three compile-time STAGE
+// TYPES, each with its own row/side layout:
 //
-//   first (k = 0)     : initial stage. When x_0 is fixed (the usual
-//                       case), the nx states are pinned by equality rows
-//                       (lo == hi == x_0, HPIPM's `idxe` analogue) and the
-//                       state-box rows are dropped (redundant); the stage
-//                       may additionally carry control box, inequality,
-//                       equality and linear rows.
+//   first (k = 0)     : initial stage. When x_0 is fixed (the usual case),
+//                       the nx states are pinned by equality rows
+//                       (lo == hi == x_0) and the state-box rows are
+//                       dropped as redundant; the stage may additionally
+//                       carry control box, inequality, equality and
+//                       linear rows.
 //   path  (k = 1..N-1): interior stages; state box + control box +
 //                       ineq + eq + lin rows.
 //   term  (k = N)     : terminal; state box + ineq + eq + lin rows; no
@@ -33,50 +31,22 @@
 //   column in DC. Equality rows (eq group and pin rows) have lo == hi,
 //   both sides active.
 //
-// Naming translation table (ocp++ -> HPIPM/acados):
-//   nvar_*  -> nv          decision vars per stage type (u; x; s);
-//                          HPIPM's terminal also has nu = 0, as here
-//   nrow_*  -> nb + ng     constraint rows per stage type (HPIPM keeps
-//                          every row two-sided and masks absent sides;
-//                          we drop one-sided ineq rows' lo side)
-//   nside_* -> nct        one-sided sides; length of d/d_mask/m/lam/t
-//                          (HPIPM's nct = 2*(nb+ng+ns) counts both sides
-//                          of every row incl. slacks)
-//   ng, ne, nl -> ng       general-constraint rows (we keep ineq, eq, lin
-//                          as separate groups)
-//   nslack -> ns          HPIPM uses a slack pair per soft row; we use
-//                          one slack variable per soft SIDE
-//   BA    -> BAbt         HPIPM stores the dynamics matrix transposed,
-//                          with b as the last column; we store [B|A] + b
-//   DC    -> DCt          HPIPM stores the general-constraint Jacobian
-//                          transposed, (nu+nx) x ng per stage (variables x
-//                          constraints; box rows via idxb, slacks via
-//                          idxs_rev). We store the natural orientation
-//                          (nrow x nvar, constraints x variables) covering
-//                          all row groups incl. box rows and slack columns.
-//   idxb   -> idxb       box-row -> variable index (per stage type)
-//   idx_x0 -> idxe       equality-pinned variable indices (HPIPM calls
-//                        this idxe); here: the fixed x_0 components
-//   idxs_lo_*/idxs_hi_* -> idxs / idxs_rev  soft row -> slack column
-//
 // Variable order per stage type:
 //   first/path: (u; x; s)  -- u : nu, x : nx, s : nslack_<type>
 //   term:       (x; s)     -- x : nx, s : nslack_term
-// Slacks are solver-internal, one per soft constraint SIDE:
-//   two-sided soft rows (state box, control box, equality, linear) get two
-//   slacks (one per side); one-sided soft rows (inequality) get one.
-// Per-stage-type slack order (groups in row-group order, zero-sized groups
-// contribute nothing):
+// Slacks are solver-internal, one per soft constraint SIDE: two-sided
+// soft rows (state box, control box, equality, linear) get two slacks
+// (one per side); one-sided soft rows (inequality) get one. Per-stage-type
+// slack order (groups in row-group order; zero-sized groups contribute
+// nothing):
 //   [bx lo; bx hi; bu lo; bu hi; ineq hi; eq lo; eq hi; lin lo; lin hi]
-// with p indexing the group's *_soft_idx order. A soft row's penalty
-// (one SoftPenalty{quad,lin} pair per row, from the problem's spec /
+// with p indexing the group's *_soft_idx order. A soft row's penalty (one
+// SoftPenalty{quad,lin} pair per row, from the problem's spec /
 // *_constr_soft_penalty) applies to all of its slack variables: hess
-// diagonal = quad, grad slack part = lin (HPIPM's slack objective is
-// 0.5 s'Zs + r_s' s, so Z = quad and the slack gradient carries lin;
-// the standard soft constraint is quad = w, lin = 0; verified in
-// x_ocp_qp_res.c and COND_SLACKS_FACT). Unused slack slots at a stage
-// type still need a positive Hessian diagonal (e.g. 1.0) so the stage
-// Hessian stays nonsingular.
+// diagonal = quad, grad slack part = lin. The standard soft constraint
+// is quad = w, lin = 0. Unused slack slots at a stage type still need a
+// positive Hessian diagonal (e.g. 1.0) so the stage Hessian stays
+// nonsingular.
 //
 // Row layout per stage type (groups in order; count 0 = absent group):
 //   [pin; bx; bu; ineq; eq; lin]
@@ -90,20 +60,42 @@
 //   [lo sides: one per two-sided row, group order]
 //   [hi sides: one per row, group order]
 //   [slack sides: nslack_<type>, lo-type, d = 0]
-// d holds bound OFFSETS in the step formulation (SQP_PHASE2_PLAN
-// sec. 1.1-1.2): lo sides store lo - w_cur, hi sides store w_cur - hi,
-// where w_cur is the row value at the current NLP iterate (residuals are
-// d + t - v (lo) and d + t + v (hi) with v = DC z, so v = 0 at the
-// linearization point and an infeasible current iterate shows up as the
-// positive part of the offsets). Pin rows: d_lo = x_0 - x_bar_0,
-// d_hi = -(x_0 - x_bar_0); the NLP driver keeps x_bar_0 = x_0, so in
-// practice d = 0.
+// d holds bound OFFSETS in the step formulation: lo sides store
+// lo - w_cur, hi sides store w_cur - hi, where w_cur is the row value at
+// the current NLP iterate (residuals are d + t - v (lo) and d + t + v (hi)
+// with v = DC z, so v = 0 at the linearization point and an infeasible
+// current iterate shows up as the positive part of the offsets). Pin
+// rows: d_lo = x_0 - x_bar_0, d_hi = -(x_0 - x_bar_0); the NLP driver
+// keeps x_bar_0 = x_0, so in practice d = 0.
 //
-// Assembly notes (phase 2):
+// Assembly notes:
 // - First stage with fixed x_0: stage ineq/lin rows whose (linearized)
 //   Jacobian w.r.t. the decision variables (u_0; s_0) is identically zero
 //   are degenerate; check D != 0 before relying on them.
 // - Terminal stage has no u and no BA/b (zero dynamics).
+//
+// Supplementary - naming correspondence with HPIPM's OCP-QP interface
+// (ocp++ -> HPIPM/acados):
+//   nvar_*  -> nv          decision vars per stage type (u; x; s)
+//   nrow_*  -> nb + ng     constraint rows (HPIPM keeps every row
+//                          two-sided and masks absent sides; we drop
+//                          one-sided ineq rows' lo side)
+//   nside_* -> nct         one-sided sides (HPIPM's nct counts both
+//                          sides of every row incl. slacks)
+//   ng, ne, nl -> ng       general-constraint rows (we keep ineq, eq, lin
+//                          as separate groups)
+//   nslack -> ns           HPIPM uses a slack pair per soft row; we use
+//                          one slack variable per soft SIDE
+//   BA    -> BAbt          HPIPM stores the dynamics matrix transposed
+//                          with b as the last column; we store [B|A] + b
+//   DC    -> DCt           HPIPM stores the general-constraint Jacobian
+//                          transposed (variables x constraints, box rows
+//                          via idxb, slacks via idxs_rev); we store the
+//                          natural orientation (nrow x nvar) covering all
+//                          row groups incl. box rows and slack columns
+//   idxb   -> idxb         box-row -> variable index (per stage type)
+//   idx_x0 -> idxe         equality-pinned variable indices
+//   idxs_lo_*/idxs_hi_* -> idxs / idxs_rev  soft row -> slack column
 //
 // HPIPM reference:
 //   acados/external/hpipm/include/hpipm_d_ocp_qp_dim.h
@@ -346,7 +338,7 @@ struct QpDim
     static constexpr int side_hi_term(int r)  { return lay_term.side_hi(r); }
 
     // ---------------------------------------------------------------
-    // Compile-time index arrays (HPIPM stand-ins)
+    // Compile-time index arrays
     // ---------------------------------------------------------------
 
     /// Box-row -> variable index in the FIRST-stage vector (u; x; s):
@@ -397,9 +389,9 @@ struct QpDim
     }
     static constexpr std::array<int, nbx_t> idxb_term = make_idxb_term();
 
-    /// Equality-pinned variable indices (HPIPM `idxe`): the fixed initial
-    /// state components inside the first-stage vector (u; x; s); empty
-    /// when x_0 is not fixed. Pin row j pins variable idx_x0[j].
+    /// Equality-pinned variable indices: the fixed initial state components
+    /// inside the first-stage vector (u; x; s); empty when x_0 is not
+    /// fixed. Pin row j pins variable idx_x0[j].
     static constexpr std::array<int, P::fixed_initial_state ? nx : 0>
         make_idx_x0()
     {
@@ -421,7 +413,7 @@ struct QpDim
     static constexpr int nbound_term = nbx_t;
 
     // ---------------------------------------------------------------
-    // Soft-slack column mapping (HPIPM `idxs` / `idxs_rev` analogue)
+    // Soft-slack column mapping
     // ---------------------------------------------------------------
     // For each row of a stage type: the column index in the stage's
     // variable vector z at which its lo-side / hi-side slack variable
@@ -1124,18 +1116,17 @@ struct QpStageFirst
 
     /// Hessian of the stage cost over (u_0; x_0; s_0).
     /// The (u;x) block is the user cost Hessian plus the dynamics /
-    /// constraint HVP terms assembled by the SQP; the slack diagonal holds
-    /// the soft-penalty weight w (0.5 * w * s^2 contract; Z = w,
-    /// verified). Unused slack slots: any positive value (e.g. 1.0).
+    /// constraint HVP terms assembled by the SQP; the slack diagonal
+    /// holds the soft-penalty weight (0.5 * quad * s^2 contract).
+    /// Unused slack slots: any positive value (e.g. 1.0).
     /// Off-diagonal slack entries are zero.
     Eigen::Matrix<S, D::nvar_first, D::nvar_first> hess{};
 
     /// Linear term over (u_0; x_0; s_0): the permuted cost gradient; the
-    /// slack part is zero (HPIPM's r_s = 0).
+    /// slack part is zero.
     Eigen::Matrix<S, D::nvar_first, 1> grad{};
 
     /// Dynamics: [B | A], rows = x_1, cols = (u_0; x_0).
-    /// (HPIPM stores this transposed as BAbt with b as the last column.)
     Eigen::Matrix<S, D::nx, D::nu + D::nx> BA{};
 
     /// Dynamics offset: b_0 = f_0(x_0, u_0) - x_1 (residual at the current
@@ -1143,28 +1134,28 @@ struct QpStageFirst
     Eigen::Matrix<S, D::nx, 1> b{};
 
     /// Constraint Jacobian over (u_0; x_0; s_0): nrow_first rows in the
-    /// first-stage row layout, DC[r, :] = d c_r / d z (natural orientation;
-    /// HPIPM's DCt is its transpose, general constraints only). Pin rows:
-    /// unit vector at the pinned variable (idx_x0). Box rows: unit vector at
-    /// the constrained variable (idxb_first). General rows: Jacobian
+    /// first-stage row layout, DC[r, :] = d c_r / d z (natural orientation,
+    /// constraints x variables, covering all row groups). Pin rows: unit
+    /// vector at the pinned variable (idx_x0). Box rows: unit vector at the
+    /// constrained variable (idxb_first). General rows: Jacobian
     /// [dg/dx | dg/du] plus slack columns (+1 lo side / -1 hi side) for
     /// soft rows. Absent groups: zero rows.
     Eigen::Matrix<S, D::nrow_first, D::nvar_first> DC{};
 
-    /// Bound offsets (step formulation, SQP_PHASE2_PLAN sec. 1.1-1.2):
-    /// nside_first entries in the first-stage side layout. Lo sides store
-    /// lo - w_cur, hi sides store w_cur - hi, where w_cur is the row value
-    /// at the current NLP iterate (residuals d + t -/+ v with v = DC z, so
-    /// an infeasible current iterate shows up as the positive part of the
-    /// offsets). Slack sides 0. Pin rows: d_lo = x_0 - x_bar_0,
-    /// d_hi = -(x_0 - x_bar_0) (the driver keeps x_bar_0 = x_0).
+    /// Bound offsets in the step formulation: nside_first entries in the
+    /// first-stage side layout. Lo sides store lo - w_cur, hi sides store
+    /// w_cur - hi, where w_cur is the row value at the current NLP iterate
+    /// (residuals d + t -/+ v with v = DC z, so an infeasible current
+    /// iterate shows up as the positive part of the offsets). Slack sides
+    /// 0. Pin rows: d_lo = x_0 - x_bar_0, d_hi = -(x_0 - x_bar_0) (the
+    /// driver keeps x_bar_0 = x_0).
     Eigen::Matrix<S, D::nside_first, 1> d{};
 
     /// 1 = finite / active side, 0 = infinite / absent side.
     Eigen::Matrix<S, D::nside_first, 1> d_mask{};
 
-    /// Complementarity RHS: lam * t = m (zero in v1; reserved for
-    /// m_relax / funnel in later phases).
+    /// Complementarity RHS: lam * t = m. Zero unless a funnel/m_relax
+    /// scheme sets it.
     Eigen::Matrix<S, D::nside_first, 1> m{};
 
     QpStageFirst() { setZero(); }
@@ -1213,7 +1204,8 @@ struct QpStagePath
     /// 1 = finite / active side, 0 = infinite / absent side.
     Eigen::Matrix<S, D::nside_path, 1> d_mask{};
 
-    /// Complementarity RHS: lam * t = m (zero in v1).
+    /// Complementarity RHS: lam * t = m. Zero unless a funnel/m_relax
+    /// scheme sets it.
     Eigen::Matrix<S, D::nside_path, 1> m{};
 
     QpStagePath() { setZero(); }
@@ -1258,7 +1250,8 @@ struct QpStageTerm
     /// 1 = finite / active side, 0 = infinite / absent side.
     Eigen::Matrix<S, D::nside_term, 1> d_mask{};
 
-    /// Complementarity RHS: lam * t = m (zero in v1).
+    /// Complementarity RHS: lam * t = m. Zero unless a funnel/m_relax
+    /// scheme sets it.
     Eigen::Matrix<S, D::nside_term, 1> m{};
 
     QpStageTerm() { setZero(); }
@@ -1330,7 +1323,7 @@ struct Qp
 
 /// Solution of a staged QP.
 ///
-/// Mixed convention (matching HPIPM):
+/// Mixed convention:
 ///   - ux_*  : primal STEP (delta) over the stage-type variable vector
 ///   - pi    : ABSOLUTE dynamics multipliers (k = 0..N-1)
 ///   - lam_* : ABSOLUTE constraint multipliers, one per side
@@ -1402,7 +1395,7 @@ struct QpSol
 //  QpRes
 // =========================================================================
 
-/// KKT residuals of a staged QP (HPIPM `d_ocp_qp_res` analogue).
+/// KKT residuals of a staged QP.
 ///
 /// Computed by the solver's `compute_residuals` each IPM iteration.
 template <class P, int NH = Eigen::Dynamic, class Dim = QpDim<P>>

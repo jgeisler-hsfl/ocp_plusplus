@@ -1,0 +1,16 @@
+NOTICE
+======
+
+This project includes a translated and modified version of acados
+(https://github.com/acados/acados), originally distributed
+under the BSD 2-Clause License.
+
+The original copyright notices, license conditions, and disclaimers
+are preserved in accordance with the original license (see the
+`LICENSE` file in this directory).
+
+The modified project is distributed under the GNU General Public
+License version 3.
+
+The original authors of acados retain their share of the copyright
+(Urheberrecht) in their original work.

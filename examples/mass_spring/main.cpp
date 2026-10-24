@@ -5,8 +5,8 @@
 //   RK4 simulation of the continuous-time system over one sampling interval
 // - verifies the dynamics Jacobian and the stage / terminal cost
 //   gradient and Hessian against central finite differences
-// - forward-simulates the acados horizon (N = 20) and checks the
-//   box-constraint specs and trajectory feasibility
+// - forward-simulates the N = 20 horizon and checks the box-constraint
+//   specs and trajectory feasibility
 // - writes the simulated trajectory (states, controls, stage / terminal
 //   costs) to mass_spring_simulation.csv
 
@@ -59,7 +59,7 @@ int main()
     static_assert(MassSpring::stage_grad_t::RowsAtCompileTime == 11, "grad layout [x;u]");
     static_assert(MassSpring::stage_hess_t::RowsAtCompileTime == 11, "hess layout [x;u]");
 
-    const int N = 20;  // same horizon as the acados example
+    const int N = 20;
     MassSpring problem;
     ocp::Solution<MassSpring> sol(N);  // constructor resizes all trajectories
     if (sol.x.size() != static_cast<std::size_t>(N + 1) ||
@@ -69,7 +69,7 @@ int main()
         return 1;
     }
 
-    // ---- forward simulation over the acados horizon -------------------
+    // ---- forward simulation over the N = 20 horizon -------------------
     sol.x[0] = problem.initial_state();
     check_close("x0(0)", sol.x[0](0), 2.5, 1e-12);
     check_close("x0(1)", sol.x[0](1), 2.5, 1e-12);

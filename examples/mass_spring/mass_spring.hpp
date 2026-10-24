@@ -1,5 +1,5 @@
 // Example concrete problem for the ocp++ problem interface:
-// the 4-mass spring chain of acados/examples/acados_python/generic_dyn_disc/.
+// a 4-mass spring chain.
 //
 //   x = [q; v]  (q: 4 positions, v: 4 velocities),  u: 3 forces
 //
@@ -22,11 +22,11 @@
 // (ng = ne = nl = ng_t = ne_t = nl_t = 0) and no soft rows, so the
 // corresponding interface functions stay unimplemented on purpose.
 //
-// A and B are derived from the continuous-time system exactly as in
-// generic_disc_dyn.c (mass_spring_system + disc_dyn_fun), the generic
-// dynamics of the acados example (its default run), so this problem matches
-// the acados reference for later solution comparisons. Note: main.py's
-// *symbolic* variant uses a -2 diagonal in T; the generic C dynamics use -3.
+// Supplementary - provenance:
+//   Matches the acados example acados/examples/acados_python/generic_dyn_disc/
+//   (generic dynamics, generic_disc_dyn.c: mass_spring_system + disc_dyn_fun,
+//   the default run) for later solution comparisons. The symbolic main.py
+//   variant uses a -2 diagonal in T; the generic C dynamics use -3.
 
 #pragma once
 
@@ -34,6 +34,7 @@
 
 #include <unsupported/Eigen/MatrixFunctions>
 
+/// Dims tag for the 4-mass spring chain: structural dimensions and box index sets.
 struct MassSpringDims
 {
     static constexpr int nx = 8;
@@ -73,6 +74,7 @@ public:
     dyn_df_dx_t A_{};  // discrete state matrix
     dyn_df_du_t B_{};  // discrete input matrix
 
+    /// Build the discrete dynamics matrices A and B from the continuous system.
     MassSpring()
     {
         // continuous-time system  Ac = [0  I; T  0],  Bc = [0; I3]
@@ -101,7 +103,7 @@ public:
         const dyn_df_dx_t E = (Ts_ * Ac).exp();
         A_ = E;
         // top-right block of expm([Ts Ac, Ts Bc; 0, 0]); E and Ac commute, so
-        // this equals the generic_disc_dyn.c computation Ac^{-1} (A - I) Bc
+        // this equals Ac^{-1} (A - I) Bc
         B_ = (E - dyn_df_dx_t::Identity()) * Ac.inverse() * Bc;
     }
 
@@ -195,6 +197,7 @@ public:
     // ---------------------------------------------------------------
     // box constraints  (the only active constraint groups)
     // ---------------------------------------------------------------
+    /// State box: -4 <= x_i <= 4.
     state_box_t stage_state_box_constr(int) const
     {
         state_box_t spec;
@@ -204,6 +207,7 @@ public:
         return spec;
     }
 
+    /// Control box: -0.5 <= u_i <= 0.5.
     control_box_t stage_control_box_constr(int) const
     {
         control_box_t spec;
@@ -213,6 +217,7 @@ public:
         return spec;
     }
 
+    /// Terminal state box: -4 <= x_N,i <= 4.
     term_state_box_t terminal_state_box_constr() const
     {
         term_state_box_t spec;

@@ -13,7 +13,30 @@
 - [PLANNED] investigate a way to implement a central "discovery"-map where all parts of a problem/solver-object can "register" their run-time mutable values (lists) like options and parameters. all values shall be alloc-free class members somewhere, only the "by-name"-access refs them from a map. every part of the problem has its own local list or lists (maps that ref values). the central registry maps theses lists/maps forming a hierarchie. maybe add a special accessor that takes complete value-"paths" and resolves them through the maps (of course handling nonexistent entries gracefully), like get("solver/hpimp/options/i_max") would return the value i_max that is an option in the hpipm solver.
 - [x] Test acados reimplementation with simple example from acados repo
 - [x] Test more examples from acados repo
-- [] add hess_prod to IRK
 - [x] We should start to write some documentation/how to use, that explains these things, maybe even a tutorial with increasing levels of difficulty.
-- [] rework all code documentation to be more precise, informative and not too long (doxygen style), name inputs and outputs. leave the genesis (reference to the implementation phases) and the acados original code only as supplementary info.
+- [x] rework all code documentation to be more precise, informative and not too long (doxygen style), name inputs and outputs. leave the genesis (reference to the implementation phases) and the acados original code only as supplementary info.
 - [OPTIMIZATION] ErkWorkspace split by derivative source: most fields are used by exactly one branch of ExplicitRkIntegrator. The AD path (ad_forward, Dual1/Dual2) uses only stack-local dual vectors and none of the workspace; value() only needs K (stage-derivative scratch, shared by all ODE kinds); everything else (x_stage, JX, JU, dx, dK, ddK_dual, dKval_dual, dv_ss, dx_ss, du, and the (x,u,t_k)-keyed forward cache last_x/last_u/last_t/fwd_valid) is used only by the hand-written-ODE paths (forward_jac / thread_jvp / backward_sweep). Design: split the workspace via std::conditional_t on !ode_f_evaluable_at<Ode, Dims, Dual1> (a base holding just K, plus a legacy extension with the rest); legacy-only member functions never instantiate for AD ODEs, so no further gating is needed. Caveat: pure RAM (no runtime or compile-time cost today — the Dual2 codegen overhead is already gone via the ad_hess_prod opt-out); savings scale with JX ~ NS*NumSteps*nx^2 per integrator instance (negligible at the current example sizes, ~2.5 MB at nx=100, NumSteps=8; multiplies with SQP worker instances).
+- add FD class and "check wrapper" to quickly verify user supplied jecobians and hessians
+- [] dont pass options to the solver. let the solver have a default set options member and expose it to the use via the solver object. (or is that a bad idea because it enables changing options after the first solve?)
+- [] optional fixed size statistics array with iteration number field and ring buffer filling or ignoring new entries, when the buffer is full (which is better?)
+- [] why is there not qp_warm_start=1?
+- [] add ocp::Status conversion to string 
+- [] does ocp::Solution have a to_csv? if not, add it and add a simple mecanism to plot it png or preferably html (probably best use python and plotly, leave it to the user to install)
+- [] add receding horizon shifting to Solution, what about the solver-internal slacks?
+- [] add a linear and a nonlinear least sqquares tracking problem crtp class with gauss newton approximation option
+- [] check about this "hess * v  =  sum_i lam_i * D^2 f_i(x, u) * v" in 05-second-order-models.md. i believe the "v" is no longer there
+- [] make clear, how Levenberg-Marquardt and its options correspond to the different convexification options in acados
+- [] why is lm damping not applied ("a no-op"), when both `compute_hess_dyn` and `compute_hess_constr` are false?
+- [] to be examined: how to share parameters between ODE/DAE and cost and constraints
+- [] do we really need the NS number of stage in the integrators, is that not already encoded in the tags?
+- [] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
+- [] make it possible to set the integrator step size per stage from the problem
+- [] definition of IrkBase is missing in the example in 06-continuous-time-and-integrators.md
+- [] in 06-continuous-time-and-integrators.md, 6.5 Automatic differentiation, add a link to an explanation of duals and the original repo
+- [] add license and notice to it in the README
+- [] add explanation and usage of AutoDiffDae 06-continuous-time-and-integrators.md
+- [] does the implicit integrator have options to limit the number of newton iterations and the frequency of reevaluated jacobians?
+- [] add anotice to AGENTS.md to check/update the ARCHITECTURE, README and tutorial on ever merge
+- [] is the funnel globalization adequately addressed in the tutorial?
+- [] add a ProblemScaling crtp class for scaling states and inputs. (how to recover the unscaled values from Solution?)
+- [] add support for more than one parameter in acados2ocp_pp.py
