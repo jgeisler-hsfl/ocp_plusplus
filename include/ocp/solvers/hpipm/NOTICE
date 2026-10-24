@@ -2,8 +2,9 @@ NOTICE
 ======
 
 This project includes a translated and modified version of HPIPM
-(High-Performance Interior Point Method), originally distributed
-under the BSD 2-Clause License.
+(High-Performance Interior Point Method,
+https://github.com/giaf/hpipm), originally distributed under the
+BSD 2-Clause License.
 
 The original copyright notices, license conditions, and disclaimers
 are preserved in accordance with the original license (see the

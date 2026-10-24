@@ -1,8 +1,9 @@
 NOTICE
 ======
 
-This project includes a translated and modified version of acados,
-originally distributed under the BSD 2-Clause License.
+This project includes a translated and modified version of acados
+(https://github.com/acados/acados), originally distributed
+under the BSD 2-Clause License.
 
 The original copyright notices, license conditions, and disclaimers
 are preserved in accordance with the original license (see the
