@@ -42,6 +42,7 @@
 
 #include <Eigen/Dense>
 
+#include "../../named_values.hpp"
 #include "qp.hpp"
 
 namespace ocp
@@ -89,6 +90,46 @@ struct HpipmOptions
     int t_lam_min = 2;          // clip t and lam: 0 no / 1 in Gamma / 2 in sol
     int t0_init = 2;            // slack init: 0 sqrt(mu0) / 1 1.0 / 2 heuristic
     int update_fact_exit = 1;   // leave an updated factorization on exit
+
+    /// By-name access to the fields above (docs/plans/DUAL_ACCESS_PLAN.md):
+    /// `reg.set("mu0", v)` / `reg.get("iter_max", i)`. Direct member access
+    /// is unchanged. The registry is layout-relative (offsets from the
+    /// struct start) and stays valid on copies of HpipmOptions.
+    ValueRegistry reg;
+
+    HpipmOptions()
+    {
+        reg.begin(*this);
+        reg.add("mu0", mu0);
+        reg.add("alpha_min", alpha_min);
+        reg.add("res_g_max", res_g_max);
+        reg.add("res_b_max", res_b_max);
+        reg.add("res_d_max", res_d_max);
+        reg.add("res_m_max", res_m_max);
+        reg.add("dual_gap_max", dual_gap_max);
+        reg.add("reg_prim", reg_prim);
+        reg.add("lam_min", lam_min);
+        reg.add("t_min", t_min);
+        reg.add("tau_min", tau_min);
+        reg.add("lam0_min", lam0_min);
+        reg.add("t0_min", t0_min);
+        reg.add("m_safe", m_safe);
+        reg.add("iter_max", iter_max);
+        reg.add("stat_max", stat_max);
+        reg.add("pred_corr", pred_corr);
+        reg.add("cond_pred_corr", cond_pred_corr);
+        reg.add("itref_pred_max", itref_pred_max);
+        reg.add("itref_corr_max", itref_corr_max);
+        reg.add("warm_start", warm_start);
+        reg.add("square_root_alg", square_root_alg);
+        reg.add("lq_fact", lq_fact);
+        reg.add("abs_form", abs_form);
+        reg.add("split_step", split_step);
+        reg.add("var_init_scheme", var_init_scheme);
+        reg.add("t_lam_min", t_lam_min);
+        reg.add("t0_init", t0_init);
+        reg.add("update_fact_exit", update_fact_exit);
+    }
 };
 
 // =========================================================================

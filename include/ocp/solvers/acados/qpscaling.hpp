@@ -52,6 +52,13 @@ public:
     {
     }
 
+    /// Replace the scaling options between uses (e.g. from an interactive
+    /// environment). The factors are re-derived on the next scale_qp().
+    void set_opts(const Opts& o)
+    {
+        opts_ = o;
+    }
+
     void resize(int n_stages)
     {
         scaled_in_.resize(n_stages);

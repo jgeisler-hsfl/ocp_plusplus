@@ -36,6 +36,7 @@
 
 #include <Eigen/Dense>
 
+#include "../../named_values.hpp"
 #include "../hpipm/qp.hpp"
 #include "../hpipm/hpipm.hpp"
 #include "globalize.hpp"
@@ -765,6 +766,52 @@ struct AcadosOptions
     double nlp_qp_tol_min_comp = 1e-11;
     double tau_min = 1e-16;               // res_comp floor (plan sec. 1.4)
     GlobOptions glob;
+
+    /// By-name access to the fields above (docs/plans/DUAL_ACCESS_PLAN.md):
+    /// `reg.set("max_iter", 40)` / `reg.get("glob.alpha_min", x)`; the nested
+    /// GlobOptions is linked under "glob" (its own registry owns the
+    /// "glob.*" names). Direct member access is unchanged. The registry is
+    /// layout-relative and stays valid on copies of AcadosOptions.
+    ValueRegistry reg;
+
+    AcadosOptions()
+    {
+        reg.begin(*this);
+        reg.add("max_iter", max_iter);
+        reg.add("tol_stat", tol_stat);
+        reg.add("tol_eq", tol_eq);
+        reg.add("tol_ineq", tol_ineq);
+        reg.add("tol_comp", tol_comp);
+        reg.add("tol_min_step_norm", tol_min_step_norm);
+        reg.add("tol_unbounded", tol_unbounded);
+        reg.add("compute_hess_dyn", compute_hess_dyn);
+        reg.add("compute_hess_constr", compute_hess_constr);
+        reg.add("levenberg_marquardt", levenberg_marquardt);
+        reg.add("with_adaptive_lm", with_adaptive_lm);
+        reg.add("adaptive_lm_mu0", adaptive_lm_mu0);
+        reg.add("adaptive_lm_lam", adaptive_lm_lam);
+        reg.add("adaptive_lm_mu_min", adaptive_lm_mu_min);
+        reg.add("adaptive_lm_obj_scalar", adaptive_lm_obj_scalar);
+        reg.add("print_level", print_level);
+        reg.add("qp_warm_start", qp_warm_start);
+        reg.add("warm_start_first_qp", warm_start_first_qp);
+        reg.add("eval_residual_at_max_iter", eval_residual_at_max_iter);
+        reg.add("timeout_heuristic", timeout_heuristic);
+        reg.add("timeout_max_time", timeout_max_time);
+        reg.add("scale_qp_objective", scale_qp_objective);
+        reg.add("scale_qp_constraints", scale_qp_constraints);
+        reg.add("ub_max_abs_eig", ub_max_abs_eig);
+        reg.add("lb_norm_inf_grad_obj", lb_norm_inf_grad_obj);
+        reg.add("nlp_qp_tol_strategy", nlp_qp_tol_strategy);
+        reg.add("nlp_qp_tol_reduction_factor", nlp_qp_tol_reduction_factor);
+        reg.add("nlp_qp_tol_safety_factor", nlp_qp_tol_safety_factor);
+        reg.add("nlp_qp_tol_min_stat", nlp_qp_tol_min_stat);
+        reg.add("nlp_qp_tol_min_eq", nlp_qp_tol_min_eq);
+        reg.add("nlp_qp_tol_min_ineq", nlp_qp_tol_min_ineq);
+        reg.add("nlp_qp_tol_min_comp", nlp_qp_tol_min_comp);
+        reg.add("tau_min", tau_min);
+        reg.add("glob", glob.reg);
+    }
 };
 
 /// One row of the SQP statistics.
@@ -994,6 +1041,18 @@ public:
 
     const AcadosOptions& options() const { return opts_; }
     const AcadosStatistics& statistics() const { return stat_; }
+
+    /// Replace the driver options between solves (e.g. from an interactive
+    /// environment). Must not be called while a solve() is in flight.
+    /// glob.* is re-synced at the next solve() (existing behavior); the QP
+    /// sub-solver picks up qp_warm_start / the tolerance strategy there as
+    /// well.
+    void apply_options(const AcadosOptions& o)
+    {
+        opts_ = o;
+        scaler_.set_opts(make_scaler_opts(o));
+    }
+
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 

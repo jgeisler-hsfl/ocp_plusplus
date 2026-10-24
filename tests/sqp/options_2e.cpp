@@ -85,6 +85,63 @@ void test_options_defaults()
 }
 
 // ---------------------------------------------------------------------
+// AcadosOptions by-name access (docs/plans/DUAL_ACCESS_PLAN.md)
+// ---------------------------------------------------------------------
+
+void test_options_registry()
+{
+    AcadosOptions o;
+
+    // set via name -> read the member (flat)
+    check(o.reg.set("max_iter", 40), "reg.set max_iter");
+    check(o.max_iter == 40, "reg.set wrote max_iter");
+    check(o.reg.set("tau_min", 2e-16), "reg.set tau_min");
+    check_close(o.tau_min, 2e-16, "reg.set wrote tau_min");
+    check(o.reg.set("scale_qp_objective", true), "reg.set scale_qp_objective");
+    check(o.scale_qp_objective, "reg.set wrote scale_qp_objective");
+
+    // set the member -> read via name
+    o.print_level = 1;
+    int i = 0;
+    check(o.reg.get("print_level", i) && i == 1, "reg.get print_level");
+    double d = 0.0;
+    check(o.reg.get("glob.alpha_min", d) && d == 0.05,
+          "reg.get glob.alpha_min (dotted)");
+
+    // unknown names and type mismatches
+    check(!o.reg.has("i_max"), "reg.has unknown name");
+    check(!o.reg.get("max_iter", d), "reg.get int entry as double");
+    check(!o.reg.set("tol_stat", 1), "reg.set double entry with int");
+    check(!o.reg.get("glob.alpha_min.x", d), "reg.get unknown dotted tail");
+
+    // names(): 33 flat leaves + 5 glob leaves, glob.* prefixed
+    const std::vector<std::string> names = o.reg.names();
+    check(names.size() == 38, "reg.names(): 33 flat + 5 glob leaves");
+    bool has_glob_alpha_min = false;
+    bool has_glob_use_soc = false;
+    for (const std::string& n : names)
+    {
+        has_glob_alpha_min = has_glob_alpha_min || (n == "glob.alpha_min");
+        has_glob_use_soc = has_glob_use_soc || (n == "glob.use_soc");
+    }
+    check(has_glob_alpha_min && has_glob_use_soc,
+          "reg.names(): dotted glob leaves present");
+
+    // copy safety: sets through the copy's registry (flat *and* dotted)
+    // must not touch the original
+    AcadosOptions o2 = o;
+    check(o2.reg.set("max_iter", 99), "copy: reg.set flat name");
+    check(o2.max_iter == 99 && o.max_iter == 40,
+          "copy: flat set left the original untouched");
+    check(o2.reg.set("glob.alpha_min", 0.11), "copy: reg.set dotted name");
+    check_close(o2.glob.alpha_min, 0.11, "copy: dotted set wrote the copy");
+    check_close(o.glob.alpha_min, 0.05, "copy: dotted set left the original");
+    double ar = 0.0;
+    check(o2.reg.get("glob.alpha_reduction", ar) && ar == 0.7,
+          "copy: reg.get dotted name");
+}
+
+// ---------------------------------------------------------------------
 // AcadosStatistics::record
 // ---------------------------------------------------------------------
 
@@ -249,6 +306,7 @@ int run_options_2e_tests()
 {
     failures = 0;
     test_options_defaults();
+    test_options_registry();
     test_statistics_record();
     test_statistics_csv();
     test_print_iteration();

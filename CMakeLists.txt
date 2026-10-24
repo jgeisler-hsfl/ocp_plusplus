@@ -263,6 +263,10 @@ add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(named_values_unit tests/registry/named_values.cpp)
+target_include_directories(named_values_unit PRIVATE include)
+target_compile_options(named_values_unit PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(sqp_double_integrator
                tests/sqp_double_integrator/sqp_double_integrator.cpp)
 target_include_directories(sqp_double_integrator

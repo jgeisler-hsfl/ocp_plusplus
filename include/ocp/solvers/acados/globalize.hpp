@@ -23,6 +23,7 @@
 
 #include <Eigen/Dense>
 
+#include "../../named_values.hpp"
 #include "../hpipm/qp.hpp"
 
 namespace ocp
@@ -42,6 +43,21 @@ struct GlobOptions
     double eps_sufficient_descent = 1e-4;  // (phase 3, Leineweber 1999)
     bool full_step_dual = false;        // full-step dual update vs. relaxed
     bool use_soc = false;               // 3j: second-order-correction pre-pass
+
+    /// By-name access to the fields above (docs/plans/DUAL_ACCESS_PLAN.md);
+    /// linked into AcadosOptions as the "glob" registry. Layout-relative,
+    /// stays valid on copies of GlobOptions.
+    ValueRegistry reg;
+
+    GlobOptions()
+    {
+        reg.begin(*this);
+        reg.add("alpha_min", alpha_min);
+        reg.add("alpha_reduction", alpha_reduction);
+        reg.add("eps_sufficient_descent", eps_sufficient_descent);
+        reg.add("full_step_dual", full_step_dual);
+        reg.add("use_soc", use_soc);
+    }
 };
 
 // =========================================================================

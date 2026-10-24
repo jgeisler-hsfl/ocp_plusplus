@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
@@ -52,6 +53,49 @@ void check_options_defaults()
     check(o.var_init_scheme == 1, "var_init_scheme = 1 (acados override)");
     check(o.t_lam_min == 2 && o.t0_init == 2, "t_lam_min / t0_init = 2");
     check(o.update_fact_exit == 1, "update_fact_exit = 1");
+}
+
+void check_options_registry()
+{
+    ocp::HpipmOptions o;
+
+    // set via name -> read the member
+    check(o.reg.set("iter_max", 40), "reg.set iter_max");
+    check(o.iter_max == 40, "reg.set wrote iter_max");
+    check(o.reg.set("mu0", 0.5), "reg.set mu0");
+    check(o.mu0 == 0.5, "reg.set wrote mu0");
+    check(o.reg.set("pred_corr", false), "reg.set pred_corr");
+    check(!o.pred_corr, "reg.set wrote pred_corr");
+
+    // set the member -> read via name
+    o.stat_max = 7;
+    int i = 0;
+    check(o.reg.get("stat_max", i) && i == 7, "reg.get stat_max");
+    double d = 0.0;
+    o.dual_gap_max = 1e10;
+    check(o.reg.get("dual_gap_max", d) && d == 1e10, "reg.get dual_gap_max");
+    bool b = false;
+    check(o.reg.get("square_root_alg", b) && b, "reg.get square_root_alg");
+
+    // unknown names and type mismatches
+    check(!o.reg.has("i_max"), "reg.has unknown name");
+    check(!o.reg.get("iter_max", d), "reg.get int entry as double");
+    check(!o.reg.set("mu0", 1), "reg.set double entry with int");
+    check(!o.reg.get("warm_start", b), "reg.get int entry as bool");
+
+    // names(): all 29 fields, registration (member) order
+    const std::vector<std::string> names = o.reg.names();
+    check(names.size() == 29, "reg.names() lists all 29 fields");
+    check(names.size() == 29 && names[0] == "mu0" && names[14] == "iter_max" &&
+          names[28] == "update_fact_exit",
+          "reg.names() order matches the member order");
+
+    // copy safety: sets through the copy's registry never touch the original
+    ocp::HpipmOptions o2 = o;
+    check(o2.reg.set("iter_max", 12), "copy: reg.set");
+    check(o2.iter_max == 12 && o.iter_max == 40,
+          "copy: reg.set left the original untouched");
+    check(o2.reg.get("mu0", d) && d == 0.5, "copy: reg.get");
 }
 
 template <class P, int NH = Eigen::Dynamic>
@@ -120,6 +164,7 @@ int run_abs_form_3e_tests();
 int main()
 {
     check_options_defaults();
+    check_options_registry();
     check_solver_shell<DoubleIntegrator>("DoubleIntegrator (N dynamic)");
     check_solver_shell<MassSpring>("MassSpring (N dynamic)");
     check_solver_shell<MassSpring, 5>("MassSpring (NH = 5, fixed-extent)");
