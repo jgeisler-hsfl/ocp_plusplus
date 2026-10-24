@@ -121,6 +121,8 @@ No other dependencies. C++17 required.
 - Document new dependencies and any additional setup requirements.
 - Update documentation when behavior or public interfaces change.
 - Explain relevant design decisions when they are not obvious from the code.
+- On every merge, check and update `docs/ARCHITECTURE.md`, `README.md` and
+  the tutorial in `docs/tutorial/` so they stay in sync with the code.
 
 ## Portability and Safety
 - Do not include absolute, machine-specific filesystem paths in documentation,
