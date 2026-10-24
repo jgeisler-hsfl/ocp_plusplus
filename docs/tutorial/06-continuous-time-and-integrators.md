@@ -13,7 +13,7 @@ example is `examples/tutorial/continuous.cpp` (target
 `ocp::ContinuousProblem<Dims, Ode, Integ>` (in
 `include/ocp/integrators/continuous_problem.hpp`) derives from
 `ocp::Problem<Dims>` and provides the dynamics entries by delegating to
-the integrator. You only implement what is * yours*: cost, constraints,
+the integrator. You only implement what is *yours*: cost, constraints,
 initial state. The class template parameters:
 
 - `Dims` — the same tag struct as in chapter 2,
@@ -150,7 +150,7 @@ two runs.
 ## 6.5 Automatic differentiation
 
 The explicit integrator detects at compile time whether the ODE's `f` is
-* dual-evaluable* (a template in the scalar type):
+*dual-evaluable* (a template in the scalar type):
 
 ```cpp
 template <class D>
