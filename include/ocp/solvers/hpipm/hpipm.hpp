@@ -5057,11 +5057,12 @@ private:
     ///               converged iterate: the slack has collapsed onto the
     ///               solver floor (t < t_hard) or the barrier weight
     ///               Gamma = lam/t exceeds gamma_hard.  These enter the
-    ///               sens KKT as exact rows.  A true hard-equality row
-    ///               (lo == hi) has BOTH sides hard; the caller
-    ///               (fact_solve_kkt_active) dedups such a pair to the hi
-    ///               side only (the two exact rows would be linearly
-    ///               dependent, A_hi = -A_lo).
+    ///               sens KKT as exact rows.  A hard-equality row whose
+    ///               lo and hi sides are both hard and linearly dependent
+    ///               (A_hi = -A_lo) is deduped by the caller
+    ///               (fact_solve_kkt_active) to the hi side only; an
+    ///               independent lo/hi pair (C_lo != C_hi) is kept as two
+    ///               exact rows.
     ///   moderate -- finite barrier weight (Gamma <= gamma_hard); kept in
     ///               the barrier part of the LHS (A' Gamma A) with the
     ///               closed-form dlam / dt, exactly as the main IPM treats
@@ -5136,12 +5137,15 @@ private:
         std::vector<int> hard, moderate;
         split_sides(in, sol, hard, moderate);
         // Dedup hard-equality rows: a constraint row whose lo AND hi sides
-        // are both hard is a lo == hi row (a non-pinned row can only be
-        // tight on one side); build_side_matrix emits A_hi = -A_lo, so the
-        // two exact KKT rows would be linearly dependent and the
-        // multiplier pair only determined up to a split.  Keep the hi
-        // side only (staged fact_solve_kkt_hardeq convention: the
-        // multiplier lives on the hi side; the lo side is zeroed below).
+        // are both hard AND whose side rows are linearly dependent (box
+        // rows, or general rows with C_lo == C_hi, e.g. the hard ineq rows
+        // of a condensed QP: A_hi = -A_lo) yields two dependent exact KKT
+        // rows, the multiplier pair only determined up to a split.  Drop
+        // the lo-side partner and keep the hi side (staged
+        // fact_solve_kkt_hardeq convention; the lo side is zeroed below).
+        // General rows with C_lo != C_hi (soft rows carry different slack
+        // columns; a generic dense QP may carry independent rows) are two
+        // independent active constraints: both exact rows are kept.
         std::vector<int> dropped;
         {
             std::vector<int> in_hard(nside, 0);
@@ -5149,12 +5153,24 @@ private:
             {
                 in_hard[i] = 1;
             }
-            const int nrow = in.nb + in.ng;  // side layout: [lo sides; hi]
-            for (int r = 0; r < nrow; ++r)
+            const int nb = in.nb;
+            const int ng = in.ng;
+            for (int r = 0; r < nb + ng; ++r)  // side layout: [lo; hi]
             {
-                if (in_hard[r] && in_hard[in.nb + in.ng + r])
+                const int i_lo = r;
+                const int i_hi = nb + ng + r;
+                if (!(in_hard[i_lo] && in_hard[i_hi]))
                 {
-                    in_hard[r] = 0;
+                    continue;
+                }
+                // Box rows: A_lo = e_j, A_hi = -e_j -> always dependent.
+                // General rows: dependent iff C_lo == C_hi.
+                const bool dep = r < nb ||
+                                 in.C_lo.row(r - nb).isApprox(
+                                     in.C_hi.row(r - nb));
+                if (dep)
+                {
+                    in_hard[i_lo] = 0;
                     dropped.push_back(r);
                 }
             }
