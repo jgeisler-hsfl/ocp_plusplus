@@ -1896,7 +1896,8 @@ private:
                                        opts_.compute_hess_constr};
         auto ev = detail::eval_stage(problem, sol, 0, fl);
         detail::fill_stage_lhs_first(problem, ev, fl, qp_in_.first);
-        return detail::fill_stage_rhs_first(problem, sol, ev, qp_in_.first);    }
+        return detail::fill_stage_rhs_first(problem, sol, ev, qp_in_.first);
+    }
 
     void assemble_path(const P& problem, const Solution<P, NH>& sol, int k)
     {
