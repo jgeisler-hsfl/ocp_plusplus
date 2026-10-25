@@ -1,7 +1,7 @@
 # Dual Access Plan (options & statistics by member or by name)
 
 Advances TODO.md item 10; implements the "Separation of parameters" principle
-in ARCHITECTURE.md sec. 2 ("...access them as member variables of a
+in docs/ARCHITECTURE.md sec. 2 ("...access them as member variables of a
 solver-specific options class or by a string name via a map"). It is the
 per-object groundwork for TODO.md item 11 (central hierarchical discovery
 map) and already implements the nested-group entry kind (`kRegistry` link +

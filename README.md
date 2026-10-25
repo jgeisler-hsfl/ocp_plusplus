@@ -41,7 +41,10 @@ the first (reference) solver implementations.
   full-condensed dense QP, or as a block-condensed staged QP (stages grouped
   into blocks), selected by `AcadosOptions.qp_mode`. A second driver,
   `RtiSolver`, implements acados' standard real-time-iteration SQP (one
-  QP assembly + solve per call, full step, no line search).
+  QP assembly + solve per call, full step, no line search). The driver
+  also exposes first-order NLP-level sensitivities (`sens_x0` w.r.t. the
+  fixed initial state, `sens_param` w.r.t. a model parameter vector via
+  `Dims::np`), available in all three QP modes.
 - `tools/acados2ocp_pp.py` — generator that ports an acados OCP (from its
   CasADi-generated `acados_ocp_nlp.json` + C model files) into an ocp++
   problem class.

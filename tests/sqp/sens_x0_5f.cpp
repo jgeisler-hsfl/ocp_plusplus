@@ -1,6 +1,6 @@
 // Phase 5 test 5f: OCP-level sensitivity w.r.t. the fixed initial state.
 //
-// Verifies AcadosSolver::sens_x0 (ARCHITECTURE.md sec. 8) against central
+// Verifies AcadosSolver::sens_x0 (docs/ARCHITECTURE.md sec. 8) against central
 // finite differences of the full SQP solve:
 //   K_i = d(x*, u*)/dx0 * e_i  from one sens_x0 call,
 //   FD  = (sol(x0 + h e_i) - sol(x0 - h e_i)) / (2 h).

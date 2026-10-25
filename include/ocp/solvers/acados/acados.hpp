@@ -1109,7 +1109,7 @@ public:
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
     /// First-order sensitivity of the OCP solution w.r.t. the fixed
-    /// initial state (HPIPM QP sensitivities, ARCHITECTURE sec. 8).
+    /// initial state (HPIPM QP sensitivities, docs/ARCHITECTURE.md sec. 8).
     ///
     /// Assembles the staged QP at the (converged) iterate `sol`, solves
     /// it on a throwaway `QpSolver` instance (caching the exit KKT
@@ -1128,6 +1128,12 @@ public:
     /// the staged 5f hard-equality KKT sens path through BlockQpDim's eq
     /// rows).  The internal QP solve needs kSolved or kMaxIterations (same
     /// policy as the driver); kAborted is returned for other modes.
+    ///
+    /// @param problem  the concrete problem (provides model functions).
+    /// @param sol      the converged NLP iterate (x*, u* at the current x0).
+    /// @param dx0      a perturbation of the fixed initial state (nx entries).
+    /// @param[out] dsol the QP-space response d(x*, u*)/dx0 * dx0.
+    /// @return kSolved on success, kQpFailure if the seeded re-solve fails.
     Status sens_x0(const P& problem, const Solution<P, NH>& sol,
                    const typename P::state_t& dx0, QpSol<P, NH>& dsol)
     {
@@ -1328,6 +1334,12 @@ public:
     /// QP. kPartialCondensed falls back to the staged path when the block
     /// size does not match this solver's compile-time NB (same policy as
     /// sens_x0_partial_condensed).
+    ///
+    /// @param problem  the concrete problem (provides model functions).
+    /// @param sol      the converged NLP iterate at the current p.
+    /// @param dp       a direction in the parameter vector (np entries).
+    /// @param[out] dsol the QP-space response d(x*, u*)/dp * dp.
+    /// @return kSolved on success, kQpFailure if the seeded re-solve fails.
     Status sens_param(const P& problem, const Solution<P, NH>& sol,
                       const typename P::param_t& dp, QpSol<P, NH>& dsol)
     {
