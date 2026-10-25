@@ -209,6 +209,70 @@ equivalent gradient seed `grad = E z*`; the returned response carries the
 KKT's internal negative sign (dz/dH = −K⁻¹ (E z*)). This mirrors HPIPM's
 `OCP_QP_IPM_SENS_FRW` / `OCP_QP_IPM_SENS_ADJ`.
 
+#### NLP-level sensitivities (`sens_x0`, `sens_param`)
+
+One level above the QP seed layer, the SQP driver exposes first-order
+sensitivities of the *converged OCP solution*:
+
+- `AcadosSolver::sens_x0(problem, sol, dx0, dsol)` — the response
+  `d(x*, u*)/dx0 * dx0` to a perturbation `dx0` of the fixed initial
+  state (requires `Dims::fixed_initial_state`);
+- `AcadosSolver::sens_param(problem, sol, dp, dsol)` — the response
+  `d(x*, u*)/dp * dp` to a perturbation `dp` of the model's parameter
+  vector (requires `Dims::np > 0`).
+
+Each call re-solves the QP KKT system at the converged iterate: the left
+hand side keeps the converged Hessian / Jacobian, only the right-hand side
+carries the seed derived from the perturbation (for `sens_param`, seeds on
+constraint sides that are inactive at the solution are gated to zero — an
+inactive constraint does not move to first order). The response is
+returned in `QpSol` layout (per stage `ux = (u; x; s)`, terminal
+`ux_term = (x; s)`); for `sens_x0` the pinned initial state moves exactly
+by `dx0`. Both entries work in all three QP modes ("QP solve modes" above)
+and each costs one KKT solve on top of the base solve.
+
+The result is a *first-order* (local) response: it is the exact
+linearization of the solution map around the converged iterate, and it is
+valid as long as the perturbation is small enough that the active set and
+the QP linearization remain the right local model. The shipped tests
+(`tests/sqp/sens_x0_5f.cpp`, `tests/sqp/sens_param_5i.cpp`,
+`tests/sqp/sens_param_5j.cpp`) verify this against central finite
+differences of the full SQP solve in all three QP modes.
+
+A typical use is extracting a local linear state feedback law. One
+`sens_x0` call per basis vector of `x_0` yields one column of the gain
+`K = du_0*/dx0`:
+
+```cpp
+// P: concrete problem with Dims::fixed_initial_state;
+// sol: converged Solution at x0* = p.initial_state()
+const int nx = P::nx;
+Eigen::MatrixXd K = Eigen::MatrixXd::Zero(P::nu, nx);
+for (int i = 0; i < nx; ++i)
+{
+    P::state_t e_i;
+    e_i.setZero();
+    e_i(i) = 1.0;
+    ocp::QpSol<P, Eigen::Dynamic> dsol(sol.N);
+    const ocp::Status st = solver.sens_x0(p, sol, e_i, dsol);
+    if (st != ocp::Status::kSolved)
+    {
+        break;  // or handle the failure
+    }
+    K.col(i) = dsol.ux_first.head(P::nu).cast<double>();
+}
+
+// local feedback law around the solved iterate:
+// u_0(x_0) ~= u_0* + K (x_0 - x_0*)
+const Eigen::VectorXd u0 =
+    sol.u[0].cast<double>() + K * (x0 - p.initial_state());
+```
+
+For problems with linear dynamics and quadratic cost (e.g. the double
+integrator) the optimal policy is affine in `x_0`, so this law is exact up
+to the solver tolerances; for general nonlinear problems it is a
+first-order approximation around `x_0*`.
+
 #### Classical (non-square-root) Riccati factorization
 
 `HpipmOptions::square_root_alg` (default `true`) selects the square-root

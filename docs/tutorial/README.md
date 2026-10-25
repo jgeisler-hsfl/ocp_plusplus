@@ -39,11 +39,11 @@ serve as complete, runnable reference material for every feature.
 | 4 | [04-constraints.md](04-constraints.md) | Box, linear, nonlinear and soft constraints |
 | 5 | [05-second-order-models.md](05-second-order-models.md) | Exact Hessians vs Gauss-Newton, Levenberg-Marquardt |
 | 6 | [06-continuous-time-and-integrators.md](06-continuous-time-and-integrators.md) | ODE/DAE models, Runge-Kutta integrators, automatic differentiation |
-| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals (condensing, sensitivities, classical Riccati), RTI solver, code generation |
+| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals (condensing, NLP- and QP-level sensitivities, classical Riccati), RTI solver, code generation |
 
 ## Further reading
 
-- `ARCHITECTURE.md` — the design principles behind the interface.
+- `docs/ARCHITECTURE.md` — the design principles behind the interface.
 - `include/ocp/problem.hpp` — the central interface contract (the comment
   block at the top is kept in sync with the code and is authoritative).
 - `tests/` — unit tests for every solver and integrator feature; a good
