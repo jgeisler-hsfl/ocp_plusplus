@@ -1,6 +1,8 @@
 # Plan: merge `irk_hess` (final sensitivity/parity work) into `master`
 
-Status: **planned (2026-10-25)**. This plan documents how to bring the
+Status: **DONE (2026-10-25)**. Merged as merge commit `3b94341` plus the
+follow-up commits listed in the completion record below. This plan
+documents how to bring the
 `irk_hess` branch — the *final* version of the SQP/HPIPM parity +
 sensitivity work (phases 5f–5j) — into `master`, which currently carries the
 later docs/license/doxygen rework but **none** of the 5f–5j code.
@@ -50,13 +52,13 @@ no new commits (only a 1-line Allman-brace fix, `709292c`).
 > `ocp_plusplus-irk_hess` repo stays on `irk_hess` as the source.
 
 ### Phase 0 — Pre-flight
-- [ ] Confirm both working trees are clean (`git status`).
-- [ ] Safety tag on master: `git tag backup/pre-irk-hess-merge master`.
-- [ ] Confirm merge base = `9440d15`; operation = `git merge irk_hess` from `master`.
+- [x] Confirm both working trees are clean (`git status`).
+- [x] Safety tag on master: `git tag backup/pre-irk-hess-merge master`.
+- [x] Confirm merge base = `9440d15`; operation = `git merge irk_hess` from `master`.
 
 ### Phase 1 — Perform the merge
-- [ ] `git merge --no-ff irk_hess` in the master worktree.
-- [ ] Expect 3 conflicted files: `include/ocp/problem.hpp`,
+- [x] `git merge --no-ff irk_hess` in the master worktree.
+- [x] Expect 3 conflicted files: `include/ocp/problem.hpp`,
       `include/ocp/solvers/hpipm/hpipm.hpp`, `include/ocp/solvers/hpipm/qp.hpp`
       (11 hunks total).
 
@@ -66,37 +68,37 @@ code + its coherent inline notes), except where a hunk is a pure comment
 rewording of the *same* old content or where a stale path must be updated.
 
 **`include/ocp/solvers/hpipm/qp.hpp` (3 hunks)**
-- [ ] d_mask-values + "Assembly notes" banner → take `irk_hess` (full
+- [x] d_mask-values + "Assembly notes" banner → take `irk_hess` (full
       `0 = absent / 1 = barrier / 2 = hard-equality` semantics + "phase 2").
-- [ ] `idxe` doc → take `irk_hess` (carries the `HPIPM idxe` reference; fits
+- [x] `idxe` doc → take `irk_hess` (carries the `HPIPM idxe` reference; fits
       the parity style).
-- [ ] soft-slack vs hard-equality-rows block → take `irk_hess` (the whole
+- [x] soft-slack vs hard-equality-rows block → take `irk_hess` (the whole
       hard-equality infrastructure — `eq_row_soft`, `term_eq_row_soft`,
       `n_eq_first/path/term`, `has_eq`, `make_eq_rows_*`, `eq_rows_*` — is new
       and required by the 5f code; keep its "Soft-slack column mapping
       (HPIPM `idxs`/`idxs_rev` analogue)" banner).
 
 **`include/ocp/solvers/hpipm/hpipm.hpp` (5 hunks)**
-- [ ] `update_vars` call in the staged loop → take `irk_hess`
+- [x] `update_vars` call in the staged loop → take `irk_hess`
       (`update_vars(in, out, step)`). **Verify** the 3-arg *definition*
       `void update_vars(const QpT& in, QpSolT& iter, ...)` survives and no
       stale 2-arg staged definition remains.
-- [ ] `res_mu` comment + mask loop → take `irk_hess` (barrier sides only,
+- [x] `res_mu` comment + mask loop → take `irk_hess` (barrier sides only,
       `d_mask > 0.5 && d_mask < 1.5`).
-- [ ] hard-equality comment at the centering/correction site → take `irk_hess`.
-- [ ] `present_mask` / `barrier_mask` + `update_lam_t` doc → take `irk_hess`
+- [x] hard-equality comment at the centering/correction site → take `irk_hess`.
+- [x] `present_mask` / `barrier_mask` + `update_lam_t` doc → take `irk_hess`
       (both helpers are new and used across `solve`, residuals, and init).
-- [ ] `res_m` in `init_point` → take `irk_hess`
+- [x] `res_m` in `init_point` → take `irk_hess`
       (`res_m = barr.cwiseProduct(lam.cwiseProduct(t) - m)`; `barr =
       barrier_mask(d_mask)`).
 
 **`include/ocp/problem.hpp` (3 hunks)**
-- [ ] `Dims` example banner → take `irk_hess` (adds `static constexpr int np = 0`
+- [x] `Dims` example banner → take `irk_hess` (adds `static constexpr int np = 0`
       + richer flag comments).
-- [ ] `SoftPenalty` doc + Eigen 3.3 NOTE → take `irk_hess` (the
+- [x] `SoftPenalty` doc + Eigen 3.3 NOTE → take `irk_hess` (the
       "`{}` does not zero Eigen 3.3.9 members → use `::Zero()`" pitfall note is
       new and important).
-- [ ] "See also" + `*_sens_p` contract + Notes → **merge both sides**: keep
+- [x] "See also" + `*_sens_p` contract + Notes → **merge both sides**: keep
       `irk_hess`'s `*_sens_p` block and the Notes, but update the "See also"
       cross-reference to the **new `docs/ARCHITECTURE.md` path** (master moved
       `ARCHITECTURE.md` → `docs/ARCHITURE.md`). Do not leave a dangling root
@@ -108,34 +110,34 @@ inline-comment style**, while the rest of the tree uses the docu_clean
 **doxygen "named I/O"** style. Bring the *new public surface* into the doxygen
 convention — **scope guard: only merge-touched regions + the new sensitivity
 API; no whole-file reformat** (AGENTS.md forbids drive-by reformatting).
-- [ ] `problem.hpp`: `*_sens_p` interface stubs, the new `*_sensp_t` / sens
+- [x] `problem.hpp`: `*_sens_p` interface stubs, the new `*_sensp_t` / sens
       type aliases, and the `np` flag → `///` doxygen with named I/O, matching
       the surrounding entries. Keep the top **Interface contract** block in
       sync with the stubs (AGENTS.md rule).
-- [ ] `acados.hpp`: `sens_x0` and `sens_param` public methods → `///` doxygen
+- [x] `acados.hpp`: `sens_x0` and `sens_param` public methods → `///` doxygen
       with *what / dimensions / layout* (`[x; u]` order, stage extents
       `x: N+1`, `u: N`), matching the neighboring methods' style.
-- [ ] `qp.hpp`: new hard-equality members (`eq_rows_*`, `n_eq_*`, `has_eq`,
+- [x] `qp.hpp`: new hard-equality members (`eq_rows_*`, `n_eq_*`, `has_eq`,
       d_mask semantics) → concise comments consistent with the file.
-- [ ] **Preserve** the HPIPM source-line cross-references (e.g.
+- [x] **Preserve** the HPIPM source-line cross-references (e.g.
       `x_ocp_qp_res.c:513-516`, `x_core_qp_ipm_aux.c:545-578`) — they are the
       parity documentation; do not strip them during the style pass.
 
 ### Phase 4 — `ARCHITECTURE.md` + `README.md` (explicit item)
-- [ ] `docs/ARCHITECTURE.md`: review the 68 new lines from `irk_hess`
+- [x] `docs/ARCHITECTURE.md`: review the 68 new lines from `irk_hess`
       (sensitivity / §8 content); fix any links that now point at a root
       `ARCHITECTURE.md` instead of `docs/`; check against the
       "keep ARCHITECTURE, README and tutorial in sync on merge" note
       (`d8f2fdd`).
-- [ ] `README.md`: confirm the feature list mentions the sensitivity
+- [x] `README.md`: confirm the feature list mentions the sensitivity
       capabilities (`sens_x0`, `sens_param`, hard-equality QP, all three QP
       modes); add if missing.
-- [ ] Verify `docs/plans/finished/SQP_HPIPM_PARITY_PLAN.md` now carries the
+- [x] Verify `docs/plans/finished/SQP_HPIPM_PARITY_PLAN.md` now carries the
       **final** content (5f–5j done, §9.1/§9.2 verified, §9.3 closed) as a
       result of the auto-merged rename+modify.
 
 ### Phase 5 — Plan-file housekeeping
-- [ ] Move the 5F–5J plan files from `docs/plans/` → `docs/plans/finished/`
+- [x] Move the 5F–5J plan files from `docs/plans/` → `docs/plans/finished/`
       (all are marked completed/done), matching the phase 1–4 move from
       `c921f54`.
       - `SQP_HPIPM_PARITY_PHASE5_5F_SENSX0_PLAN.md`
@@ -145,16 +147,16 @@ API; no whole-file reformat** (AGENTS.md forbids drive-by reformatting).
       - `SQP_HPIPM_PARITY_PHASE5_5J_SENS_PARAM_CONDENSING_PLAN.md`
       (Leave this merge plan `SQP_HPIPM_PARITY_MERGE_PLAN.md` active until
       done, then move it too.)
-- [ ] Update `docs/tutorial/README.md` / `README.md` index if they list plan
+- [x] Update `docs/tutorial/README.md` / `README.md` index if they list plan
       file locations.
 
 ### Phase 6 — New tutorial section (explicit item)
 **Goal:** add a section deriving a *local linear state feedback control law*
 from the x0 sensitivities.
-- [ ] Location: a new section in `docs/tutorial/07-advanced-topics.md`
+- [x] Location: a new section in `docs/tutorial/07-advanced-topics.md`
       (which already covers sensitivities). *Alternative:* a new chapter
       `08-sensitivities.md` if the content outgrows one section.
-- [ ] Content outline:
+- [x] Content outline:
       1. Recap: after `solver.solve(p, sol)`, the optimal `(x*, u*)` depends on
          the data; a small perturbation `dx0` of the initial state shifts the
          whole trajectory.
@@ -169,23 +171,23 @@ from the x0 sensitivities.
          `tests/sqp/sens_x0_5f.cpp`, simplified for a tutorial).
       6. Validity note: first-order / local around the solved iterate, **not**
          a global controller.
-- [ ] (Optional, if a new chapter is created) add a companion example under
+- [x] (Optional, if a new chapter is created) add a companion example under
       `examples/tutorial/`.
 
 ### Phase 7 — Build & test
-- [ ] `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`
+- [x] `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`
       — must stay **warning-free** under `-Wall -Wextra -Werror`.
-- [ ] Run the full suite, especially the new sensitivity tests:
+- [x] Run the full suite, especially the new sensitivity tests:
       `sqp_unit` (includes `sens_x0_5f`, `sens_param_5i`, `sens_param_5j`),
       `dense_seed_5g`, `qp_unit`, `split_step_3b`, `alpha_1f`,
       `sqp_double_integrator`.
-- [ ] Verify the auto-merged `acados.hpp` retains **both** the `709292c`
+- [x] Verify the auto-merged `acados.hpp` retains **both** the `709292c`
       Allman-brace fix in `assemble_first` **and** the new `sens_*` methods
       (this file auto-merged — confirm no content was silently dropped).
-- [ ] If a tutorial companion example was added, build + run it.
+- [x] If a tutorial companion example was added, build + run it.
 
 ### Phase 8 — Commit, push, cleanup
-- [ ] Commit in logical units (one concern each, AGENTS.md imperative
+- [x] Commit in logical units (one concern each, AGENTS.md imperative
       subjects):
       1. the merge with all conflict resolutions;
       2. `docs: move 5F–5J parity plans to finished/` (+ index updates);
@@ -196,9 +198,12 @@ from the x0 sensitivities.
       5. comment-style reconciliation (if kept as a separate commit).
 - [ ] Push `master` (local `master` is ahead of `origin/master` at `34d0c70`
       and has **not** been pushed yet — one push covers the parity no-op merge
-      + this merge).
-- [ ] Decide the fate of the `irk_hess` branch once it is fully in `master`
-      (keep for now; delete only after confirmation).
+      + this merge). *Held on user decision: the user reviews the commits
+      and pushes.*
+- [x] Decide the fate of the `irk_hess` branch once it is fully in `master`
+      (keep for now; delete only after confirmation). *Decision: keep the
+      branch and the `backup/pre-irk-hess-merge` safety tag until the user
+      confirms the merge; delete only after the push is reviewed.*
 
 ---
 
@@ -209,3 +214,32 @@ from the x0 sensitivities.
   fix is preserved; verify in Phase 7.
 - **Stale paths:** the `*_sens_p` "See also" block and any `ARCHITECTURE.md`
   links must point at `docs/…` after the reorg (Phase 2 + Phase 4).
+
+---
+
+## Completion record (2026-10-25)
+
+- Merge commit `3b94341`: all 11 hunks resolved per this plan; the code side of
+  `hpipm.hpp` / `qp.hpp` verified code-identical to `irk_hess` (master's
+  doxygen rework preserved).
+- Post-merge follow-ups:
+  - `a82efb0` solver: dedup only dependent hard-eq pairs in dense sens KKT —
+    a pre-existing `irk_hess` bug (since `a316adb`) caught by
+    `dense_seed_5g`: the unconditional lo-side dedup in
+    `fact_solve_kkt_active` assumed `A_hi = -A_lo` for every hard-eq row,
+    which only holds when `C_lo == C_hi` (box rows; hard general rows of
+    condensed QPs). For general rows with independent lo/hi rows (soft rows
+    with distinct slack columns; generic dense QPs) the dropped lo row removed
+    an independent KKT equation, leaving the sensitivity solve
+    under-determined (eq-row FD err ~0.17 / ~0.08 vs tol 1e-5). Dedup is now
+    conditional; eq-row FD errors are ~4e-8 / ~8e-8.
+  - `6613381` docs: move 5F-5J parity phase plans to `finished/`.
+  - `93e7e5f` docs: NLP-level sensitivity section in
+    `docs/tutorial/07-advanced-topics.md`.
+  - `eb7fcde` docs: sens API doxygen + stale doc path fixes
+    (README, DUAL_ACCESS_PLAN, `acados.hpp`, `sens_x0_5f.cpp`).
+- Verification: warning-free build under `-Wall -Wextra -Werror`; full suite
+  green (28/28 binaries, incl. `qp_unit` dense-sens eq/ineq cases, `sqp_unit`
+  5f/5i/5j, all e2e targets).
+- Push held on user decision (see Phase 8); `irk_hess` branch and
+  `backup/pre-irk-hess-merge` tag kept until review.
