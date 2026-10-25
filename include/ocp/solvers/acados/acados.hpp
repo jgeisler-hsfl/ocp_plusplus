@@ -923,6 +923,31 @@ template <class P>
 struct BlockQpWorkspaces<P, 0>
 {
 };
+
+/// 5i: p-derivative of a (NRow x NVar) constraint Jacobian, column-stacked
+/// in p (`dJ_dp(r * NVar + i, j) = dJ(r, i) / dp_j`), contracted with the
+/// direction `dp` and multiplied from the left by the multiplier `lam`:
+/// adds `(sum_j dp_j * dJ / dp_j)' * lam` to `gs(Off..Off + NVar - 1)`.
+/// Used by `fill_param_seed` for the (dJ/dp)' lam stationarity terms of the
+/// parameter-sensitivity seed (SQP_HPIPM_PARITY_PHASE5_5I plan sec. 2.1).
+/// Scalar accumulation keeps this type-safe for unit dimensions (Eigen
+/// treats 1x1 products as matrices, not vectors).
+template <int NRow, int NVar, int Off, class GS, class J, class V, class L>
+void jacp_t_lam_add(GS& gs, const J& dJ_dp, const V& dp, const L& lam)
+{
+    // jdp(r * NVar + i) = (dJ / dp * dp)(r, i)  (row-major column-stack).
+    const auto jdp = (dJ_dp * dp).eval();
+    for (int i = 0; i < NVar; ++i)
+    {
+        typename L::Scalar acc = 0;
+        for (int r = 0; r < NRow; ++r)
+        {
+            acc += lam(r) * jdp(r * NVar + i);
+        }
+        gs(Off + i) += acc;
+    }
+}
+
 }  // namespace detail
 
 /// SQP driver.
@@ -1082,6 +1107,838 @@ public:
     const AcadosStatistics& statistics() const { return stat_; }
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
+
+    /// First-order sensitivity of the OCP solution w.r.t. the fixed
+    /// initial state (HPIPM QP sensitivities, ARCHITECTURE sec. 8).
+    ///
+    /// Assembles the staged QP at the (converged) iterate `sol`, solves
+    /// it on a throwaway `QpSolver` instance (caching the exit KKT
+    /// factors), then re-solves the KKT system with the seed induced by
+    /// the perturbation `dx0`:
+    ///   seed.d_first: x_0 pin rows, lo side +dx0, hi side -dx0
+    /// The x_0 column of the stage-0 dynamics (BA) already propagates the
+    /// pin-row perturbation dx0 into the interior states, so no dynamics
+    /// seed (seed.b) is needed; adding df_dx*dx0 there would count the
+    /// perturbation twice.
+    /// `dsol` carries the QP-space response (ux = (u; x; s) per stage,
+    /// pi, lam, t), i.e. d(x*, u*)/dx0 * dx0 to first order.
+    ///
+    /// Requires `P::fixed_initial_state`; supports `qp_mode` kStaged,
+    /// kFullCondensed (5g) and kPartialCondensed (5h: the block QP inherits
+    /// the staged 5f hard-equality KKT sens path through BlockQpDim's eq
+    /// rows).  The internal QP solve needs kSolved or kMaxIterations (same
+    /// policy as the driver); kAborted is returned for other modes.
+    Status sens_x0(const P& problem, const Solution<P, NH>& sol,
+                   const typename P::state_t& dx0, QpSol<P, NH>& dsol)
+    {
+        static_assert(P::fixed_initial_state,
+                      "AcadosSolver::sens_x0: requires "
+                      "fixed_initial_state");
+        if (opts_.qp_mode != QpMode::kStaged
+                && opts_.qp_mode != QpMode::kFullCondensed
+                && opts_.qp_mode != QpMode::kPartialCondensed)
+        {
+            std::fprintf(stderr,
+                         "AcadosSolver::sens_x0: kStaged / kFullCondensed / "
+                         "kPartialCondensed only\n");
+            return Status::kAborted;
+        }
+        const int N = sol.N;
+        resize(N);
+        const Status st = assemble_qp(problem, sol);
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+        const Qp<P, NH>& q = qp_in_;
+
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            return sens_x0_full_condensed(q, N, dx0, dsol);
+        }
+        if (opts_.qp_mode == QpMode::kPartialCondensed)
+        {
+            return sens_x0_partial_condensed(q, N, dx0, dsol);
+        }
+        return sens_x0_staged(q, N, dx0, dsol);
+    }
+
+    /// kStaged `sens_x0` (5f): re-solve the QP at the converged iterate on
+    /// a throwaway solver, then one seeded KKT re-solve.  Only the x_0 pin
+    /// rows are perturbed: the stage-0 dynamics matrix (BA) carries the x_0
+    /// column, so the pin-row perturbation alone propagates dx0 through the
+    /// trajectory (seeding b[0] with df_dx*dx0 would double-count it).
+    Status sens_x0_staged(const Qp<P, NH>& q, int N,
+                          const typename P::state_t& dx0,
+                          QpSol<P, NH>& dsol)
+    {
+        QpSolver sens_qp;
+        QpSol<P, NH> qsol(N);
+        const Status qs = sens_qp.solve(q, qsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        QpSeed<P, NH> seed(N);
+        const auto& lay = D::lay_first;
+        for (int r = 0; r < D::nx; ++r)
+        {
+            seed.d_first(lay.side_lo(r)) += dx0(r);
+            seed.d_first(lay.side_hi(r)) -= dx0(r);
+        }
+        return sens_qp.sens_forward(q, qsol, seed, dsol);
+    }
+
+    /// kPartialCondensed `sens_x0` (5h): condense the staged QP into the
+    /// block QP, re-solve it on a throwaway block solver, seed the x_0 pin
+    /// rows (block first stage, rows 0 .. nx-1), run the staged 5f
+    /// block-KKT sens path (BlockQpDim exposes the eq rows, so the
+    /// hard-equality KKT is inherited), and expand the block step back into
+    /// the staged layout (expand_block_step).  Falls back to the staged
+    /// path when the block size does not match this solver's compile-time
+    /// NB (NB == 0, N2 >= N, N % N2 != 0, N / N2 != NB) — the same fallback
+    /// as solve_qp_partial_condensed.
+    Status sens_x0_partial_condensed(const Qp<P, NH>& q, int N,
+                                     const typename P::state_t& dx0,
+                                     QpSol<P, NH>& dsol)
+    {
+        if constexpr (NB > 0)
+        {
+            const int N2 = (opts_.qp_cond_N > 0) ? opts_.qp_cond_N : N;
+            if (!(N2 < N && N % N2 == 0 && N / N2 == NB))
+            {
+                return sens_x0_staged(q, N, dx0, dsol);
+            }
+            using BDim = BlockQpDim<P, NB>;
+            using BQp = Qp<P, Eigen::Dynamic, BDim>;
+            using BQpSol = QpSol<P, Eigen::Dynamic, BDim>;
+            using BQpSeed = QpSeed<P, Eigen::Dynamic, BDim>;
+
+            BQp bq;
+            bq.resize(N2);
+            condense_block<P, NH, NB>(q, bq);
+
+            BQpSol bsol;
+            bsol.resize(N2);
+            HpipmQpSolver<P, Eigen::Dynamic, BDim> sens_block;
+            const Status qs = sens_block.solve(bq, bsol);
+            if (qs != Status::kSolved && qs != Status::kMaxIterations)
+            {
+                return Status::kQpFailure;
+            }
+
+            BQpSeed bseed(N2);
+            const auto& blay = BDim::lay_first;
+            for (int r = 0; r < D::nx; ++r)
+            {
+                bseed.d_first(blay.side_lo(r)) += dx0(r);
+                bseed.d_first(blay.side_hi(r)) -= dx0(r);
+            }
+            BQpSol bsens;
+            bsens.resize(N2);
+            const Status ss =
+                sens_block.sens_forward(bq, bsol, bseed, bsens);
+            if (ss != Status::kSolved)
+            {
+                return ss;
+            }
+            // x_0 sensitivity seed carries no dynamics offset (the dx_0
+            // enters through the pin rows), so the base QP with the
+            // homogeneous expansion is correct (mirrors
+            // sens_x0_full_condensed, include_b = false).
+            expand_block_step<P, NH, Eigen::Dynamic, NB>(q, bsens, dsol,
+                                                         /*include_b=*/false);
+            return Status::kSolved;
+        }
+        else
+        {
+            // NB == 0: partial condensing disabled; staged sens path.
+            return sens_x0_staged(q, N, dx0, dsol);
+        }
+    }
+
+    /// kFullCondensed `sens_x0` (5g): condense the staged QP, solve it on a
+    /// throwaway dense solver, seed the x_0 pin box rows, run the dense
+    /// forward sensitivity, and expand the dense step back into the staged
+    /// layout. The pin rows are the first `nx` dense box rows (stage-0 box
+    /// block, x_0 fixed): lo side index `r`, hi side `nb + ng + r`,
+    /// `idxb[r] = r`.  Only they are perturbed — the condensing already maps
+    /// x_0 through the flow-map into the dense Hessian, so a dynamics seed
+    /// would double-count dx0 (as in the staged path, no seed.b).
+    Status sens_x0_full_condensed(const Qp<P, NH>& q, int N,
+                                  const typename P::state_t& dx0,
+                                  QpSol<P, NH>& dsol)
+    {
+        DenseQp<P, NH> dq;
+        dq.resize(N);
+        condense_full(q, dq);
+
+        HpipmDenseQpSolver<P, NH> sens_dense;
+        DenseQpSol<P, NH> dsol_dense;
+        dsol_dense.resize(N);
+        const Status qs = sens_dense.solve(dq, dsol_dense);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        DenseQpSeed<P, NH> seed(N);
+        const int nb = dq.nb;
+        const int ng = dq.ng;
+        for (int r = 0; r < D::nx; ++r)
+        {
+            seed.seed_d(r) += dx0(r);
+            seed.seed_d(nb + ng + r) -= dx0(r);
+        }
+        DenseQpSol<P, NH> dsens;
+        dsens.resize(N);
+        const Status ss =
+            sens_dense.sens_forward(dq, dsol_dense, seed, dsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        expand_full_sol(q, dq, dsens, dsol, /*include_b=*/false);
+        return Status::kSolved;
+    }
+
+    /// 5i: NLP-level first-order parameter sensitivity (staged),
+    /// SQP_HPIPM_PARITY_PHASE5_5I_SENS_PARAM_PLAN.md sec. 2.
+    ///
+    /// `sol` must be the converged SQP solution at the problem's current
+    /// parameter state; `dp` is a direction in the parameter vector
+    /// (Dims::np > 0). Reassembles the staged QP at `sol`, re-solves it on
+    /// a throwaway solver (caching the exit KKT factors), then runs one
+    /// seeded KKT re-solve: the NLP KKT linearization keeps the converged
+    /// Hessian / Jacobian LHS and forces the RHS with the p-derivative of
+    /// the QP data (seed.grad / seed.b / seed.d from `fill_param_seed`).
+    /// `dsol` carries the QP-space response, i.e. d(x*, u*)/dp * dp (ux /
+    /// pi / lam / t), in the same layout as `sens_x0`.
+    ///
+    /// Active-set gating (plan 5i sec. 2.3): a d-seed on a constraint side
+    /// that is inactive at the converged solution is dropped, because the
+    /// first-order response of an inactive constraint's value / bound is
+    /// zero and the barrier KKT would otherwise leak an O(mu_exit) artifact
+    /// through its nearly-singular row.
+    ///
+    /// kStaged (5i); kFullCondensed / kPartialCondensed (5j) condense the
+    /// staged sensitivity QP (converged LHS + staged seed as RHS) with the
+    /// same flow-map machinery as the QP data and seed-solve the condensed
+    /// QP. kPartialCondensed falls back to the staged path when the block
+    /// size does not match this solver's compile-time NB (same policy as
+    /// sens_x0_partial_condensed).
+    Status sens_param(const P& problem, const Solution<P, NH>& sol,
+                      const typename P::param_t& dp, QpSol<P, NH>& dsol)
+    {
+        static_assert(P::np > 0,
+                      "AcadosSolver::sens_param: requires Dims::np > 0 "
+                      "(a parameter-vector sensitivity interface).");
+        const int N = sol.N;
+        resize(N);
+        const Status st = assemble_qp(problem, sol);
+        if (st != Status::kSolved)
+        {
+            return st;
+        }
+
+        QpSolver sens_qp;
+        QpSol<P, NH> qsol(N);
+        const Status qs = sens_qp.solve(qp_in_, qsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+        QpSeed<P, NH> seed(N);
+        fill_param_seed(problem, sol, dp, qsol, seed);
+
+        if (opts_.qp_mode == QpMode::kStaged)
+        {
+            return sens_qp.sens_forward(qp_in_, qsol, seed, dsol);
+        }
+
+        // 5j: condensed modes — condense the staged sensitivity QP and
+        // seed-solve the condensed QP.
+        Qp<P, NH> qseed(N);
+        build_seed_qp(qp_in_, seed, qseed);
+        if (opts_.qp_mode == QpMode::kFullCondensed)
+        {
+            return sens_param_full_condensed(qp_in_, qseed, dsol);
+        }
+        if constexpr (NB > 0)
+        {
+            const int N2 = (opts_.qp_cond_N > 0) ? opts_.qp_cond_N : N;
+            if (N2 < N && N % N2 == 0 && N / N2 == NB)
+            {
+                return sens_param_block_condensed(qp_in_, qseed, N2, dsol);
+            }
+        }
+        // kPartialCondensed with a non-matching block size: staged fallback
+        // (same policy as solve_qp_partial_condensed / sens_x0).
+        return sens_qp.sens_forward(qp_in_, qsol, seed, dsol);
+    }
+
+    /// 5j: staged sensitivity QP = converged LHS (hess / BA / DC / d_mask)
+    /// + staged seed as RHS (grad / b / d / m) — the same `in_seed`
+    /// construction as HpipmQpSolver::sens_solve. Condensing this QP
+    /// (condense_full / condense_block) yields the dense / block
+    /// sensitivity QP; its RHS fields are the condensed seeds (the seed
+    /// `b` flows through the flow-map elimination into the condensed
+    /// `g` / `d`, 5i plan sec. 6).
+    void build_seed_qp(const Qp<P, NH>& q, const QpSeed<P, NH>& seed,
+                       Qp<P, NH>& out) const
+    {
+        out.first.hess   = q.first.hess;
+        out.first.BA     = q.first.BA;
+        out.first.DC     = q.first.DC;
+        out.first.d_mask = q.first.d_mask;
+        out.first.grad   = seed.grad_first;
+        out.first.b      = seed.b[0];
+        out.first.d      = seed.d_first;
+        out.first.m      = seed.m_first;
+        for (int k = 1; k < seed.N; ++k)
+        {
+            const int i = k - 1;
+            out.path[i].hess   = q.path[i].hess;
+            out.path[i].BA     = q.path[i].BA;
+            out.path[i].DC     = q.path[i].DC;
+            out.path[i].d_mask = q.path[i].d_mask;
+            out.path[i].grad   = seed.grad_path[i];
+            out.path[i].b      = seed.b[k];
+            out.path[i].d      = seed.d_path[i];
+            out.path[i].m      = seed.m_path[i];
+        }
+        out.term.hess   = q.term.hess;
+        out.term.DC     = q.term.DC;
+        out.term.d_mask = q.term.d_mask;
+        out.term.grad   = seed.grad_term;
+        out.term.d      = seed.d_term;
+        out.term.m      = seed.m_term;
+    }
+
+    /// 5j: kFullCondensed `sens_param` — condense the staged QP and the
+    /// sensitivity QP, solve the converged dense QP on a throwaway solver
+    /// (factors the LHS + hybrid block KKT cache), seed-solve with the
+    /// condensed seed, and expand the dense step into the staged layout
+    /// (mirrors sens_x0_full_condensed, 5g).
+    Status sens_param_full_condensed(const Qp<P, NH>& q,
+                                     const Qp<P, NH>& qseed,
+                                     QpSol<P, NH>& dsol) const
+    {
+        const int N = q.N;
+        DenseQp<P, NH> dq;
+        dq.resize(N);
+        condense_full(q, dq);
+
+        HpipmDenseQpSolver<P, NH> sens_dense;
+        DenseQpSol<P, NH> dsol_dense;
+        dsol_dense.resize(N);
+        const Status qs = sens_dense.solve(dq, dsol_dense);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        DenseQp<P, NH> dqseed;
+        dqseed.resize(N);
+        condense_full(qseed, dqseed);
+
+        // The dense sensitivity forcing is the condensed seed itself:
+        // the staged sens QP has RHS = seed (not converged + seed), so
+        // its dense condensation carries the same pure-seed RHS.
+        DenseQpSeed<P, NH> dseed(N);
+        dseed.seed_g = dqseed.g;
+        dseed.seed_d = dqseed.d;
+        dseed.seed_m = dqseed.m;
+
+        DenseQpSol<P, NH> dsens;
+        dsens.resize(N);
+        const Status ss =
+            sens_dense.sens_forward(dq, dsol_dense, dseed, dsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        // Expand with the SEED's b (the p-derivative of the dynamics): the
+        // state step obeys x_{k+1} = BA [u_k; x_k] + db_k, where db_k is
+        // the seed's b field.  Passing qseed (whose BA blocks are identical
+        // to q's and whose b is the seed) with include_b = true yields
+        // exactly that forward step, and the dynamics-multiplier sweep uses
+        // the seeded stationarity (H dz + seed.grad + DC' dlam)_x.
+        expand_full_sol(qseed, dq, dsens, dsol, /*include_b=*/true);
+        return Status::kSolved;
+    }
+
+    /// 5j: kPartialCondensed `sens_param` (NB > 0, N2 matches) — mirror of
+    /// the dense path on the block QP: the block seed is
+    /// condense_block of the staged sensitivity QP (mirrors
+    /// sens_x0_partial_condensed, 5h).
+    Status sens_param_block_condensed(const Qp<P, NH>& q,
+                                      const Qp<P, NH>& qseed, int N2,
+                                      QpSol<P, NH>& dsol) const
+    {
+        using BDim    = BlockQpDim<P, NB>;
+        using BQp     = Qp<P, Eigen::Dynamic, BDim>;
+        using BQpSol  = QpSol<P, Eigen::Dynamic, BDim>;
+        using BQpSeed = QpSeed<P, Eigen::Dynamic, BDim>;
+
+        BQp bq;
+        bq.resize(N2);
+        condense_block<P, NH, NB>(q, bq);
+
+        BQpSol bsol;
+        bsol.resize(N2);
+        HpipmQpSolver<P, Eigen::Dynamic, BDim> sens_block;
+        const Status qs = sens_block.solve(bq, bsol);
+        if (qs != Status::kSolved && qs != Status::kMaxIterations)
+        {
+            return Status::kQpFailure;
+        }
+
+        BQp bqseed;
+        bqseed.resize(N2);
+        condense_block<P, NH, NB>(qseed, bqseed);
+
+        BQpSeed bseed(N2);
+        bseed.grad_first = bqseed.first.grad;
+        bseed.b[0]       = bqseed.first.b;
+        bseed.d_first    = bqseed.first.d;
+        bseed.m_first    = bqseed.first.m;
+        for (int k = 1; k < N2; ++k)
+        {
+            const int i = k - 1;
+            bseed.grad_path[i] = bqseed.path[i].grad;
+            bseed.b[k]         = bqseed.path[i].b;
+            bseed.d_path[i]    = bqseed.path[i].d;
+            bseed.m_path[i]    = bqseed.path[i].m;
+        }
+        bseed.grad_term = bqseed.term.grad;
+        bseed.d_term    = bqseed.term.d;
+        bseed.m_term    = bqseed.term.m;
+
+        BQpSol bsens;
+        bsens.resize(N2);
+        const Status ss =
+            sens_block.sens_forward(bq, bsol, bseed, bsens);
+        if (ss != Status::kSolved)
+        {
+            return ss;
+        }
+        // Expand with the SEED's b (the p-derivative of the dynamics): the
+        // internal block state step obeys x_{k+1} = BA [u_k; x_k] + db_k, so
+        // pass the seed QP (same LHS as q) with include_b = true, mirroring
+        // sens_param_full_condensed.
+        expand_block_step<P, NH, Eigen::Dynamic, NB>(qseed, bsens, dsol,
+                                                     /*include_b=*/true);
+        return Status::kSolved;
+    }
+
+    /// 5i: fill the staged QP seed for `sens_param` (plan sec. 2.1).
+    ///
+    /// All `*_sens_p` problem entries are evaluated at the converged
+    /// iterate `(x*, u*)`; the seed is contracted with the direction `dp`.
+    /// Because the QP is in the step formulation and the converged QP
+    /// solution is the zero step, p-derivatives of the LHS data
+    /// (Hessian / BA / DC) contribute no `(dLHS/dp) * z*` term: the seed
+    /// carries only the p-derivatives of the QP RHS (grad / b / d) plus the
+    /// `(dJ/dp)' lambda` stationarity couplings.
+    /// Sign conventions (verified against compute_residuals /
+    /// globalize.hpp): QP dynamics multiplier pi = -sol.lambda_dyn,
+    /// constraint multiplier delta_lam = sol.lambda_{ineq,eq,lin}
+    /// (hi - lo); res_b = BA z + b - x_next; res_d(hi) = d + t + v,
+    /// res_d(lo) = d + t - v.
+    ///
+    /// Active-set gating: a first-order sensitivity cannot flow through a
+    /// constraint row that is inactive at the converged solution. In the
+    /// barrier KKT an inactive row is nearly singular (large slack `t`,
+    /// lambda ~ mu / t), so seeding its p-derivative injects an
+    /// O(mu_exit) artifact into the response instead of the active-set
+    /// result (zero for an inactive constraint's value / bound). The d
+    /// seed is therefore only written on sides whose converged slack
+    /// (from the throwaway QP re-solve `qsol`) is below `t_act`; the
+    /// `(dJ/dp)' lambda` grad couplings are unaffected by this (for an
+    /// inactive row lambda ~ mu / t ~ O(mu_exit), negligible).
+    void fill_param_seed(const P& problem, const Solution<P, NH>& sol,
+                         const typename P::param_t& dp,
+                         const QpSol<P, NH>& qsol,
+                         QpSeed<P, NH>& seed) const
+    {
+        const int N = sol.N;
+        // Barrier-side activeness threshold (converged slack magnitude).
+        const S t_act = S(1e-3);
+        auto sact = [&](detail::QpGroup g, int s, const auto& dm,
+                        const auto& tv)
+        {
+            if (g == detail::g_pin || g == detail::g_eq)
+            {
+                return true;  // equalities: always active, never masked
+            }
+            const S m = dm(s);
+            if (m > S(1.5))
+            {
+                return true;  // hard-equality side
+            }
+            if (m < S(0.5))
+            {
+                return false;  // absent side
+            }
+            return tv(s) < t_act;  // barrier side: active iff small slack
+        };
+
+        // p-derivative of the fixed initial state (pin rows, first stage).
+        typename P::state_t dx0 = P::state_t::Zero();
+        if constexpr (P::fixed_initial_state)
+        {
+            dx0 = problem.initial_state_sens_p() * dp;
+        }
+
+        for (int k = 0; k < N; ++k)
+        {
+            const auto& x = sol.x[k];
+            const auto& u = sol.u[k];
+
+            // ---- model p-derivatives at (x*, u*) ---------------------
+            typename P::dyn_df_dp_t f_p;
+            typename P::dyn_dA_dp_t A_p;
+            typename P::dyn_dB_dp_t B_p;
+            if constexpr (D::nx > 0)
+            {
+                problem.dynamics_sens_p(k, x, u, f_p, A_p, B_p);
+            }
+
+            typename P::param_t L_p;
+            typename P::stage_grad_dp_t cg_p;
+            problem.stage_cost_sens_p(k, x, u, L_p, cg_p);
+
+            typename P::ineq_dg_dp_t ig_p;
+            typename P::ineq_dg_dx_dp_t igdx_p;
+            typename P::ineq_dg_du_dp_t igdu_p;
+            if constexpr (D::ng > 0)
+            {
+                problem.stage_inequality_sens_p(k, x, u, ig_p, igdx_p,
+                                                igdu_p);
+            }
+            typename P::eq_de_dp_t eg_p;
+            typename P::eq_de_dx_dp_t egdx_p;
+            typename P::eq_de_du_dp_t egdu_p;
+            if constexpr (D::ne > 0)
+            {
+                problem.stage_equality_sens_p(k, x, u, eg_p, egdx_p, egdu_p);
+            }
+            typename P::stage_linear_sensp_t lin_sp{};
+            if constexpr (D::nl > 0)
+            {
+                lin_sp = problem.stage_linear_sens_p(k);
+            }
+            typename P::stage_state_box_sensp_t bsx_sp{};
+            if constexpr (D::nbx > 0)
+            {
+                bsx_sp = problem.stage_state_box_sens_p(k);
+            }
+            typename P::stage_control_box_sensp_t bsu_sp{};
+            if constexpr (D::nbu > 0)
+            {
+                bsu_sp = problem.stage_control_box_sens_p(k);
+            }
+
+            // ---- grad / b / d seed for this stage ---------------------
+            // The first- and path-stage seed vectors can differ in extent
+            // (the slack count changes when x_0 is fixed), so a generic
+            // lambda keeps the fill logic type-safe for both stage types.
+            auto fill_stage = [&](auto& gs, auto& dv,
+                                  const detail::QpLayout& lay,
+                                  const auto& dm, const auto& tv)
+            {
+                // grad seed (stationarity RHS), layout (u; x; s); the cost
+                // p-derivative is laid out [g_x; g_u].
+                {
+                    const auto cgdp = (cg_p * dp).eval();  // (nx + nu, 1)
+                    for (int i = 0; i < D::nu; ++i)
+                    {
+                        gs(i) += cgdp(D::nx + i);
+                    }
+                    for (int i = 0; i < D::nx; ++i)
+                    {
+                        gs(D::nu + i) += cgdp(i);
+                    }
+                }
+                // dynamics coupling, QP convention pi = -lambda_dyn
+                if constexpr (D::nx > 0)
+                {
+                    const auto pi = -sol.lambda_dyn[k];
+                    detail::jacp_t_lam_add<D::nx, D::nu, 0>(
+                        gs, B_p, dp, pi);
+                    detail::jacp_t_lam_add<D::nx, D::nx, D::nu>(
+                        gs, A_p, dp, pi);
+                }
+                if constexpr (D::ng > 0)
+                {
+                    const auto& lam = sol.lambda_ineq_stage[k];
+                    detail::jacp_t_lam_add<D::ng, D::nu, 0>(
+                        gs, igdu_p, dp, lam);
+                    detail::jacp_t_lam_add<D::ng, D::nx, D::nu>(
+                        gs, igdx_p, dp, lam);
+                }
+                if constexpr (D::ne > 0)
+                {
+                    const auto& lam = sol.lambda_eq_stage[k];
+                    detail::jacp_t_lam_add<D::ne, D::nu, 0>(
+                        gs, egdu_p, dp, lam);
+                    detail::jacp_t_lam_add<D::ne, D::nx, D::nu>(
+                        gs, egdx_p, dp, lam);
+                }
+                if constexpr (D::nl > 0)
+                {
+                    const auto& lam = sol.lambda_lin_stage[k];
+                    detail::jacp_t_lam_add<D::nl, D::nu, 0>(
+                        gs, lin_sp.dB_dp, dp, lam);
+                    detail::jacp_t_lam_add<D::nl, D::nx, D::nu>(
+                        gs, lin_sp.dA_dp, dp, lam);
+                }
+
+                // b seed (dynamics RHS): db_k/dp = df_k/dp
+                if constexpr (D::nx > 0)
+                {
+                    seed.b[k] = f_p * dp;
+                }
+
+                // d seed (bound offsets: d_lo = lo - w, d_hi = w - hi)
+                if constexpr (P::fixed_initial_state)
+                {
+                    for (int j = 0; j < D::nx; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_pin) + j;
+                        dv(lay.side_lo(r)) += dx0(j);
+                        dv(lay.side_hi(r)) -= dx0(j);
+                    }
+                }
+                // state box (absent at the first stage when x_0 is fixed)
+                if constexpr (D::nbx > 0)
+                {
+                    const auto dlo = bsx_sp.dlo_dp * dp;
+                    const auto dhi = bsx_sp.dhi_dp * dp;
+                    for (int j = 0; j < lay.rows[detail::g_bx]; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_bx) + j;
+                        if (sact(detail::g_bx, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j);
+                        }
+                        if (sact(detail::g_bx, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) -= dhi(j);
+                        }
+                    }
+                }
+                // control box
+                if constexpr (D::nbu > 0)
+                {
+                    const auto dlo = bsu_sp.dlo_dp * dp;
+                    const auto dhi = bsu_sp.dhi_dp * dp;
+                    for (int j = 0; j < D::nbu; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_bu) + j;
+                        if (sact(detail::g_bu, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j);
+                        }
+                        if (sact(detail::g_bu, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) -= dhi(j);
+                        }
+                    }
+                }
+                // ineq (one-sided, hi only)
+                if constexpr (D::ng > 0)
+                {
+                    const auto dg = ig_p * dp;
+                    for (int j = 0; j < D::ng; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_ineq) + j;
+                        const int sh = lay.side_hi(r);
+                        if (sact(detail::g_ineq, sh, dm, tv))
+                        {
+                            dv(sh) += dg(j);
+                        }
+                    }
+                }
+                // eq (d_lo = -e, d_hi = +e)
+                if constexpr (D::ne > 0)
+                {
+                    const auto de = eg_p * dp;
+                    for (int j = 0; j < D::ne; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_eq) + j;
+                        dv(lay.side_lo(r)) -= de(j);
+                        dv(lay.side_hi(r)) += de(j);
+                    }
+                }
+                // linear (two-sided; w = A x + B u so dw/dp shifts both)
+                if constexpr (D::nl > 0)
+                {
+                    const auto dlo = lin_sp.dlo_dp * dp;
+                    const auto dhi = lin_sp.dhi_dp * dp;
+                    const auto dA = (lin_sp.dA_dp * dp).eval();
+                    const auto dB = (lin_sp.dB_dp * dp).eval();
+                    Eigen::Matrix<S, D::nl, 1> w_p;
+                    for (int j = 0; j < D::nl; ++j)
+                    {
+                        w_p(j) = dA.segment(j * D::nx, D::nx).dot(x)
+                                + dB.segment(j * D::nu, D::nu).dot(u);
+                    }
+                    for (int j = 0; j < D::nl; ++j)
+                    {
+                        const int r = lay.row_off(detail::g_lin) + j;
+                        if (sact(detail::g_lin, lay.side_lo(r), dm, tv))
+                        {
+                            dv(lay.side_lo(r)) += dlo(j) - w_p(j);
+                        }
+                        if (sact(detail::g_lin, lay.side_hi(r), dm, tv))
+                        {
+                            dv(lay.side_hi(r)) += -dhi(j) + w_p(j);
+                        }
+                    }
+                }
+            };
+            if (k == 0)
+            {
+                fill_stage(seed.grad_first, seed.d_first, D::lay_first,
+                           qp_in_.first.d_mask, qsol.t_first);
+            }
+            else
+            {
+                fill_stage(seed.grad_path[k - 1], seed.d_path[k - 1],
+                           D::lay_path, qp_in_.path[k - 1].d_mask,
+                           qsol.t_path[k - 1]);
+            }
+        }
+
+        // ---- terminal stage (k = N): grad_term over (x; s) -----------
+        {
+            const auto& xN = sol.x[N];
+
+            typename P::param_t L_p;
+            typename P::term_grad_dp_t tg_p;
+            problem.terminal_cost_sens_p(xN, L_p, tg_p);
+
+            typename P::ineq_term_dg_dp_t gt_p;
+            typename P::ineq_term_dg_dx_dp_t gtdx_p;
+            if constexpr (D::ng_t > 0)
+            {
+                problem.terminal_inequality_sens_p(xN, gt_p, gtdx_p);
+            }
+            typename P::eq_term_de_dp_t et_p;
+            typename P::eq_term_de_dx_dp_t etdx_p;
+            if constexpr (D::ne_t > 0)
+            {
+                problem.terminal_equality_sens_p(xN, et_p, etdx_p);
+            }
+            typename P::term_linear_sensp_t tlin_sp{};
+            if constexpr (D::nl_t > 0)
+            {
+                tlin_sp = problem.terminal_linear_sens_p();
+            }
+            typename P::term_state_box_sensp_t bsxt_sp{};
+            if constexpr (D::nbx_t > 0)
+            {
+                bsxt_sp = problem.terminal_state_box_sens_p();
+            }
+
+            {
+                const auto tgdp = (tg_p * dp).eval();  // (nx, 1)
+                for (int i = 0; i < D::nx; ++i)
+                {
+                    seed.grad_term(i) += tgdp(i);
+                }
+            }
+            if constexpr (D::ng_t > 0)
+            {
+                detail::jacp_t_lam_add<D::ng_t, D::nx, 0>(
+                    seed.grad_term, gtdx_p, dp, sol.lambda_ineq_term);
+            }
+            if constexpr (D::ne_t > 0)
+            {
+                detail::jacp_t_lam_add<D::ne_t, D::nx, 0>(
+                    seed.grad_term, etdx_p, dp, sol.lambda_eq_term);
+            }
+            if constexpr (D::nl_t > 0)
+            {
+                detail::jacp_t_lam_add<D::nl_t, D::nx, 0>(
+                    seed.grad_term, tlin_sp.dA_dp, dp, sol.lambda_lin_term);
+            }
+
+            // terminal d seed
+            const auto& tlay = D::lay_term;
+            auto& dtv = seed.d_term;
+            if constexpr (D::nbx_t > 0)
+            {
+                const auto dlo = bsxt_sp.dlo_dp * dp;
+                const auto dhi = bsxt_sp.dhi_dp * dp;
+                for (int j = 0; j < D::nbx_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_bx) + j;
+                    if (sact(detail::g_bx, tlay.side_lo(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_lo(r)) += dlo(j);
+                    }
+                    if (sact(detail::g_bx, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) -= dhi(j);
+                    }
+                }
+            }
+            if constexpr (D::ng_t > 0)
+            {
+                const auto dg = gt_p * dp;
+                for (int j = 0; j < D::ng_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_ineq) + j;
+                    if (sact(detail::g_ineq, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) += dg(j);
+                    }
+                }
+            }
+            if constexpr (D::ne_t > 0)
+            {
+                const auto de = et_p * dp;
+                for (int j = 0; j < D::ne_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_eq) + j;
+                    dtv(tlay.side_lo(r)) -= de(j);
+                    dtv(tlay.side_hi(r)) += de(j);
+                }
+            }
+            if constexpr (D::nl_t > 0)
+            {
+                const auto dlo = tlin_sp.dlo_dp * dp;
+                const auto dhi = tlin_sp.dhi_dp * dp;
+                const auto dA = (tlin_sp.dA_dp * dp).eval();
+                Eigen::Matrix<S, D::nl_t, 1> w_p;
+                for (int j = 0; j < D::nl_t; ++j)
+                {
+                    w_p(j) = dA.segment(j * D::nx, D::nx).dot(xN);
+                }
+                for (int j = 0; j < D::nl_t; ++j)
+                {
+                    const int r = tlay.row_off(detail::g_lin) + j;
+                    if (sact(detail::g_lin, tlay.side_lo(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_lo(r)) += dlo(j) - w_p(j);
+                    }
+                    if (sact(detail::g_lin, tlay.side_hi(r),
+                             qp_in_.term.d_mask, qsol.t_term))
+                    {
+                        dtv(tlay.side_hi(r)) += -dhi(j) + w_p(j);
+                    }
+                }
+            }
+        }
+    }
 
     /// NLP objective at the iterate: the problem's stage + terminal costs
     /// plus the slack penalty 0.5 * quad * s^2 + lin * s per soft side

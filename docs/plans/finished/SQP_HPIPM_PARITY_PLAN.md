@@ -41,7 +41,7 @@ HPIPM OCP-QP stack. Scope agreed: **NLP/SQP level — the full SQP+HPIPM stack**
 | **PARTIAL_CONDENSING** (block grouping, `N2`/`block_size`) | done (Phase 2; uniform `NB`, non-uniform `block_size` deferred) |
 | **FULL_CONDENSING** (dense QP + dense IPM) | done (Phase 1) |
 | **RTI SQP** (standard `sqp_rti`: LHS+RHS per call, full step, no line search) | done (Phase 3, `RtiSolver` in `solvers/acados/rti.hpp`; `_reversible` / `_merit` variants out of scope) |
-| **QP sensitivities** (forward/adjoint, HPIPM seed module) | done (Phase 4, staged forward + adjoint; dense / partial-condensed deferred) |
+| **QP sensitivities** (forward/adjoint, HPIPM seed module) | done (Phase 4 staged; 5f staged `sens_x0` + hard-eq KKT; 5g dense `kFullCondensed` via hybrid block KKT; 5h block `kPartialCondensed` via the staged 5f path on `BlockQpDim`; 5i staged NLP-level `sens_param` via `problem.hpp` parameter vector + active-set-gated seed; 5j dense + block seed condensing, all three QP modes) |
 | `print_level = 2` (detailed per-iteration printout) | done (5b) |
 | condensing/expansion time in statistics | done (`SqpIteration::cond_time`) |
 
@@ -240,18 +240,37 @@ Gate: warning-free build, full regression, FD tests green.
   and `examples/pendulum_on_cart/example_ocp.py` now state the reality:
   `PARTIAL_CONDENSING_HPIPM` with default `qp_cond_N = 0` runs HPIPM's
   staged two-pass Riccati on the uncondensed QP (the ocp++ port's
-  `QpMode::kStaged` default). *Pending (blocked):* "register new options
-  per `DUAL_ACCESS_PLAN.md`" — that plan (named-value registry) is not
-  implemented yet; revisit when it lands.
+  `QpMode::kStaged` default).
 
 ## 9. Open items (verify at implementation time, not design decisions)
 
-1. acados ordering of QP scaling vs condensing — assumed
-   scale-then-condense (`ocp_nlp_sqp.c:594-597`); verify.
-2. RTI Hessian semantics per variant (`sqp_rti` vs `_reversible` vs
-   `_merit`) — verify in `ocp_nlp_sqp_rti.c` / `ocp_nlp_sqp.c`.
-3. NLP-level (parameter) sensitivities: blocked on a parameter-vector
-   concept in `problem.hpp`.
+1. ~~acados ordering of QP scaling vs condensing~~ verified (2026-10-15):
+   acados SQP loop order is LM -> `ocp_nlp_qpscaling_scale_qp` on the
+   STAGED `qp_in` (`ocp_nlp_sqp.c:596`) -> Hessian regularization ->
+   termination -> QP solve; the xcond solver condenses the already-scaled
+   staged QP (`ocp_qp_xcond_solver.c:551`) and applies no further scaling.
+   Our loop matches (`acados.hpp`: `add_lm_term` -> `scaler_.scale_qp` ->
+   `reg_.regularize` -> termination -> solve/condense). Note: in this
+   acados version scaling is OFF by default (Gershgorin objective +
+   row-norm constraint scaling; no x0_ref/u0_ref scaling).
+2. ~~RTI Hessian semantics per variant~~ verified (2026-10-15): this
+   acados version has a single RTI solver (`SQP_RTI`) with `rti_phase`
+   and `as_rti_level` options, NOT `_reversible` / `_merit` variants.
+   STANDARD_RTI (default) uses a fresh Hessian at the current iterate per
+   call (like plain SQP, fixed LM alpha = 1.0); AS-RTI LEVEL_A solves
+   with the previous call's (frozen) condensed LHS and condenses the
+   fresh Hessian afterwards for the next call; LEVEL_B/C run zero-order /
+   gradient-level updates with a frozen Hessian; LEVEL_D runs k full SQP
+   iterations. "Merit" is only the optional globalization module. Our
+   Phase-3 `RtiSolver` (standard sqp_rti, fresh Hessian per call,
+   prepare/feedback split) matches STANDARD_RTI.
+ 3. ~~NLP-level (parameter) sensitivities~~ done (5i): parameter-vector
+    concept in `problem.hpp` (`np`, `param_t`, `*_sens_p`), staged
+    `AcadosSolver::sens_param` with active-set-gated seed; FD-verified on
+    DoubleIntegrator (see
+    `SQP_HPIPM_PARITY_PHASE5_5I_SENS_PARAM_PLAN.md`); dense / block seed
+    condensing done (5j, see
+    `SQP_HPIPM_PARITY_PHASE5_5J_SENS_PARAM_CONDENSING_PLAN.md`).
 4. Non-uniform block sizes (HPIPM variable `block_size`) once uniform NB is
    in.
 5. `initialize_next_xcond_qp_from_qp_out` (warm-start the condensed QP from

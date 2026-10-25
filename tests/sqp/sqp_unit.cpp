@@ -30,6 +30,9 @@ int run_rti_3b_tests();
 int run_rti_3d_tests();
 int run_print_level_5b_tests();
 int run_stats_5d_tests();
+int run_sens_x0_5f_tests();
+int run_sens_param_5j_tests();
+int run_sens_param_5i_tests();
 
 int main()
 {
@@ -55,6 +58,9 @@ int main()
     failures += run_rti_3d_tests();
     failures += run_print_level_5b_tests();
     failures += run_stats_5d_tests();
+    failures += run_sens_x0_5f_tests();
+    failures += run_sens_param_5j_tests();
+    failures += run_sens_param_5i_tests();
 
     if (failures == 0)
     {

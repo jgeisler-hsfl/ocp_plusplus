@@ -68,7 +68,16 @@
 // rows: d_lo = x_0 - x_bar_0, d_hi = -(x_0 - x_bar_0); the NLP driver
 // keeps x_bar_0 = x_0, so in practice d = 0.
 //
-// Assembly notes:
+// d_mask values (per side): 0 = side absent; 1 = barrier side (regular
+// row, interior-point treatment with slack t and multiplier lambda);
+// 2 = hard-equality side (structural lo == hi row: non-soft g_eq rows
+// and the pin rows).  Hard-equality sides carry no barrier (Gamma = 0,
+// t = 0, no complementarity); they enter the KKT system as exact
+// equality rows with a free multiplier, which is stored in the hi-side
+// lam slot (lo-side lam = 0) so that lambda_eq = lam_hi - lam_lo
+// extracts it unchanged.
+//
+// Assembly notes (phase 2):
 // - First stage with fixed x_0: stage ineq/lin rows whose (linearized)
 //   Jacobian w.r.t. the decision variables (u_0; s_0) is identically zero
 //   are degenerate; check D != 0 before relying on them.
@@ -389,9 +398,9 @@ struct QpDim
     }
     static constexpr std::array<int, nbx_t> idxb_term = make_idxb_term();
 
-    /// Equality-pinned variable indices: the fixed initial state components
-    /// inside the first-stage vector (u; x; s); empty when x_0 is not
-    /// fixed. Pin row j pins variable idx_x0[j].
+    /// Equality-pinned variable indices (HPIPM `idxe`): the fixed initial
+    /// state components inside the first-stage vector (u; x; s); empty
+    /// when x_0 is not fixed.
     static constexpr std::array<int, P::fixed_initial_state ? nx : 0>
         make_idx_x0()
     {
@@ -413,7 +422,102 @@ struct QpDim
     static constexpr int nbound_term = nbx_t;
 
     // ---------------------------------------------------------------
-    // Soft-slack column mapping
+    // Hard-equality rows (d_mask = 2 on both sides): the non-soft g_eq
+    // rows plus, at the first stage, the pin rows (fixed x_0).  These are
+    // exact KKT equalities with a free multiplier (no barrier, no t), not
+    // barrier rows.  Counts exclude soft eq rows (those keep their slack
+    // and the barrier treatment).
+    // ---------------------------------------------------------------
+    static constexpr bool eq_row_soft(int j)
+    {
+        for (int i = 0; i < (int)P::eq_soft_idx.size(); ++i)
+        {
+            if (P::eq_soft_idx[i] == j)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static constexpr bool term_eq_row_soft(int j)
+    {
+        for (int i = 0; i < (int)P::terminal_eq_soft_idx.size(); ++i)
+        {
+            if (P::terminal_eq_soft_idx[i] == j)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Number of hard-equality rows per stage type.
+    static constexpr int n_eq_first =
+        (P::fixed_initial_state ? nx : 0) + (ne - P::ne_soft);
+    static constexpr int n_eq_path = ne - P::ne_soft;
+    static constexpr int n_eq_term = ne_t - P::ne_t_soft;
+
+    /// True when any stage type carries a hard-equality row.
+    static constexpr bool has_eq = n_eq_first + n_eq_path + n_eq_term > 0;
+
+    /// Row indices (within the stage row vector) of the hard-equality rows:
+    /// pin rows first (first stage, row group 0), then the non-soft eq rows.
+    static constexpr std::array<int, n_eq_first> make_eq_rows_first()
+    {
+        const int npin = P::fixed_initial_state ? nx : 0;
+        std::array<int, n_eq_first> a{};
+        for (int j = 0; j < npin; ++j)
+        {
+            a[j] = j;
+        }
+        int k = npin;
+        for (int j = 0; j < ne; ++j)
+        {
+            if (!eq_row_soft(j))
+            {
+                a[k++] = lay_first.row_off(detail::g_eq) + j;
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, n_eq_first> eq_rows_first =
+        make_eq_rows_first();
+
+    static constexpr std::array<int, n_eq_path> make_eq_rows_path()
+    {
+        std::array<int, n_eq_path> a{};
+        int k = 0;
+        for (int j = 0; j < ne; ++j)
+        {
+            if (!eq_row_soft(j))
+            {
+                a[k++] = lay_path.row_off(detail::g_eq) + j;
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, n_eq_path> eq_rows_path =
+        make_eq_rows_path();
+
+    static constexpr std::array<int, n_eq_term> make_eq_rows_term()
+    {
+        std::array<int, n_eq_term> a{};
+        int k = 0;
+        for (int j = 0; j < ne_t; ++j)
+        {
+            if (!term_eq_row_soft(j))
+            {
+                a[k++] = lay_term.row_off(detail::g_eq) + j;
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, n_eq_term> eq_rows_term =
+        make_eq_rows_term();
+
+    // ---------------------------------------------------------------
+    // Soft-slack column mapping (HPIPM `idxs` / `idxs_rev` analogue)
     // ---------------------------------------------------------------
     // For each row of a stage type: the column index in the stage's
     // variable vector z at which its lo-side / hi-side slack variable
@@ -747,6 +851,64 @@ struct BlockQpDim
         {0, nbx, nbu, ng, ne, nl},
         nslack_path};
     static constexpr detail::QpLayout lay_term = Base::lay_term;
+
+    // ---------------------------------------------------------------
+    // Hard-equality rows (d_mask = 2, carried over verbatim by the
+    // condenser): the non-soft g_eq rows of all NB stages, stage-major
+    // within the block g_eq group (stage j, in-group index i), plus the
+    // pin rows at the first block.  Mirrors QpDim's hard-equality data.
+    // ---------------------------------------------------------------
+    static constexpr int n_eq_first =
+        (P::fixed_initial_state ? nx : 0) + NB * Base::n_eq_path;
+    static constexpr int n_eq_path = NB * Base::n_eq_path;
+    static constexpr int n_eq_term = Base::n_eq_term;
+    static constexpr bool has_eq = n_eq_first + n_eq_path + n_eq_term > 0;
+
+    static constexpr std::array<int, n_eq_first> make_eq_rows_first()
+    {
+        const int npin = P::fixed_initial_state ? nx : 0;
+        std::array<int, n_eq_first> a{};
+        for (int j = 0; j < npin; ++j)
+        {
+            a[j] = j;
+        }
+        int k = npin;
+        for (int j = 0; j < NB; ++j)
+        {
+            for (int i = 0; i < P::ne; ++i)
+            {
+                if (!Base::eq_row_soft(i))
+                {
+                    a[k++] = lay_first.row_off(detail::g_eq) + j * P::ne + i;
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, n_eq_first> eq_rows_first =
+        make_eq_rows_first();
+
+    static constexpr std::array<int, n_eq_path> make_eq_rows_path()
+    {
+        std::array<int, n_eq_path> a{};
+        int k = 0;
+        for (int j = 0; j < NB; ++j)
+        {
+            for (int i = 0; i < P::ne; ++i)
+            {
+                if (!Base::eq_row_soft(i))
+                {
+                    a[k++] = lay_path.row_off(detail::g_eq) + j * P::ne + i;
+                }
+            }
+        }
+        return a;
+    }
+    static constexpr std::array<int, n_eq_path> eq_rows_path =
+        make_eq_rows_path();
+
+    static constexpr std::array<int, Base::n_eq_term> eq_rows_term =
+        Base::eq_rows_term;
 
     // ---------------------------------------------------------------
     // Derived totals (per stage type)

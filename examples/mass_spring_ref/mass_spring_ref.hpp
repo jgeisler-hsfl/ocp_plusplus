@@ -42,6 +42,7 @@ struct MassSpringRefBoxDims
     static constexpr int ng_t = 0;
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
+    static constexpr int np   = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [2.5, 2.5, 0, ...]'
     static constexpr bool has_dynamics_hess = true;  // linear map (HVP = 0)
     static constexpr bool has_constr_hess = true;  // linear (vacuous)
@@ -70,6 +71,7 @@ struct MassSpringRefTermDims
     static constexpr int ng_t = 0;
     static constexpr int ne_t = 4;  // x_N(0:3) = 0
     static constexpr int nl_t = 0;
+    static constexpr int np   = 0;
     static constexpr bool fixed_initial_state = true;  // x_0 = [2.5, 2.5, 0, ...]'
     static constexpr bool has_dynamics_hess = true;  // linear map (HVP = 0)
     static constexpr bool has_constr_hess = true;  // linear (vacuous)

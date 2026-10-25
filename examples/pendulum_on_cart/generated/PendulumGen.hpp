@@ -32,6 +32,7 @@ struct PendulumGenDims
     static constexpr int ng_t = 0;
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
+    static constexpr int np   = 0;
 
     static constexpr bool fixed_initial_state = true;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian

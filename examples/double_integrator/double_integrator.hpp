@@ -39,6 +39,7 @@ struct DoubleIntegratorDims
     static constexpr int ng_t = 0;
     static constexpr int ne_t = 1;
     static constexpr int nl_t = 0;
+    static constexpr int np   = 6;  // p = (Ts, v_max, wq, wv, wa, wf)
     static constexpr bool fixed_initial_state = true;  // x_0 = [1; 0.5] given
     static constexpr bool has_dynamics_hess = true;  // HVP implemented (zero; linear map)
     static constexpr bool has_constr_hess   = true;  // HVPs implemented (zero; linear maps)
@@ -282,5 +283,100 @@ public:
         hess.setZero();
     }
 
-    // nl_t == 0: terminal_linear_constr stays unimplemented.
+    // ---------------------------------------------------------------
+    // Parameter vector  p = (Ts, v_max, wq, wv, wa, wf)
+    // ---------------------------------------------------------------
+
+    void dynamics_sens_p(int, const state_t& x, const control_t& u,
+                         dyn_df_dp_t& f_p, dyn_dA_dp_t& A_p,
+                         dyn_dB_dp_t& B_p) const
+    {
+        // f = [q + Ts*v; v + Ts*u];  A = [[1, Ts],[0, 1]];  B = [0; Ts]
+        f_p.setZero();
+        f_p(0, 0) = x(1);
+        f_p(1, 0) = u(0);
+        A_p.setZero();
+        A_p(1, 0) = 1.0;  // dA/dTs = [[0,1],[0,0]], row-major flattened
+        B_p.setZero();
+        B_p(1, 0) = 1.0;  // dB/dTs = [0; 1]
+    }
+
+    void stage_cost_sens_p(int, const state_t& x, const control_t& u,
+                           param_t& L_p, stage_grad_dp_t& grad_p) const
+    {
+        // L = 0.5 (wq q^2 + wv v^2 + wa u^2);  grad = [wq q; wv v; wa u]
+        // p = (Ts, v_max, wq, wv, wa, wf) -> dL/dp nonzero at wq, wv, wa
+        L_p.setZero();
+        L_p(2) = 0.5 * x(0) * x(0);
+        L_p(3) = 0.5 * x(1) * x(1);
+        L_p(4) = 0.5 * u(0) * u(0);
+        grad_p.setZero();
+        grad_p(0, 2) = x(0);
+        grad_p(1, 3) = x(1);
+        grad_p(2, 4) = u(0);
+    }
+
+    void terminal_cost_sens_p(const state_t& x, param_t& L_p,
+                              term_grad_dp_t& grad_p) const
+    {
+        // L_t = wf (q^2 + v^2);  grad = [2 wf q; 2 wf v]
+        L_p.setZero();
+        L_p(5) = x(0) * x(0) + x(1) * x(1);
+        grad_p.setZero();
+        grad_p(0, 5) = 2.0 * x(0);
+        grad_p(1, 5) = 2.0 * x(1);
+    }
+
+    void stage_inequality_sens_p(int, const state_t&, const control_t&,
+                                 ineq_dg_dp_t& g_p, ineq_dg_dx_dp_t& gdx_p,
+                                 ineq_dg_du_dp_t& gdu_p) const
+    {
+        // g = v - v_max
+        g_p.setZero();
+        g_p(0, 1) = -1.0;
+        gdx_p.setZero();
+        gdu_p.setZero();
+    }
+
+    // ne == 0: stage_equality_sens_p stays unimplemented.
+
+    // linear constraint coefficients/bounds are p-independent
+    stage_linear_sensp_t stage_linear_sens_p(int) const
+    {
+        return stage_linear_sensp_t{};
+    }
+
+    stage_state_box_sensp_t stage_state_box_sens_p(int) const
+    {
+        return stage_state_box_sensp_t{};
+    }
+
+    stage_control_box_sensp_t stage_control_box_sens_p(int) const
+    {
+        return stage_control_box_sensp_t{};
+    }
+
+    term_state_box_sensp_t terminal_state_box_sens_p() const
+    {
+        return term_state_box_sensp_t{};
+    }
+
+    // ng_t == 0: terminal_inequality_sens_p stays unimplemented.
+
+    void terminal_equality_sens_p(const state_t&, eq_term_de_dp_t& e_p,
+                                  eq_term_de_dx_dp_t& edx_p) const
+    {
+        // e = q + v - 1 (p-independent)
+        e_p.setZero();
+        edx_p.setZero();
+    }
+
+    // nl_t == 0: terminal_linear_sens_p stays unimplemented.
+
+    x0_dp_t initial_state_sens_p() const
+    {
+        // x0 = [1; 0.5] (p-independent).  Explicit ::Zero(): value-init
+        // (`x0_dp_t{}`) does not zero Eigen 3.3 fixed-size matrices.
+        return x0_dp_t::Zero();
+    }
 };
