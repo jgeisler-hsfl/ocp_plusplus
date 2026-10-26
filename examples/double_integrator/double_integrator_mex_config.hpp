@@ -1,4 +1,4 @@
-// mex/configs/double_integrator.hpp
+// examples/double_integrator/double_integrator_mex_config.hpp
 //
 // The "special include" of one MEX binary (docs/plans/MATLAB_MEX_PLAN.md,
 // section 1): names the (problem, solver) types that ocp_mex_main.cpp
@@ -9,7 +9,7 @@
 
 #include "ocp/solvers/acados/acados.hpp"
 
-#include "double_integrator/double_integrator.hpp"
+#include "double_integrator.hpp"
 
 namespace ocp_mex
 {

@@ -1,4 +1,4 @@
-// mex/configs/mass_spring.hpp
+// examples/mass_spring/mass_spring_mex_config.hpp
 //
 // The "special include" of one MEX binary (docs/plans/MATLAB_MEX_PLAN.md,
 // section 1): names the (problem, solver) types that ocp_mex_main.cpp
@@ -9,7 +9,7 @@
 
 #include "ocp/solvers/acados/acados.hpp"
 
-#include "mass_spring/mass_spring.hpp"
+#include "mass_spring.hpp"
 
 namespace ocp_mex
 {

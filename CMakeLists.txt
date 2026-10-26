@@ -316,7 +316,7 @@ target_compile_options(sqp_continuous PRIVATE ${OCP_WARN_FLAGS})
 # ---- MATLAB MEX wrappers (docs/plans/MATLAB_MEX_PLAN.md) ----
 # One MEX shared library per configuration. Each is the single TU
 # mex/ocp_mex_main.cpp with OCP_MEX_CONFIG selecting the config header
-# (mex/configs/<name>.hpp). The pure-C++ core (include/ocp/mex/mex_api.hpp)
+# (examples/<name>/<name>_mex_config.hpp). The pure-C++ core (include/ocp/mex/mex_api.hpp)
 # is always built and tested via mex_api_unit without MATLAB.
 option(OCP_BUILD_MEX "Build the MATLAB MEX wrappers (requires MATLAB)" OFF)
 if(OCP_BUILD_MEX)
@@ -336,7 +336,7 @@ if(OCP_BUILD_MEX)
                                  include examples ${EIGEN3_INCLUDE_DIR}
                                  ${Matlab_INCLUDE_DIRS})
       target_compile_definitions(ocp_mex_${cfg} PRIVATE
-        OCP_MEX_CONFIG="${CMAKE_SOURCE_DIR}/mex/configs/${cfg}.hpp"
+        OCP_MEX_CONFIG="${CMAKE_SOURCE_DIR}/examples/${cfg}/${cfg}_mex_config.hpp"
         MATLAB_MEX_FILE USE_MEX_CMD _GNU_SOURCE
         MATLAB_DEFAULT_RELEASE=R2017b)
       target_link_libraries(ocp_mex_${cfg} PRIVATE ${Matlab_LIBRARIES} m)

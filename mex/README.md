@@ -36,8 +36,9 @@ cmake --build build --target mex_api_unit && ./build/mex_api_unit
 
 ## Adding a configuration
 
-1. Add `mex/configs/<name>.hpp` naming `Problem`, `kHorizon`, `Solver`
-   (see `double_integrator.hpp`).
+1. Add `examples/<name>/<name>_mex_config.hpp` naming `Problem`,
+   `kHorizon`, `Solver` (see
+   `examples/double_integrator/double_integrator_mex_config.hpp`).
 2. Add `<name>` to `OCP_MEX_CONFIGS` in the root `CMakeLists.txt`.
 
 No wrapper changes; each configuration compiles the same
@@ -50,16 +51,16 @@ All calls take a char-string command as the first argument.
 | Command | Arguments | Returns |
 | --- | --- | --- |
 | `info` | – | struct: `nx nu ng ne nl ng_t ne_t nl_t nbx nbu nbx_t fixed_initial_state N solver` |
-| `init` | `N` | logical success; resizes the session, sets `x_0` from `initial_state` when the initial state is fixed |
+| `init` | `N` | logical success (optional output); resizes the session, sets `x_0` from `initial_state` when the initial state is fixed |
 | `options` | – | cell of all option names (`options.*`, `qp.options.*`, `scaling.options.*`) |
 | `opt_get` | `name` | double (int/bool options coerced; bools are 1.0/0.0) |
-| `opt_set` | `name`, `value` | logical; the value is written to the live solver, effective on the next `solve` |
+| `opt_set` | `name`, `value` **or** `optStruct` | logical success (optional output); the value is written to the live solver, effective on the next `solve`. Struct form: field nesting mirrors the dotted names (`opt.options.max_iter`, `opt.qp.options.warm_start`); unknown fields warn (`ocp_mex:UnknownOption`) and are skipped, so partial structs are fine |
 | `opt_dump` | – | prints a flat `name = value` snapshot to the console |
-| `set` | `field`, `M` | logical; warm start; only `x` (`nx x (N+1)`) and `u` (`nu x N`) are writable |
+| `set` | `field`, `M` | logical success (optional output); warm start; only `x` (`nx x (N+1)`) and `u` (`nu x N`) are writable |
 | `get` | `field` | matrix; column `k+1` = stage `k` (see field list below) |
 | `solution` | – | struct with every `get` field |
-| `solve` | – | `[status, cost]`; `status` = int value of `ocp::Status` (1 = `kSolved`) |
-| `stats` | – | struct: `iter`, `status`, `names` (cell of column names), `rows` (`iter x ncol` per-iteration table) |
+| `solve` | – | `[status, cost]` or `cost` (outputs optional); `status` = int value of `ocp::Status` (1 = `kSolved`); no error on non-convergence |
+| `stats` | – | `[stats, status]` (`status` optional); `stats` is a `1 x iter` struct array, one field per column name, element `r` = iteration `r` |
 | `stat_col` | `name` | named statistics column as an `(n x 1)` vector; error on unknown name |
 
 `get`/`solution` fields (names = `Solution` member names, verbatim):
@@ -84,6 +85,11 @@ assert(ocp_mex_double_integrator('init', N));
 assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 40));
 assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.1));
 
+% or set several at once from a (partial) struct
+opt.options.max_iter = 20;
+opt.qp.options.warm_start = 2;
+ocp_mex_double_integrator('opt_set', opt);
+
 % warm start (optional; the solver also runs from the zero init)
 u0 = 0.01 * ones(1, N);
 assert(ocp_mex_double_integrator('set', 'u', u0));
@@ -93,10 +99,12 @@ assert(status == 1);      % kSolved
 x = ocp_mex_double_integrator('get', 'x');
 assert(size(x, 1) == 2 && size(x, 2) == N + 1);
 
-% per-iteration statistics: named columns
-st = ocp_mex_double_integrator('stats');
+% per-iteration statistics: one struct element per iteration, one field
+% per column name (status is the optional second output)
+[st, ststatus] = ocp_mex_double_integrator('stats');
 alpha = ocp_mex_double_integrator('stat_col', 'alpha');
-assert(size(alpha, 1) == st.iter);
+assert(ststatus == status && size(alpha, 1) == numel(st));
+assert(isequal(st.alpha, alpha));
 ```
 
 The full smoke test (`test_mex.m`) runs the whole table end to end:
