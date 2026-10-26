@@ -1,5 +1,12 @@
 # Dual Access Plan (options & statistics by member or by name)
 
+> **Status: superseded and finished.** The offset-based `ValueRegistry` was
+> replaced by the inspect protocol, which implements the full open scope of
+> this plan (live solver-exposed options, named statistics columns,
+> solver-agnostic MEX session) without any (re-)allocation in the core.
+> See `docs/plans/OPTION_INSPECT_PLAN.md` (phases P1–P5, all completed).
+> `include/ocp/named_values.hpp` and `tests/registry/` were deleted.
+
 Advances TODO.md item 10; implements the "Separation of parameters" principle
 in ARCHITECTURE.md sec. 2 ("...access them as member variables of a
 solver-specific options class or by a string name via a map"). It is the
