@@ -137,6 +137,7 @@ solver.statistics().write_csv("sqp_stat.csv");
 | `kNanDetected` (7) | NaN in the residuals | check the model functions for invalid evaluations |
 | `kAborted` (8) | internal solver error | — |
 | `kTimeout` (9) | wall-clock budget exceeded | raise `timeout_max_time` |
+| `kNotInitialized` (10) | `solve()` called before `init()` | call `init()` first |
 
 ## 3.6 Convergence: the four residual norms
 
