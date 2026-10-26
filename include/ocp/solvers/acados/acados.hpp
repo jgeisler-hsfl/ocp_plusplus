@@ -36,7 +36,6 @@
 
 #include <Eigen/Dense>
 
-#include "../../named_values.hpp"
 #include "../hpipm/qp.hpp"
 #include "../hpipm/hpipm.hpp"
 #include "globalize.hpp"
@@ -741,17 +740,12 @@ struct AcadosOptions
     double adaptive_lm_mu_min = 1e-16;    // 3g: floor for the full-step decay
     double adaptive_lm_obj_scalar = 2.0;  // 3g: mu_eff = obj_scalar * raw_cost * mu
     int print_level = 0;                  // 0 = silent, 1 = per-iteration rows
-    int qp_warm_start = 0;                // HPIPM warm_start: 0 cold / 2 primal+dual / 3 hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
     bool eval_residual_at_max_iter = false;
     int timeout_heuristic = 0;            // 3f: 0 = ZERO, 1 = LAST, 2 = MAX,
                                           // 3 = AVERAGE (acados
                                           // ocp_nlp_timeout_heuristic_t)
     double timeout_max_time = 0.0;        // 3f: wall-clock budget; 0 = none
-    bool scale_qp_objective = false;      // 3h: Gershgorin objective scaling
-    bool scale_qp_constraints = false;    // 3h: inf-norm constraint scaling
-    double ub_max_abs_eig = 1e5;          // 3h: objective-scaling upper bound
-    double lb_norm_inf_grad_obj = 1e-4;   // 3h: objective-scaling grad floor
     // 3h: per-iteration QP tolerance strategy
     // (ocp_nlp_common.c:4522-4574; acados types.h:102-107).
     //   0 = kFixedQpTol              (HPIPM defaults, no per-iter update)
@@ -767,50 +761,45 @@ struct AcadosOptions
     double tau_min = 1e-16;               // res_comp floor (plan sec. 1.4)
     GlobOptions glob;
 
-    /// By-name access to the fields above (docs/plans/DUAL_ACCESS_PLAN.md):
-    /// `reg.set("max_iter", 40)` / `reg.get("glob.alpha_min", x)`; the nested
-    /// GlobOptions is linked under "glob" (its own registry owns the
-    /// "glob.*" names). Direct member access is unchanged. The registry is
-    /// layout-relative and stays valid on copies of AcadosOptions.
-    ValueRegistry reg;
-
-    AcadosOptions()
+    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md):
+    /// `inspect::set_double(o, "max_iter", 40.0)` /
+    /// `inspect::get_double(o, "glob.alpha_min", x)`; the nested GlobOptions
+    /// is linked under "glob". Direct member access is unchanged.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
     {
-        reg.begin(*this);
-        reg.add("max_iter", max_iter);
-        reg.add("tol_stat", tol_stat);
-        reg.add("tol_eq", tol_eq);
-        reg.add("tol_ineq", tol_ineq);
-        reg.add("tol_comp", tol_comp);
-        reg.add("tol_min_step_norm", tol_min_step_norm);
-        reg.add("tol_unbounded", tol_unbounded);
-        reg.add("compute_hess_dyn", compute_hess_dyn);
-        reg.add("compute_hess_constr", compute_hess_constr);
-        reg.add("levenberg_marquardt", levenberg_marquardt);
-        reg.add("with_adaptive_lm", with_adaptive_lm);
-        reg.add("adaptive_lm_mu0", adaptive_lm_mu0);
-        reg.add("adaptive_lm_lam", adaptive_lm_lam);
-        reg.add("adaptive_lm_mu_min", adaptive_lm_mu_min);
-        reg.add("adaptive_lm_obj_scalar", adaptive_lm_obj_scalar);
-        reg.add("print_level", print_level);
-        reg.add("qp_warm_start", qp_warm_start);
-        reg.add("warm_start_first_qp", warm_start_first_qp);
-        reg.add("eval_residual_at_max_iter", eval_residual_at_max_iter);
-        reg.add("timeout_heuristic", timeout_heuristic);
-        reg.add("timeout_max_time", timeout_max_time);
-        reg.add("scale_qp_objective", scale_qp_objective);
-        reg.add("scale_qp_constraints", scale_qp_constraints);
-        reg.add("ub_max_abs_eig", ub_max_abs_eig);
-        reg.add("lb_norm_inf_grad_obj", lb_norm_inf_grad_obj);
-        reg.add("nlp_qp_tol_strategy", nlp_qp_tol_strategy);
-        reg.add("nlp_qp_tol_reduction_factor", nlp_qp_tol_reduction_factor);
-        reg.add("nlp_qp_tol_safety_factor", nlp_qp_tol_safety_factor);
-        reg.add("nlp_qp_tol_min_stat", nlp_qp_tol_min_stat);
-        reg.add("nlp_qp_tol_min_eq", nlp_qp_tol_min_eq);
-        reg.add("nlp_qp_tol_min_ineq", nlp_qp_tol_min_ineq);
-        reg.add("nlp_qp_tol_min_comp", nlp_qp_tol_min_comp);
-        reg.add("tau_min", tau_min);
-        reg.add("glob", glob.reg);
+        vis("max_iter", &AcadosOptions::max_iter);
+        vis("tol_stat", &AcadosOptions::tol_stat);
+        vis("tol_eq", &AcadosOptions::tol_eq);
+        vis("tol_ineq", &AcadosOptions::tol_ineq);
+        vis("tol_comp", &AcadosOptions::tol_comp);
+        vis("tol_min_step_norm", &AcadosOptions::tol_min_step_norm);
+        vis("tol_unbounded", &AcadosOptions::tol_unbounded);
+        vis("compute_hess_dyn", &AcadosOptions::compute_hess_dyn);
+        vis("compute_hess_constr", &AcadosOptions::compute_hess_constr);
+        vis("levenberg_marquardt", &AcadosOptions::levenberg_marquardt);
+        vis("with_adaptive_lm", &AcadosOptions::with_adaptive_lm);
+        vis("adaptive_lm_mu0", &AcadosOptions::adaptive_lm_mu0);
+        vis("adaptive_lm_lam", &AcadosOptions::adaptive_lm_lam);
+        vis("adaptive_lm_mu_min", &AcadosOptions::adaptive_lm_mu_min);
+        vis("adaptive_lm_obj_scalar", &AcadosOptions::adaptive_lm_obj_scalar);
+        vis("print_level", &AcadosOptions::print_level);
+        vis("warm_start_first_qp", &AcadosOptions::warm_start_first_qp);
+        vis("eval_residual_at_max_iter",
+            &AcadosOptions::eval_residual_at_max_iter);
+        vis("timeout_heuristic", &AcadosOptions::timeout_heuristic);
+        vis("timeout_max_time", &AcadosOptions::timeout_max_time);
+        vis("nlp_qp_tol_strategy", &AcadosOptions::nlp_qp_tol_strategy);
+        vis("nlp_qp_tol_reduction_factor",
+            &AcadosOptions::nlp_qp_tol_reduction_factor);
+        vis("nlp_qp_tol_safety_factor",
+            &AcadosOptions::nlp_qp_tol_safety_factor);
+        vis("nlp_qp_tol_min_stat", &AcadosOptions::nlp_qp_tol_min_stat);
+        vis("nlp_qp_tol_min_eq", &AcadosOptions::nlp_qp_tol_min_eq);
+        vis("nlp_qp_tol_min_ineq", &AcadosOptions::nlp_qp_tol_min_ineq);
+        vis("nlp_qp_tol_min_comp", &AcadosOptions::nlp_qp_tol_min_comp);
+        vis("tau_min", &AcadosOptions::tau_min);
+        vis("glob", &AcadosOptions::glob);
     }
 };
 
@@ -830,6 +819,23 @@ struct SqpIteration
     // active globalizer is not a funnel (SQP_PHASE3_PLAN sec. 3i).
     int funnel_iter_type = -1;
     double funnel_width = 0.0;
+
+    /// inspect protocol (docs/plans/OPTION_INSPECT_PLAN.md sec. 5): the
+    /// stat table's column names are this struct's leaf field names.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("res_stat", &SqpIteration::res_stat);
+        vis("res_eq", &SqpIteration::res_eq);
+        vis("res_ineq", &SqpIteration::res_ineq);
+        vis("res_comp", &SqpIteration::res_comp);
+        vis("qp_status", &SqpIteration::qp_status);
+        vis("qp_iter", &SqpIteration::qp_iter);
+        vis("step_norm", &SqpIteration::step_norm);
+        vis("alpha", &SqpIteration::alpha);
+        vis("funnel_iter_type", &SqpIteration::funnel_iter_type);
+        vis("funnel_width", &SqpIteration::funnel_width);
+    }
 };
 
 /// Per-iteration records of a SQP solve (acados `stat` matrix analogue).
@@ -924,7 +930,6 @@ public:
 
     explicit AcadosSolver(AcadosOptions opts = AcadosOptions{})
         : opts_(opts)
-        , scaler_(make_scaler_opts(opts))
     {
     }
 
@@ -1042,15 +1047,15 @@ public:
     const AcadosOptions& options() const { return opts_; }
     const AcadosStatistics& statistics() const { return stat_; }
 
-    /// Replace the driver options between solves (e.g. from an interactive
-    /// environment). Must not be called while a solve() is in flight.
-    /// glob.* is re-synced at the next solve() (existing behavior); the QP
-    /// sub-solver picks up qp_warm_start / the tolerance strategy there as
-    /// well.
-    void apply_options(const AcadosOptions& o)
+    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// driver options, the QP sub-solver and the QP scaler. By-name paths:
+    /// options.*, qp.options.*, scaling.options.*.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
     {
-        opts_ = o;
-        scaler_.set_opts(make_scaler_opts(o));
+        vis("options", &AcadosSolver::opts_);
+        vis("qp", &AcadosSolver::qp_);
+        vis("scaling", &AcadosSolver::scaler_);
     }
 
     const Qp<P, NH>& last_qp() const { return qp_in_; }
@@ -1290,7 +1295,10 @@ public:
                     scaler_.scaled_out().ux_path[k - 1].setZero();
                 }
                 scaler_.scaled_out().ux_term.setZero();
-                int ws = opts_.qp_warm_start;
+                // QP-level warm-start mode lives in the QP solver's options
+                // (HpipmOptions::warm_start), reachable by name as
+                // "qp.options.warm_start".
+                int ws = qp_.options().warm_start;
                 if (iter == 0 && !opts_.warm_start_first_qp)
                 {
                     ws = 0;
@@ -1372,19 +1380,6 @@ public:
     }
 
 private:
-    /// Map AcadosOptions to QpScaler opts (internal glue; used only by the
-    /// constructor).
-    static typename QpScaler<P, NH>::Opts make_scaler_opts(
-        const AcadosOptions& o)
-    {
-        typename QpScaler<P, NH>::Opts so;
-        so.scale_objective = o.scale_qp_objective;
-        so.scale_constraints = o.scale_qp_constraints;
-        so.ub_max_abs_eig = o.ub_max_abs_eig;
-        so.lb_norm_inf_grad_obj = o.lb_norm_inf_grad_obj;
-        return so;
-    }
-
     // ---------------------------------------------------------------
     //  Driver helpers (sub-step 2g)
     // ---------------------------------------------------------------

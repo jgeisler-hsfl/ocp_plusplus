@@ -425,11 +425,17 @@ void test_solve_infeasible()
 // duck-typed QP solvers: kQpFailure and kMinStep driver paths
 // ---------------------------------------------------------------------
 
-// Duck-typed QP solver mock: the driver only needs solve() and
-// statistics() (for the iteration count in the stat row).
+// Duck-typed QP solver mock: the driver needs solve(), options() (for the
+// QP warm-start mode read per iteration) and statistics() (for the
+// iteration count in the stat row).
 struct MockStats
 {
     int iter = 0;
+};
+
+struct MockOpts
+{
+    int warm_start = 0;
 };
 
 class FailQp
@@ -441,8 +447,12 @@ public:
         return Status::kQpFailure;
     }
     MockStats statistics() const { return MockStats{}; }
-    void set_warm_start(int) {}  // phase 3c driver wiring
+    const MockOpts& options() const { return opts_; }
+    void set_warm_start(int ws) { opts_.warm_start = ws; }  // 3c wiring
     void set_residual_tolerances(double, double, double, double) {}  // 3h
+
+private:
+    MockOpts opts_;
 };
 
 class ZeroStepQp
@@ -477,8 +487,12 @@ public:
         return Status::kSolved;
     }
     MockStats statistics() const { return MockStats{}; }
-    void set_warm_start(int) {}  // phase 3c driver wiring
+    const MockOpts& options() const { return opts_; }
+    void set_warm_start(int ws) { opts_.warm_start = ws; }  // 3c wiring
     void set_residual_tolerances(double, double, double, double) {}  // 3h
+
+private:
+    MockOpts opts_;
 };
 
 void test_solve_qp_failure()

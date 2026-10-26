@@ -46,6 +46,17 @@ public:
         bool scale_constraints = false;
         double ub_max_abs_eig = 1e5;
         double lb_norm_inf_grad_obj = 1e-4;
+
+        /// By-name access (docs/plans/OPTION_INSPECT_PLAN.md): linked under
+        /// "options" by QpScaler::inspect (paths scaling.options.*).
+        template <class Visitor>
+        static constexpr void inspect(Visitor&& vis)
+        {
+            vis("scale_objective", &Opts::scale_objective);
+            vis("scale_constraints", &Opts::scale_constraints);
+            vis("ub_max_abs_eig", &Opts::ub_max_abs_eig);
+            vis("lb_norm_inf_grad_obj", &Opts::lb_norm_inf_grad_obj);
+        }
     };
 
     explicit QpScaler(Opts opts = {}) : opts_(opts)
@@ -57,6 +68,14 @@ public:
     void set_opts(const Opts& o)
     {
         opts_ = o;
+    }
+
+    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// scaling options (by-name paths: scaling.options.*).
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("options", &QpScaler::opts_);
     }
 
     void resize(int n_stages)

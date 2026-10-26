@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "ocp/inspect.hpp"
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
@@ -55,47 +56,81 @@ void check_options_defaults()
     check(o.update_fact_exit == 1, "update_fact_exit = 1");
 }
 
-void check_options_registry()
+void check_options_inspect()
 {
     ocp::HpipmOptions o;
 
     // set via name -> read the member
-    check(o.reg.set("iter_max", 40), "reg.set iter_max");
-    check(o.iter_max == 40, "reg.set wrote iter_max");
-    check(o.reg.set("mu0", 0.5), "reg.set mu0");
-    check(o.mu0 == 0.5, "reg.set wrote mu0");
-    check(o.reg.set("pred_corr", false), "reg.set pred_corr");
-    check(!o.pred_corr, "reg.set wrote pred_corr");
+    check(ocp::inspect::set_double(o, "iter_max", 40.0), "set iter_max");
+    check(o.iter_max == 40, "set wrote iter_max");
+    check(ocp::inspect::set_double(o, "mu0", 0.5), "set mu0");
+    check(o.mu0 == 0.5, "set wrote mu0");
+    check(ocp::inspect::set_double(o, "pred_corr", 0.0), "set pred_corr");
+    check(!o.pred_corr, "set wrote pred_corr");
 
     // set the member -> read via name
     o.stat_max = 7;
     int i = 0;
-    check(o.reg.get("stat_max", i) && i == 7, "reg.get stat_max");
+    check(ocp::inspect::get_field(o, "stat_max", i) && i == 7,
+          "typed get stat_max");
     double d = 0.0;
     o.dual_gap_max = 1e10;
-    check(o.reg.get("dual_gap_max", d) && d == 1e10, "reg.get dual_gap_max");
+    check(ocp::inspect::get_double(o, "dual_gap_max", d) && d == 1e10,
+          "get dual_gap_max");
     bool b = false;
-    check(o.reg.get("square_root_alg", b) && b, "reg.get square_root_alg");
+    check(ocp::inspect::get_field(o, "square_root_alg", b) && b,
+          "typed get square_root_alg");
 
-    // unknown names and type mismatches
-    check(!o.reg.has("i_max"), "reg.has unknown name");
-    check(!o.reg.get("iter_max", d), "reg.get int entry as double");
-    check(!o.reg.set("mu0", 1), "reg.set double entry with int");
-    check(!o.reg.get("warm_start", b), "reg.get int entry as bool");
+    // unknown names
+    check(!ocp::inspect::get_double(o, "i_max", d), "get unknown name");
+    check(!ocp::inspect::set_double(o, "i_max", 1.0), "set unknown name");
 
-    // names(): all 29 fields, registration (member) order
-    const std::vector<std::string> names = o.reg.names();
-    check(names.size() == 29, "reg.names() lists all 29 fields");
+    // names(): all 29 fields, declaration (member) order
+    const std::vector<std::string> names =
+        ocp::inspect::leaf_names<ocp::HpipmOptions>();
+    check(names.size() == 29, "leaf_names lists all 29 fields");
     check(names.size() == 29 && names[0] == "mu0" && names[14] == "iter_max" &&
           names[28] == "update_fact_exit",
-          "reg.names() order matches the member order");
+          "leaf_names order matches the member order");
 
-    // copy safety: sets through the copy's registry never touch the original
+    // copy safety: sets through the copy never touch the original
     ocp::HpipmOptions o2 = o;
-    check(o2.reg.set("iter_max", 12), "copy: reg.set");
+    check(ocp::inspect::set_double(o2, "iter_max", 12.0), "copy: set");
     check(o2.iter_max == 12 && o.iter_max == 40,
-          "copy: reg.set left the original untouched");
-    check(o2.reg.get("mu0", d) && d == 0.5, "copy: reg.get");
+          "copy: set left the original untouched");
+    check(ocp::inspect::get_double(o2, "mu0", d) && d == 0.5, "copy: get");
+}
+
+void check_stat_table()
+{
+    ocp::HpipmStatistics st;
+    st.init(2);
+    ocp::HpipmIteration& r = st.row(1);
+    r.alpha_prim = 0.5;
+    r.lq_fact = 1;
+    st.iter = 1;
+
+    // column names: the HpipmIteration leaves in declaration order
+    const std::vector<std::string> cols =
+        ocp::inspect::stat_column_names(st);
+    check(cols.size() == 21, "stat_column_names: 21 columns");
+    check(cols[0] == "alpha_prim_aff" && cols[20] == "npd_reg_hess",
+          "stat_column_names order");
+
+    std::vector<double> c;
+    check(ocp::inspect::stat_column(st, "alpha_prim", c) && c.size() == 3 &&
+          c[1] == 0.5,
+          "stat_column alpha_prim");
+    check(!ocp::inspect::stat_column(st, "nope", c),
+          "stat_column unknown name");
+
+    std::vector<double> tab;
+    int n_rows = 0, n_cols = 0;
+    check(ocp::inspect::stat_table(st, tab, n_rows, n_cols) &&
+          n_rows == 3 && n_cols == 21,
+          "stat_table extents");
+    check(tab[1 * 21 + 4] == 0.5 && tab[1 * 21 + 13] == 1.0,
+          "stat_table row 1 (alpha_prim, lq_fact)");
 }
 
 template <class P, int NH = Eigen::Dynamic>
@@ -164,7 +199,8 @@ int run_abs_form_3e_tests();
 int main()
 {
     check_options_defaults();
-    check_options_registry();
+    check_options_inspect();
+    check_stat_table();
     check_solver_shell<DoubleIntegrator>("DoubleIntegrator (N dynamic)");
     check_solver_shell<MassSpring>("MassSpring (N dynamic)");
     check_solver_shell<MassSpring, 5>("MassSpring (NH = 5, fixed-extent)");
