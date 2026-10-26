@@ -9,7 +9,8 @@
 //
 // Command surface (v1, plan section 4):
 //   info | init N | options | opt_get name | opt_set name value |
-//   opt_dump | set field M | get field | solution | solve | stats
+//   opt_dump | set field M | get field | solution | solve | stats |
+//   stat_col name
 //
 // Conventions: column-major stage order (MATLAB column k+1 = stage k),
 // active box rows only (2*nbx, [lower; upper]), doubles throughout.
@@ -29,7 +30,7 @@ namespace
 {
 
 using Session =
-    ocp::mex::MexSession<ocp_mex::Problem, ocp_mex::kHorizon, ocp_mex::Solver>;
+    ocp::mex::MexSession<ocp_mex::Problem, ocp_mex::Solver, ocp_mex::kHorizon>;
 
 /// The 14 solution field names (Solution member names, verbatim; plan 5).
 constexpr const char* const kFields[] = {
@@ -44,18 +45,23 @@ std::string usage()
            "(cmd, ...), where cmd is one of:\n"
            "  'info'                      problem/solver extents + N\n"
            "  'init' N                    set the horizon (resizes session)\n"
-           "  'options'                   all option names (cell, incl. glob.*)\n"
-           "  'opt_get' name              option value (double; int/bool coerced)\n"
-           "  'opt_set' name value        set an option (live: pushed to solver)\n"
+           "  'options'                   all option names (cell; options.*, "
+           "qp.options.*, scaling.options.*)\n"
+           "  'opt_get' name              option value (double; int/bool "
+           "coerced)\n"
+           "  'opt_set' name value        set an option (live: effective on "
+           "the next solve)\n"
            "  'opt_dump'                  print a flat option snapshot\n"
            "  'set' field M               warm start: 'x' (nx x (N+1)) or "
            "'u' (nu x N)\n"
            "  'get' field                 solution field (x, u, lambda_*, "
            "cost_value, status, N)\n"
            "  'solution'                  struct with all solution fields\n"
-           "  'solve'                     [status, cost]; status = int ocp::Status\n"
-           "  'stats'                     struct: iter, status, rows (iter x "
-           "10)\n";
+           "  'solve'                     [status, cost]; status = int "
+           "ocp::Status\n"
+           "  'stats'                     struct: iter, status, names (cell "
+           "of column names), rows (iter x ncol)\n"
+           "  'stat_col' name             one named statistics column (n x 1)\n";
 }
 
 /// MATLAB-side error (the MEX error channel; the C++ core stays
@@ -218,11 +224,30 @@ mxArray* do_stats(const Session& session)
     std::vector<double> data;
     int rows = 0, cols = 0;
     session.stat_rows(data, rows, cols);
+    const std::vector<std::string> names = session.stat_column_names();
+    auto* c = mxCreateCellMatrix(1, static_cast<mwSize>(names.size()));
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        mxSetCell(c, static_cast<mwIndex>(i),
+                  mxCreateString(names[i].c_str()));
+    }
     auto* s = mxCreateStructMatrix(1, 1, 0, nullptr);
     struct_set_num(s, "iter", static_cast<double>(session.stat_iter()));
     struct_set_num(s, "status", static_cast<double>(session.stat_status()));
+    struct_set_mat(s, "names", c);
     struct_set_mat(s, "rows", make_matrix(data, rows, cols));
     return s;
+}
+
+mxArray* do_stat_col(const Session& session, const std::string& name)
+{
+    std::vector<double> data;
+    if (!session.stat_column(name, data))
+    {
+        die("unknown statistics column: '" + name +
+            "' (see 'stats' for the column names)");
+    }
+    return make_matrix(data, static_cast<int>(data.size()), 1);
 }
 
 }  // namespace
@@ -363,6 +388,16 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
                 std::string(ocp_mex::kName) + "('stats')");
         }
         plhs[0] = do_stats(session);
+    }
+    else if (cmd == "stat_col")
+    {
+        const std::string name = arg_str(nrhs, prhs, 1);
+        if (nlhs < 1)
+        {
+            die("stat_col: assign the output, e.g.  col = ocp_mex_" +
+                std::string(ocp_mex::kName) + "('stat_col', name)");
+        }
+        plhs[0] = do_stat_col(session, name);
     }
     else
     {

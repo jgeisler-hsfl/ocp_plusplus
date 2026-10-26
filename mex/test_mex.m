@@ -29,15 +29,34 @@ assert(ocp_mex_double_integrator('init', N), 'init must succeed');
 % ---- options: discovery + get/set ------------------------------------
 opts = ocp_mex_double_integrator('options');
 assert(iscell(opts) && ~isempty(opts), 'options must be a cell of names');
-assert(any(strcmp(opts, 'max_iter')), 'max_iter not discoverable');
-assert(any(strcmp(opts, 'glob.alpha_min')), 'dotted glob.* names missing');
-assert(ocp_mex_double_integrator('opt_get', 'max_iter') == 20, 'default max_iter');
-assert(ocp_mex_double_integrator('opt_set', 'max_iter', 40), 'opt_set max_iter');
-assert(ocp_mex_double_integrator('opt_get', 'max_iter') == 40, 'opt_set not live?');
-assert(ocp_mex_double_integrator('opt_set', 'glob.alpha_min', 0.1), 'opt_set glob.alpha_min');
-assert(abs(ocp_mex_double_integrator('opt_get', 'glob.alpha_min') - 0.1) < 1e-15, ...
+assert(any(strcmp(opts, 'options.max_iter')), 'options.max_iter not discoverable');
+assert(any(strcmp(opts, 'options.glob.alpha_min')), 'dotted glob.* names missing');
+assert(any(strcmp(opts, 'qp.options.warm_start')), 'qp.options.* names missing');
+assert(any(strcmp(opts, 'scaling.options.scale_objective')), ...
+       'scaling.options.* names missing');
+assert(ocp_mex_double_integrator('opt_get', 'options.max_iter') == 20, 'default max_iter');
+assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 40), 'opt_set max_iter');
+assert(ocp_mex_double_integrator('opt_get', 'options.max_iter') == 40, 'opt_set not live?');
+assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.1), ...
+       'opt_set glob.alpha_min');
+assert(abs(ocp_mex_double_integrator('opt_get', 'options.glob.alpha_min') - 0.1) < 1e-15, ...
        'dotted set not live');
-assert(ocp_mex_double_integrator('opt_set', 'max_iter', 20), 'restore max_iter');
+assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 20), 'restore max_iter');
+
+% component option surfaces (qp.options.*, scaling.options.*): set/get
+% round-trip on the live solver
+assert(ocp_mex_double_integrator('opt_set', 'qp.options.warm_start', 3), ...
+       'opt_set qp.options.warm_start');
+assert(ocp_mex_double_integrator('opt_get', 'qp.options.warm_start') == 3, ...
+       'qp.options.warm_start round-trip');
+assert(ocp_mex_double_integrator('opt_set', 'qp.options.warm_start', 0), ...
+       'restore qp.options.warm_start');
+assert(ocp_mex_double_integrator('opt_set', 'scaling.options.scale_objective', 1), ...
+       'opt_set scaling.options.scale_objective');
+assert(ocp_mex_double_integrator('opt_get', 'scaling.options.scale_objective') == 1, ...
+       'scaling.options round-trip (bool)');
+assert(ocp_mex_double_integrator('opt_set', 'scaling.options.scale_objective', 0), ...
+       'restore scaling.options.scale_objective');
 
 % ---- warm start (forward simulation of the constant-acceleration input
 %      that satisfies the terminal equality q_N + v_N = 1 exactly) ------
@@ -89,8 +108,19 @@ assert(numel(ocp_mex_double_integrator('get', 'lambda_eq_stage')) == 0, ...
 % ---- stats -------------------------------------------------------------
 st = ocp_mex_double_integrator('stats');
 assert(st.iter >= 1, 'at least one iteration recorded');
+assert(iscell(st.names) && numel(st.names) == 10, 'stats.names must have 10 entries');
+assert(strcmp(st.names{1}, 'res_stat') && strcmp(st.names{end}, 'funnel_width'), ...
+       'stats.names order');
 assert(size(st.rows, 2) == 10, 'stats rows must have 10 columns');
 assert(st.status == status, 'stats status mismatch');
+alpha = ocp_mex_double_integrator('stat_col', 'alpha');
+assert(size(alpha, 1) == st.iter && size(alpha, 2) == 1, 'stat_col extent');
+assert(all(alpha >= 0 & alpha <= 1), 'alpha in [0, 1]');
+try
+    ocp_mex_double_integrator('stat_col', 'bogus');
+    error('unknown stat_col must fail');
+catch
+end
 
 % opt_dump must print without error
 ocp_mex_double_integrator('opt_dump');

@@ -1,7 +1,7 @@
 // MexSession unit test (docs/plans/MATLAB_MEX_PLAN.md, step 2): the
 // host-independent core of the MATLAB MEX wrapper, exercised without
 // MATLAB on the DoubleIntegrator. Checks: info extents, option discovery /
-// get / set (flat and dotted, int/bool coercion, live apply_options path),
+// get / set (flat and dotted, int/bool coercion, live inspect-based path),
 // warm-start field set/get with extent validation, a full solve, solution
 // read-back and the statistics rows.
 
@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ocp/mex/mex_api.hpp"
+#include "ocp/solvers/acados/acados.hpp"
 
 #include "double_integrator/double_integrator.hpp"
 
@@ -20,7 +21,8 @@ namespace
 using namespace ocp;
 using Problem = DoubleIntegrator;
 using D = QpDim<Problem>;
-using Session = ocp::mex::MexSession<Problem>;
+using Session =
+    ocp::mex::MexSession<Problem, AcadosSolver<Problem, Eigen::Dynamic>>;
 
 int failures = 0;
 
@@ -108,39 +110,54 @@ void test_options()
 {
     Session s("mex_api_test");
 
-    // discovery: 33 flat fields + 5 glob.* leaves
+    // discovery: 28 driver + 5 glob leaves (options.*) + 29 HPIPM
+    // (qp.options.*) + 4 scaling (scaling.options.*)
     const std::vector<std::string> names = s.option_names();
-    check(names.size() == 38, "38 discoverable option names");
+    check(names.size() == 66, "66 discoverable option names");
     bool has_max_iter = false;
     bool has_glob_alpha_min = false;
+    bool has_qp_warm_start = false;
     for (const std::string& n : names)
     {
-        has_max_iter = has_max_iter || (n == "max_iter");
-        has_glob_alpha_min = has_glob_alpha_min || (n == "glob.alpha_min");
+        has_max_iter = has_max_iter || (n == "options.max_iter");
+        has_glob_alpha_min =
+            has_glob_alpha_min || (n == "options.glob.alpha_min");
+        has_qp_warm_start = has_qp_warm_start || (n == "qp.options.warm_start");
     }
-    check(has_max_iter && has_glob_alpha_min,
-          "names include max_iter and glob.alpha_min");
+    check(has_max_iter && has_glob_alpha_min && has_qp_warm_start,
+          "names include options.max_iter, options.glob.alpha_min and "
+          "qp.options.warm_start");
 
     // reads (int/bool coerced to double)
     double v = 0.0;
-    check(s.option_get("max_iter", v) && v == 20.0, "get max_iter");
-    check(s.option_get("glob.alpha_min", v) && v == 0.05,
+    check(s.option_get("options.max_iter", v) && v == 20.0, "get max_iter");
+    check(s.option_get("options.glob.alpha_min", v) && v == 0.05,
           "get glob.alpha_min");
-    check(s.option_get("print_level", v) && v == 0.0,
+    check(s.option_get("options.print_level", v) && v == 0.0,
           "int option read as double");
-    check(s.option_get("compute_hess_dyn", v) && v == 1.0,
+    check(s.option_get("options.compute_hess_dyn", v) && v == 1.0,
           "bool option read as 1.0");
     check(!s.option_get("i_max", v), "unknown option name");
+    check(!s.option_get("options.max_iter.x", v), "unknown dotted tail");
 
     // writes: int, bool and dotted names
-    check(s.option_set("max_iter", 40.0), "set max_iter");
-    check(s.options().max_iter == 40, "set wrote the int member");
-    check(s.option_get("max_iter", v) && v == 40.0, "get after set");
-    check(s.option_set("compute_hess_dyn", 0.0), "set bool from 0.0");
-    check(!s.options().compute_hess_dyn, "bool member written");
-    check(s.option_set("glob.alpha_reduction", 0.9), "set dotted name");
-    check_close(s.options().glob.alpha_reduction, 0.9, 1e-15,
+    check(s.option_set("options.max_iter", 40.0), "set max_iter");
+    check(s.solver().options().max_iter == 40, "set wrote the int member");
+    check(s.option_get("options.max_iter", v) && v == 40.0, "get after set");
+    check(s.option_set("options.compute_hess_dyn", 0.0), "set bool from 0.0");
+    check(!s.solver().options().compute_hess_dyn, "bool member written");
+    check(s.option_set("options.glob.alpha_reduction", 0.9), "set dotted name");
+    check_close(s.solver().options().glob.alpha_reduction, 0.9, 1e-15,
                 "dotted set wrote the glob member");
+    // live round-trips on the component option surfaces
+    check(s.option_set("qp.options.warm_start", 3.0),
+          "set qp.options.warm_start");
+    check(s.option_get("qp.options.warm_start", v) && v == 3.0,
+          "qp.options.warm_start round-trip");
+    check(s.option_set("scaling.options.scale_objective", 1.0),
+          "set scaling.options.scale_objective");
+    check(s.option_get("scaling.options.scale_objective", v) && v == 1.0,
+          "scaling.options round-trip (bool coerced)");
     check(!s.option_set("nope", 1.0), "set unknown name");
 }
 
@@ -154,12 +171,12 @@ void test_live_options()
     // met (check_termination checks the cap first), so the solve stops at
     // kMaxIterations; raising the cap then converges from the warm iterate.
     double cost = 0.0;
-    check(s.option_set("max_iter", 1.0), "set max_iter = 1");
+    check(s.option_set("options.max_iter", 1.0), "set max_iter = 1");
     const Status st1 = s.solve(cost);
     check(st1 == Status::kMaxIterations, "max_iter = 1 stops at the cap");
     check(s.stat_iter() >= 1, "at least one iteration recorded");
 
-    check(s.option_set("max_iter", 20.0), "set max_iter = 20");
+    check(s.option_set("options.max_iter", 20.0), "set max_iter = 20");
     const Status st2 = s.solve(cost);
     check(st2 == Status::kSolved, "max_iter = 20 converges");
 }
@@ -237,12 +254,26 @@ void test_solve_and_readback()
         }
     }
 
-    // statistics rows: one row per recorded iteration, 10 columns
+    // statistics table: one row per recorded iteration, 10 named columns
     check(s.stat_iter() >= 1, "iterations recorded");
     std::vector<double> rows_data;
     int srows = 0, scols = 0;
     check(s.stat_rows(rows_data, srows, scols), "stat_rows");
     check(srows == s.stat_iter() && scols == 10, "stat rows/cols");
+
+    // named column access (inspect protocol)
+    const std::vector<std::string> cnames = s.stat_column_names();
+    check(cnames.size() == 10, "10 stat column names");
+    check(cnames.front() == "res_stat" && cnames.back() == "funnel_width",
+          "stat column names first/last");
+    std::vector<double> alpha;
+    check(s.stat_column("alpha", alpha) && alpha.size() == static_cast<std::size_t>(srows),
+          "stat_column alpha");
+    for (double a : alpha)
+    {
+        check(a >= 0.0 && a <= 1.0, "alpha in [0, 1]");
+    }
+    check(!s.stat_column("res_statx", alpha), "stat_column unknown name");
 }
 
 }  // namespace

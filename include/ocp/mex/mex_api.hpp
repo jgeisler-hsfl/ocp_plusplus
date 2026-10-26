@@ -5,18 +5,19 @@
 // (problem, solver) session as persistent state and exposes the typed
 // command surface used by the MEX glue (mex/ocp_mex_impl.hpp):
 //
-//   - option discovery / get / set by name (ValueRegistry, incl. glob.*)
+//   - option discovery / get / set by name (inspect protocol)
 //   - solution field access (x, u, multipliers, cost, status, N)
 //   - a full solve()
 //
 // Pure C++ (no mex.h): unit-testable without MATLAB. Scalars cross the host
 // boundary as double (MATLAB is double-only), so option access goes through
-// ValueRegistry::get_as_double / set_from_double.
+// the inspect protocol (get_double / set_double on the live solver;
+// docs/plans/OPTION_INSPECT_PLAN.md).
 
 #pragma once
 
 #include "../problem.hpp"
-#include "../solvers/acados/acados.hpp"
+#include "../inspect.hpp"
 
 #include <cstddef>
 #include <cstdio>
@@ -31,19 +32,30 @@ namespace mex
 
 /// Session state of one (problem, solver) configuration.
 ///
-/// Owns the problem instance, the driver options (source of truth), the
-/// solver and the working solution. In the MEX, a function-local static
-/// owns one session per loaded binary; the state persists for the lifetime
-/// of the host process. `Solver` is expected to be an NLP driver of type
-/// `AcadosSolver<Problem, NH>` (v1); option updates are pushed into it via
-/// `apply_options`.
-template <class Problem, int NH = Eigen::Dynamic,
-          class Solver = AcadosSolver<Problem, NH>>
+/// Owns the problem instance, the solver and the working solution. In the
+/// MEX, a function-local static owns one session per loaded binary; the
+/// state persists for the lifetime of the host process. Option get/set by
+/// name operate on the live solver through the inspect protocol, so a write
+/// takes effect on the next solve() without a separate push step.
+///
+/// Solver contract (docs/plans/OPTION_INSPECT_PLAN.md sec. 6): `Solver`
+/// must provide
+///   1. `static constexpr inspect(Visitor)` exposing its option children
+///      (dotted leaf paths are the option names);
+///   2. `Status solve(const Problem&, Solution<Problem, NH>&)`;
+///   3. `const Stats& statistics() const` where `Stats` has `int iter`,
+///      `Status status`, `std::vector<Row> rows` and `Row` has a
+///      scalar-leaf `inspect`.
+/// Any NLP driver meeting this contract drops into the session unchanged.
+template <class Problem, class Solver, int NH = Eigen::Dynamic>
 class MexSession
 {
     using P = Problem;
     using S = typename P::scalar_t;
-    using D = QpDim<P>;
+    // The session only needs the structural problem dimensions, which the
+    // Problem base exposes directly; QpDim (solver-side stage layout) is
+    // not a session dependency.
+    using D = P;
     using Sol = Solution<Problem, NH>;
 
 public:
@@ -87,39 +99,35 @@ public:
     }
 
     // ---------------------------------------------------------------
-    //  Options (by name, docs/plans/DUAL_ACCESS_PLAN.md)
+    //  Options (by name, inspect protocol; docs/plans/OPTION_INSPECT_PLAN.md)
     // ---------------------------------------------------------------
 
-    /// All discoverable option names (flat + dotted `glob.*` leaves).
+    /// All discoverable option names (dotted paths: options.*, qp.options.*,
+    /// scaling.options.*).
     std::vector<std::string> option_names() const
     {
-        return opts_.reg.names();
+        return inspect::leaf_names<Solver>();
     }
 
     /// Read an option by name (int/bool coerced to double); false if the
     /// name is unknown.
     bool option_get(std::string_view name, double& out) const
     {
-        return opts_.reg.get_as_double(name, out);
+        return inspect::get_double(solver_, name, out);
     }
 
     /// Write an option by name (dotted names allowed, value coerced to the
-    /// entry's type), then push the updated options into the solver (the
-    /// solver holds its own copy; glob.* is re-synced at the next solve()).
+    /// leaf's type). Writes the live solver option directly, so it takes
+    /// effect on the next solve() without a separate push step.
     bool option_set(std::string_view name, double value)
     {
-        if (!opts_.reg.set_from_double(name, value))
-        {
-            return false;
-        }
-        solver_.apply_options(opts_);
-        return true;
+        return inspect::set_double(solver_, name, value);
     }
 
     /// Print a flat "name = value" snapshot of all options.
     void option_dump(std::FILE* f = stdout) const
     {
-        opts_.reg.dump(f);
+        inspect::dump(solver_, f);
     }
 
     // ---------------------------------------------------------------
@@ -263,7 +271,8 @@ public:
     }
 
     // ---------------------------------------------------------------
-    //  Statistics (raw fields; statistics dual access is a follow-up)
+    //  Statistics (named columns via the inspect protocol;
+    //  docs/plans/OPTION_INSPECT_PLAN.md sec. 5)
     // ---------------------------------------------------------------
 
     int stat_iter() const { return solver_.statistics().iter; }
@@ -273,31 +282,26 @@ public:
         return static_cast<int>(solver_.statistics().status);
     }
 
-    /// The per-iteration rows (10 columns: res_stat, res_eq, res_ineq,
-    /// res_comp, qp_status, qp_iter, step_norm, alpha, funnel_iter_type,
-    /// funnel_width), one row per recorded iteration.
+    /// The per-iteration statistics table (rows x cols, row-major), one row
+    /// per recorded iteration. The columns are the solver's statistics row
+    /// struct's scalar leaves; see stat_column_names().
     bool stat_rows(std::vector<double>& out, int& rows, int& cols) const
     {
-        const AcadosStatistics& stat = solver_.statistics();
-        rows = stat.iter;
-        cols = 10;
-        out.assign(static_cast<std::size_t>(rows * cols), 0.0);
-        for (int i = 0; i < stat.iter; ++i)
-        {
-            const SqpIteration& r = stat.rows[i];
-            const std::size_t o = static_cast<std::size_t>(i) * cols;
-            out[o + 0] = r.res_stat;
-            out[o + 1] = r.res_eq;
-            out[o + 2] = r.res_ineq;
-            out[o + 3] = r.res_comp;
-            out[o + 4] = static_cast<double>(r.qp_status);
-            out[o + 5] = static_cast<double>(r.qp_iter);
-            out[o + 6] = r.step_norm;
-            out[o + 7] = r.alpha;
-            out[o + 8] = static_cast<double>(r.funnel_iter_type);
-            out[o + 9] = r.funnel_width;
-        }
-        return true;
+        return inspect::stat_table(solver_.statistics(), out, rows, cols);
+    }
+
+    /// Column names of the per-iteration statistics table (the row struct's
+    /// leaf field names, in declaration order).
+    std::vector<std::string> stat_column_names() const
+    {
+        return inspect::stat_column_names(solver_.statistics());
+    }
+
+    /// One named statistics column: `out[i]` is iteration row i's value
+    /// (int/bool coerced to double). False if the column name is unknown.
+    bool stat_column(std::string_view name, std::vector<double>& out) const
+    {
+        return inspect::stat_column(solver_.statistics(), name, out);
     }
 
     // ---------------------------------------------------------------
@@ -328,7 +332,6 @@ public:
 
     const Sol& solution() const { return sol_; }
     Sol& solution() { return sol_; }
-    const AcadosOptions& options() const { return opts_; }
     const Solver& solver() const { return solver_; }
 
 private:
@@ -378,7 +381,6 @@ private:
     }
 
     Problem problem_;
-    AcadosOptions opts_;
     Solver solver_;
     Sol sol_;
     const char* name_ = "";
