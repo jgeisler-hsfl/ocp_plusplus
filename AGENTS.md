@@ -42,6 +42,9 @@ No other dependencies. C++17 required.
   family. `solvers/hpipm/` holds the HPIPM QP solver (`hpipm.hpp`) and its
   staged QP data model (`qp.hpp`: `QpDim<P>`, `Qp<P,NH>`, `QpSol<P,NH>`,
   `QpRes<P,NH>`).
+- `include/ocp/utils/` — cross-cutting support headers shared by problem,
+  solvers and the MEX glue. `utils/inspect.hpp` holds the inspect protocol
+  (named option/statistics access, `ocp::inspect` walkers).
 - `examples/double_integrator/` — minimal concrete problem + finite-difference sanity test.
 - `docs/plans/` — working plan docs; `docs/plans/finished/` holds completed
   plans/worklogs (SQP phases 1–4, GN-Hessian, model API, generator,

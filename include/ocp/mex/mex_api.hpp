@@ -17,7 +17,7 @@
 #pragma once
 
 #include "../problem.hpp"
-#include "../inspect.hpp"
+#include "../utils/inspect.hpp"
 
 #include <cstddef>
 #include <cstdio>

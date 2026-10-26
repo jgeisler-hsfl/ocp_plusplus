@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-#include "ocp/inspect.hpp"
+#include "ocp/utils/inspect.hpp"
 
 namespace
 {

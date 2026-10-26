@@ -1,4 +1,4 @@
-// ocp/inspect.hpp
+// ocp/utils/inspect.hpp
 //
 // inspect protocol: dual access (by member / by name) over the scalar
 // fields of an object tree (docs/plans/OPTION_INSPECT_PLAN.md). Replaces

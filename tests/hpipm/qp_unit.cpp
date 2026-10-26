@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "ocp/inspect.hpp"
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"

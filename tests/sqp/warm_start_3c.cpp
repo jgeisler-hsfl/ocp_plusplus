@@ -15,7 +15,7 @@
 #include <random>
 #include <string>
 
-#include "ocp/inspect.hpp"
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
