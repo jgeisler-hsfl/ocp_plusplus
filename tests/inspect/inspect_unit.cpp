@@ -307,22 +307,25 @@ void test_stat()
     const std::vector<std::string> want = {"r1", "r2", "r3"};
     check(names == want, "stat column names");
 
-    std::vector<double> col;
-    check(ocp::inspect::stat_column(st, "r2", col), "known column");
-    check(col.size() == 2 && col[0] == 3.0 && col[1] == 5.0,
-          "int column coerced to double");
-    check(ocp::inspect::stat_column(st, "r3", col), "bool column");
-    check(col.size() == 2 && col[0] == 1.0 && col[1] == 0.0,
-          "bool column coerced");
-    check(!ocp::inspect::stat_column(st, "nope", col),
+    std::vector<double> col(2, 0.0);
+    check(ocp::inspect::stat_column(st, "r2", col.data()), "known column");
+    check(col[0] == 3.0 && col[1] == 5.0, "int column coerced to double");
+    check(ocp::inspect::stat_column(st, "r3", col.data()), "bool column");
+    check(col[0] == 1.0 && col[1] == 0.0, "bool column coerced");
+    check(!ocp::inspect::stat_column(st, "nope", col.data()),
           "unknown column rejected");
 
-    std::vector<double> table;
+    // fill_row: one row's leaves in declaration order
+    double fbuf[3] = {0.0, 0.0, 0.0};
+    ocp::inspect::fill_row(st.rows[0], fbuf);
+    check(fbuf[0] == 1.5 && fbuf[1] == 3.0 && fbuf[2] == 1.0, "fill_row");
+
+    std::vector<double> table(6, 0.0);
     int rows = 0;
     int cols = 0;
-    check(ocp::inspect::stat_table(st, table, rows, cols), "stat table");
+    check(ocp::inspect::stat_table(st, table.data(), rows, cols),
+          "stat table");
     check(rows == 2 && cols == 3, "table dims");
-    check(table.size() == 6, "table size");
     check(table[0] == 1.5 && table[1] == 3.0 && table[2] == 1.0,
           "table row 0");
     check(table[3] == 2.5 && table[4] == 5.0 && table[5] == 0.0,
@@ -330,16 +333,16 @@ void test_stat()
 
     // Zero-row table: names still resolve, extraction is empty.
     FakeStats empty;
-    check(ocp::inspect::stat_column(empty, "r2", col),
+    std::vector<double> zcol;
+    check(ocp::inspect::stat_column(empty, "r2", zcol.data()),
           "zero rows: known column ok");
-    check(col.empty(), "zero rows: empty column");
-    check(!ocp::inspect::stat_column(empty, "nope", col),
+    check(!ocp::inspect::stat_column(empty, "nope", zcol.data()),
           "zero rows: unknown column rejected");
     rows = -1;
     cols = -1;
-    check(ocp::inspect::stat_table(empty, table, rows, cols),
+    check(ocp::inspect::stat_table(empty, table.data(), rows, cols),
           "zero-row table");
-    check(rows == 0 && cols == 3 && table.empty(), "zero-row table dims");
+    check(rows == 0 && cols == 3, "zero-row table dims");
 }
 
 void test_copy_semantics()

@@ -85,8 +85,8 @@ void warm_start(Session& s)
             x[static_cast<std::size_t>(k + 1) * D::nx + i] = xnext(i);
         }
     }
-    check(s.field_set("x", x, D::nx, N + 1), "field_set x");
-    check(s.field_set("u", u, D::nu, N), "field_set u");
+    check(s.field_set("x", x.data(), D::nx, N + 1), "field_set x");
+    check(s.field_set("u", u.data(), D::nu, N), "field_set u");
 }
 
 void test_info()
@@ -186,37 +186,52 @@ void test_fields()
     Session s("mex_api_test");
     std::vector<double> x;
     int rows = 0, cols = 0;
-    check(!s.field_set("x", x, D::nx, N + 1), "set x before init rejected");
+
+    // uninitialized session: stage fields unavailable, scalars readable
+    check(!s.field_extent("x", rows, cols), "extent x before init rejected");
+    check(!s.field_extent("u", rows, cols), "extent u before init rejected");
+    check(s.field_extent("N", rows, cols) && rows == 1 && cols == 1,
+          "extent N before init is 1 x 1");
+    check(!s.field_extent("nope", rows, cols), "unknown field rejected");
+    check(!s.field_set("x", x.data(), D::nx, N + 1),
+          "set x before init rejected");
+
     check(s.init(N), "init");
 
     // init sets x[0] from the fixed initial state, the rest stays zero
-    check(s.field_get("x", x, rows, cols), "get x");
+    check(s.field_extent("x", rows, cols), "extent x");
     check(rows == D::nx && cols == N + 1, "x extents");
+    x.assign(static_cast<std::size_t>(rows * cols), 0.0);
+    check(s.field_get("x", x.data()), "get x");
     check_close(x[0], 1.0, 1e-12, "x[0] q = initial_state");
     check_close(x[static_cast<std::size_t>(1)], 0.5, 1e-12,
                 "x[0] v = initial_state");
-    check(s.field_get("u", x, rows, cols) && rows == D::nu && cols == N,
+    check(s.field_extent("u", rows, cols) && rows == D::nu && cols == N,
           "u extents");
+    x.assign(static_cast<std::size_t>(rows * cols), 0.0);
+    check(s.field_get("u", x.data()), "get u");
 
     // wrong extents / read-only fields are rejected
-    check(!s.field_set("x", std::vector<double>(2 * N, 0.0), D::nx, N),
-          "x with wrong cols rejected");
-    check(!s.field_set("u", std::vector<double>(2 * N, 0.0), 2, N),
-          "u with wrong rows rejected");
-    check(!s.field_set("lambda_dyn", std::vector<double>(2 * N, 0.0), 2, N),
+    check(!s.field_set("x", x.data(), D::nx, N), "x with wrong cols rejected");
+    check(!s.field_set("u", x.data(), 2, N), "u with wrong rows rejected");
+    check(!s.field_set("lambda_dyn", x.data(), 2, N),
           "multiplier field is not writable");
 
     // warm-start read-back
     warm_start(s);
     const Problem p;
     const double a = terminal_eq_feasible_control(p);
-    check(s.field_get("u", x, rows, cols), "get u after warm start");
+    check(s.field_extent("u", rows, cols), "extent u after warm start");
+    x.assign(static_cast<std::size_t>(rows * cols), 0.0);
+    check(s.field_get("u", x.data()), "get u after warm start");
     for (int k = 0; k < N; ++k)
     {
         check_close(x[static_cast<std::size_t>(k)], a, 0.0,
                     "u read-back column " + std::to_string(k));
     }
-    check(s.field_get("x", x, rows, cols), "get x after warm start");
+    check(s.field_extent("x", rows, cols), "extent x after warm start");
+    x.assign(static_cast<std::size_t>(rows * cols), 0.0);
+    check(s.field_get("x", x.data()), "get x after warm start");
     // column N: q_N + v_N = 1 holds exactly by construction of the control
     check_close(x[static_cast<std::size_t>(N) * D::nx]
                     + x[static_cast<std::size_t>(N) * D::nx + 1],
@@ -227,7 +242,8 @@ void test_solve_and_readback()
 {
     Session s("mex_api_test");
     double dummy = 0.0;
-    check(s.solve(dummy) == Status::kAborted, "solve before init is rejected");
+    check(s.solve(dummy) == Status::kNotInitialized,
+          "solve before init is rejected");
     check(s.init(N), "init");
     warm_start(s);
 
@@ -242,7 +258,9 @@ void test_solve_and_readback()
     // trajectory read-back matches the Solution members
     std::vector<double> x;
     int rows = 0, cols = 0;
-    check(s.field_get("x", x, rows, cols), "get x after solve");
+    check(s.field_extent("x", rows, cols), "extent x after solve");
+    x.assign(static_cast<std::size_t>(rows * cols), 0.0);
+    check(s.field_get("x", x.data()), "get x after solve");
     for (int k = 0; k <= N; ++k)
     {
         for (int i = 0; i < D::nx; ++i)
@@ -256,24 +274,36 @@ void test_solve_and_readback()
 
     // statistics table: one row per recorded iteration, 10 named columns
     check(s.stat_iter() >= 1, "iterations recorded");
-    std::vector<double> rows_data;
-    int srows = 0, scols = 0;
-    check(s.stat_rows(rows_data, srows, scols), "stat_rows");
-    check(srows == s.stat_iter() && scols == 10, "stat rows/cols");
-
-    // named column access (inspect protocol)
     const std::vector<std::string> cnames = s.stat_column_names();
     check(cnames.size() == 10, "10 stat column names");
     check(cnames.front() == "res_stat" && cnames.back() == "funnel_width",
           "stat column names first/last");
-    std::vector<double> alpha;
-    check(s.stat_column("alpha", alpha) && alpha.size() == static_cast<std::size_t>(srows),
-          "stat_column alpha");
-    for (double a : alpha)
+    const int srows = s.stat_iter();
+    const int scols = static_cast<int>(cnames.size());
+    std::vector<double> table(static_cast<std::size_t>(srows * scols), 0.0);
+    s.stat_fill(table.data(), srows, scols);
+
+    // cross-check: the named column equals the matching table column
+    int c_alpha = -1;
+    for (int c = 0; c < scols; ++c)
     {
-        check(a >= 0.0 && a <= 1.0, "alpha in [0, 1]");
+        if (cnames[c] == "alpha")
+        {
+            c_alpha = c;
+        }
     }
-    check(!s.stat_column("res_statx", alpha), "stat_column unknown name");
+    check(c_alpha >= 0, "alpha column present");
+    std::vector<double> alpha(static_cast<std::size_t>(srows), 0.0);
+    check(s.stat_column("alpha", alpha.data()), "stat_column alpha");
+    for (int r = 0; r < srows; ++r)
+    {
+        check_close(alpha[r],
+                    table[static_cast<std::size_t>(r) * scols + c_alpha],
+                    0.0, "stat_column matches table row " + std::to_string(r));
+        check(alpha[r] >= 0.0 && alpha[r] <= 1.0, "alpha in [0, 1]");
+    }
+    check(!s.stat_column("res_statx", alpha.data()),
+          "stat_column unknown name");
 }
 
 }  // namespace

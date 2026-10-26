@@ -134,117 +134,170 @@ public:
     //  Solution fields (names = Solution member names, verbatim)
     // ---------------------------------------------------------------
 
-    /// Read a solution field into `out`, column-major with one column per
-    /// stage (column k = stage k). Extents on success:
+    /// Extent of a solution field in the MATLAB (column-major) layout:
     /// x / lambda_box_state: dim x (N+1); u and all other stage fields:
     /// dim x N; terminal lambdas: dim x 1; cost_value / status / N: 1 x 1.
-    /// `out` is empty with rows = 0 for zero-extent fields. False if the
-    /// field name is unknown.
-    bool field_get(std::string_view field, std::vector<double>& out,
-                   int& rows, int& cols) const
+    /// Returns false for unknown field names and, for all stage/terminal
+    /// fields, before init() (N < 1); the three scalars are always 1 x 1.
+    bool field_extent(std::string_view field, int& rows, int& cols) const
     {
+        const FieldId f = parse_field(field);
         const int N = sol_.N;
-        if (field == "x")
+        switch (f)
         {
-            return traj_get(sol_.x, D::nx, N + 1, out, rows, cols);
+        case FieldId::kCost:
+        case FieldId::kStatus:
+        case FieldId::kN:
+            rows = 1;
+            cols = 1;
+            return true;
+        case FieldId::kX:
+            rows = D::nx;
+            cols = N + 1;
+            break;
+        case FieldId::kU:
+            rows = D::nu;
+            cols = N;
+            break;
+        case FieldId::kLambdaDyn:
+            rows = D::nx;
+            cols = N;
+            break;
+        case FieldId::kLambdaIneqStage:
+            rows = D::ng;
+            cols = N;
+            break;
+        case FieldId::kLambdaEqStage:
+            rows = D::ne;
+            cols = N;
+            break;
+        case FieldId::kLambdaLinStage:
+            rows = D::nl;
+            cols = N;
+            break;
+        case FieldId::kLambdaIneqTerm:
+            rows = D::ng_t;
+            cols = 1;
+            break;
+        case FieldId::kLambdaEqTerm:
+            rows = D::ne_t;
+            cols = 1;
+            break;
+        case FieldId::kLambdaLinTerm:
+            rows = D::nl_t;
+            cols = 1;
+            break;
+        case FieldId::kLambdaBoxState:
+            rows = 2 * D::nbx;
+            cols = N + 1;
+            break;
+        case FieldId::kLambdaBoxControl:
+            rows = 2 * D::nbu;
+            cols = N;
+            break;
+        case FieldId::kUnknown:
+            return false;
         }
-        if (field == "u")
-        {
-            return traj_get(sol_.u, D::nu, N, out, rows, cols);
-        }
-        if (field == "lambda_dyn")
-        {
-            return traj_get(sol_.lambda_dyn, D::nx, N, out, rows, cols);
-        }
-        if (field == "lambda_ineq_stage")
-        {
-            return traj_get(sol_.lambda_ineq_stage, D::ng, N, out, rows, cols);
-        }
-        if (field == "lambda_eq_stage")
-        {
-            return traj_get(sol_.lambda_eq_stage, D::ne, N, out, rows, cols);
-        }
-        if (field == "lambda_lin_stage")
-        {
-            return traj_get(sol_.lambda_lin_stage, D::nl, N, out, rows, cols);
-        }
-        if (field == "lambda_ineq_term")
-        {
-            return term_get(sol_.lambda_ineq_term, D::ng_t, out, rows, cols);
-        }
-        if (field == "lambda_eq_term")
-        {
-            return term_get(sol_.lambda_eq_term, D::ne_t, out, rows, cols);
-        }
-        if (field == "lambda_lin_term")
-        {
-            return term_get(sol_.lambda_lin_term, D::nl_t, out, rows, cols);
-        }
-        if (field == "lambda_box_state")
-        {
-            return traj_get(sol_.lambda_box_state, 2 * D::nbx, N + 1,
-                            out, rows, cols);
-        }
-        if (field == "lambda_box_control")
-        {
-            return traj_get(sol_.lambda_box_control, 2 * D::nbu, N,
-                            out, rows, cols);
-        }
-        if (field == "cost_value")
-        {
-            return scalar_get(static_cast<double>(sol_.cost_value),
-                              out, rows, cols);
-        }
-        if (field == "status")
-        {
-            return scalar_get(static_cast<double>(sol_.status),
-                              out, rows, cols);
-        }
-        if (field == "N")
-        {
-            return scalar_get(static_cast<double>(N), out, rows, cols);
-        }
-        return false;
+        return N >= 1;
     }
 
-    /// Write a solution field (warm start). Only `x` (dim x (N+1)) and
-    /// `u` (dim x N) are writable; `in` must be column-major (column k =
+    /// Read a solution field into `out` (column-major, column k = stage k;
+    /// extents as in field_extent). `out` must hold rows*cols doubles;
+    /// zero-extent fields write nothing. False if the field name is unknown
+    /// or the session is not initialized (stage/terminal fields only).
+    bool field_get(std::string_view field, double* out) const
+    {
+        int rows = 0;
+        int cols = 0;
+        if (!field_extent(field, rows, cols))
+        {
+            return false;
+        }
+        switch (parse_field(field))
+        {
+        case FieldId::kX:
+            traj_fill(sol_.x, rows, cols, out);
+            return true;
+        case FieldId::kU:
+            traj_fill(sol_.u, rows, cols, out);
+            return true;
+        case FieldId::kLambdaDyn:
+            traj_fill(sol_.lambda_dyn, rows, cols, out);
+            return true;
+        case FieldId::kLambdaIneqStage:
+            traj_fill(sol_.lambda_ineq_stage, rows, cols, out);
+            return true;
+        case FieldId::kLambdaEqStage:
+            traj_fill(sol_.lambda_eq_stage, rows, cols, out);
+            return true;
+        case FieldId::kLambdaLinStage:
+            traj_fill(sol_.lambda_lin_stage, rows, cols, out);
+            return true;
+        case FieldId::kLambdaIneqTerm:
+            term_fill(sol_.lambda_ineq_term, rows, out);
+            return true;
+        case FieldId::kLambdaEqTerm:
+            term_fill(sol_.lambda_eq_term, rows, out);
+            return true;
+        case FieldId::kLambdaLinTerm:
+            term_fill(sol_.lambda_lin_term, rows, out);
+            return true;
+        case FieldId::kLambdaBoxState:
+            traj_fill(sol_.lambda_box_state, rows, cols, out);
+            return true;
+        case FieldId::kLambdaBoxControl:
+            traj_fill(sol_.lambda_box_control, rows, cols, out);
+            return true;
+        case FieldId::kCost:
+            out[0] = static_cast<double>(sol_.cost_value);
+            return true;
+        case FieldId::kStatus:
+            out[0] = static_cast<double>(sol_.status);
+            return true;
+        case FieldId::kN:
+            out[0] = static_cast<double>(sol_.N);
+            return true;
+        case FieldId::kUnknown:
+            return false;
+        default:  // keeps GCC's flow analysis happy on scoped enums
+            return false;
+        }
+    }
+
+    /// Write a solution field (warm start). Only `x` (nx x (N+1)) and
+    /// `u` (nu x N) are writable; `in` must be column-major (column k =
     /// stage k) with exactly rows*cols entries. False on unknown field,
     /// wrong extents, or a session that was not init()'d.
-    bool field_set(std::string_view field, const std::vector<double>& in,
-                   int rows, int cols)
+    bool field_set(std::string_view field, const double* in, int rows,
+                   int cols)
     {
         const int N = sol_.N;
         if (N < 1)
         {
             return false;
         }
-        if (field == "x" && rows == D::nx && cols == N + 1 &&
-            in.size() == static_cast<std::size_t>(rows * cols))
+        if (field == "x" && rows == D::nx && cols == N + 1)
         {
             // column-major: column k = stage k
             for (int k = 0; k <= N; ++k)
             {
                 for (int i = 0; i < D::nx; ++i)
                 {
-                    sol_.x[k](i) =
-                        static_cast<S>(in[static_cast<std::size_t>(k) * rows
-                                           + i]);
+                    sol_.x[k](i) = static_cast<S>(
+                        in[static_cast<std::size_t>(k) * rows + i]);
                 }
             }
             return true;
         }
-        if (field == "u" && rows == D::nu && cols == N &&
-            in.size() == static_cast<std::size_t>(rows * cols))
+        if (field == "u" && rows == D::nu && cols == N)
         {
             // column-major: column k = stage k
             for (int k = 0; k < N; ++k)
             {
                 for (int i = 0; i < D::nu; ++i)
                 {
-                    sol_.u[k](i) =
-                        static_cast<S>(in[static_cast<std::size_t>(k) * rows
-                                           + i]);
+                    sol_.u[k](i) = static_cast<S>(
+                        in[static_cast<std::size_t>(k) * rows + i]);
                 }
             }
             return true;
@@ -257,13 +310,13 @@ public:
     // ---------------------------------------------------------------
 
     /// Run a full solve on the current working solution. `cost` receives
-    /// sol_.cost_value (includes the soft-slack penalty). Returns kAborted
-    /// if init() was not called yet.
+    /// sol_.cost_value (includes the soft-slack penalty). Returns
+    /// kNotInitialized if init() was not called yet.
     Status solve(double& cost)
     {
         if (sol_.N < 1)
         {
-            return Status::kAborted;
+            return Status::kNotInitialized;
         }
         const Status st = solver_.solve(problem_, sol_);
         cost = sol_.cost_value;
@@ -282,14 +335,6 @@ public:
         return static_cast<int>(solver_.statistics().status);
     }
 
-    /// The per-iteration statistics table (rows x cols, row-major), one row
-    /// per recorded iteration. The columns are the solver's statistics row
-    /// struct's scalar leaves; see stat_column_names().
-    bool stat_rows(std::vector<double>& out, int& rows, int& cols) const
-    {
-        return inspect::stat_table(solver_.statistics(), out, rows, cols);
-    }
-
     /// Column names of the per-iteration statistics table (the row struct's
     /// leaf field names, in declaration order).
     std::vector<std::string> stat_column_names() const
@@ -297,9 +342,25 @@ public:
         return inspect::stat_column_names(solver_.statistics());
     }
 
+    /// Fill the per-iteration statistics table into `out`, row-major:
+    /// out[r * cols + c] is row r, column c (column order =
+    /// stat_column_names()). One row per recorded iteration. `rows` must be
+    /// stat_iter() and `cols` stat_column_names().size(); `out` must hold
+    /// rows*cols doubles.
+    void stat_fill(double* out, int rows, int cols) const
+    {
+        const auto& st = solver_.statistics();
+        for (int r = 0; r < rows; ++r)
+        {
+            inspect::fill_row(st.rows[r],
+                              out + static_cast<std::size_t>(r) * cols);
+        }
+    }
+
     /// One named statistics column: `out[i]` is iteration row i's value
-    /// (int/bool coerced to double). False if the column name is unknown.
-    bool stat_column(std::string_view name, std::vector<double>& out) const
+    /// (int/bool coerced to double). `out` must hold stat_iter() doubles.
+    /// False if the column name is unknown.
+    bool stat_column(std::string_view name, double* out) const
     {
         return inspect::stat_column(solver_.statistics(), name, out);
     }
@@ -335,50 +396,101 @@ public:
     const Solver& solver() const { return solver_; }
 
 private:
-    /// Flatten a stage-indexed sequence of fixed-size vectors into `out`,
-    /// column-major with column k = stage k (MATLAB layout); zero-extent
-    /// fields yield an empty vector.
-    template <class Seq>
-    static bool traj_get(const Seq& traj, int dim, int n_stages,
-                          std::vector<double>& out, int& rows, int& cols)
+    /// The solution fields by name (Solution member names, verbatim).
+    enum class FieldId
     {
-        rows = dim;
-        cols = n_stages;
-        out.assign(static_cast<std::size_t>(rows * cols), 0.0);
-        for (int k = 0; k < n_stages; ++k)
+        kUnknown, kX, kU, kLambdaDyn, kLambdaIneqStage, kLambdaEqStage,
+        kLambdaLinStage, kLambdaIneqTerm, kLambdaEqTerm, kLambdaLinTerm,
+        kLambdaBoxState, kLambdaBoxControl, kCost, kStatus, kN
+    };
+
+    static FieldId parse_field(std::string_view field)
+    {
+        if (field == "x")
         {
-            for (int i = 0; i < dim; ++i)
+            return FieldId::kX;
+        }
+        if (field == "u")
+        {
+            return FieldId::kU;
+        }
+        if (field == "lambda_dyn")
+        {
+            return FieldId::kLambdaDyn;
+        }
+        if (field == "lambda_ineq_stage")
+        {
+            return FieldId::kLambdaIneqStage;
+        }
+        if (field == "lambda_eq_stage")
+        {
+            return FieldId::kLambdaEqStage;
+        }
+        if (field == "lambda_lin_stage")
+        {
+            return FieldId::kLambdaLinStage;
+        }
+        if (field == "lambda_ineq_term")
+        {
+            return FieldId::kLambdaIneqTerm;
+        }
+        if (field == "lambda_eq_term")
+        {
+            return FieldId::kLambdaEqTerm;
+        }
+        if (field == "lambda_lin_term")
+        {
+            return FieldId::kLambdaLinTerm;
+        }
+        if (field == "lambda_box_state")
+        {
+            return FieldId::kLambdaBoxState;
+        }
+        if (field == "lambda_box_control")
+        {
+            return FieldId::kLambdaBoxControl;
+        }
+        if (field == "cost_value")
+        {
+            return FieldId::kCost;
+        }
+        if (field == "status")
+        {
+            return FieldId::kStatus;
+        }
+        if (field == "N")
+        {
+            return FieldId::kN;
+        }
+        return FieldId::kUnknown;
+    }
+
+    /// Write a stage-indexed sequence of fixed-size vectors into `out`,
+    /// column-major with column k = stage k (MATLAB layout); zero-extent
+    /// fields write nothing.
+    template <class Seq>
+    static void traj_fill(const Seq& traj, int rows, int cols, double* out)
+    {
+        for (int k = 0; k < cols; ++k)
+        {
+            for (int i = 0; i < rows; ++i)
             {
-                out[static_cast<std::size_t>(k) * dim + i] =
+                out[static_cast<std::size_t>(k) * rows + i] =
                     static_cast<double>(traj[k](i));
             }
         }
-        return true;
     }
 
-    /// Flatten a terminal (single-stage) vector.
-    template <class T>
-    static bool term_get(const T& v, int dim,
-                         std::vector<double>& out, int& rows, int& cols)
+    /// Write a terminal (single-stage) vector into `out`.
+    template <class Vec>
+    static void term_fill(const Vec& v, int rows, double* out)
     {
-        rows = dim;
-        cols = 1;
-        out.assign(static_cast<std::size_t>(dim), 0.0);
-        for (int i = 0; i < dim; ++i)
+        for (int i = 0; i < rows; ++i)
         {
             out[i] = static_cast<double>(v(i));
         }
-        return true;
     }
 
-    static bool scalar_get(double value, std::vector<double>& out,
-                           int& rows, int& cols)
-    {
-        rows = 1;
-        cols = 1;
-        out.assign(1, value);
-        return true;
-    }
 
     Problem problem_;
     Solver solver_;

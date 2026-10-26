@@ -14,13 +14,14 @@
 //
 // Conventions: column-major stage order (MATLAB column k+1 = stage k),
 // active box rows only (2*nbx, [lower; upper]), doubles throughout.
+// Argument types are checked strictly (real double / scalar / 2-D matrix,
+// never a generic numeric).
 
 #pragma once
 
 #include "mex.h"
 
 #include <cstddef>
-#include <cstring>
 #include <string>
 #include <vector>
 
@@ -84,47 +85,30 @@ std::string arg_str(int nrhs, const mxArray* prhs[], int i)
     return s;
 }
 
-/// Argument i as a scalar double.
+/// Argument i as a scalar double (strict: real double class, exactly one
+/// element — logicals, ints and singles are rejected).
 double arg_scalar(int nrhs, const mxArray* prhs[], int i)
 {
-    if (i >= nrhs || !mxIsNumeric(prhs[i]) ||
-        static_cast<std::size_t>(mxGetNumberOfElements(prhs[i])) != 1)
+    if (i >= nrhs || !mxIsDouble(prhs[i]) || mxIsComplex(prhs[i]) ||
+        mxGetNumberOfElements(prhs[i]) != 1)
     {
-        die("argument " + std::to_string(i + 1) + " must be a scalar");
+        die("argument " + std::to_string(i + 1) +
+            " must be a scalar double");
     }
-    return mxGetPr(prhs[i])[0];
+    return mxGetScalar(prhs[i]);
 }
 
-/// Argument i as a 2-D real numeric matrix; copied column-major (MATLAB
-/// and the session both use column k = stage k) into `out`.
-void arg_matrix(int nrhs, const mxArray* prhs[], int i,
-                std::vector<double>& out, int& rows, int& cols)
+/// Argument i as a 2-D real double matrix (strict: double class, not
+/// complex; its own storage is used in place, no copy).
+const mxArray* arg_matrix(int nrhs, const mxArray* prhs[], int i)
 {
-    if (i >= nrhs || !mxIsNumeric(prhs[i]) || mxIsComplex(prhs[i]) ||
+    if (i >= nrhs || !mxIsDouble(prhs[i]) || mxIsComplex(prhs[i]) ||
         mxGetNumberOfDimensions(prhs[i]) != 2)
     {
         die("argument " + std::to_string(i + 1) +
-            " must be a 2-D real numeric matrix");
+            " must be a 2-D real double matrix");
     }
-    rows = static_cast<int>(mxGetM(prhs[i]));
-    cols = static_cast<int>(mxGetN(prhs[i]));
-    out.assign(static_cast<std::size_t>(rows * cols), 0.0);
-    if (!out.empty())
-    {
-        std::memcpy(out.data(), mxGetPr(prhs[i]), out.size() * sizeof(double));
-    }
-}
-
-/// A flat column-major double buffer as a MATLAB matrix (zero-extent
-/// fields yield 0 x n / n x 0 arrays).
-mxArray* make_matrix(const std::vector<double>& data, int rows, int cols)
-{
-    auto* m = mxCreateDoubleMatrix(rows, cols, mxREAL);
-    if (rows > 0 && cols > 0)
-    {
-        std::memcpy(mxGetPr(m), data.data(), data.size() * sizeof(double));
-    }
-    return m;
+    return prhs[i];
 }
 
 // mxSetField / mxSetCell take ownership of the passed value array (no deep
@@ -158,6 +142,23 @@ void struct_set_str(mxArray* s, const char* name, const std::string& v)
         die(std::string("cannot add struct field '") + name + "'");
     }
     mxSetField(s, 0, name, mxCreateString(v.c_str()));
+}
+
+/// A solution field as a fresh mxArray filled directly by the session
+/// (zero intermediate buffer): extents come from the session, values are
+/// written into the mxArray's own storage.
+mxArray* field_matrix(const Session& session, const char* field)
+{
+    int rows = 0;
+    int cols = 0;
+    if (!session.field_extent(field, rows, cols))
+    {
+        die(std::string("field '") + field +
+            "' unavailable (unknown field or 'init' not called)");
+    }
+    auto* m = mxCreateDoubleMatrix(rows, cols, mxREAL);
+    session.field_get(field, mxGetPr(m));
+    return m;
 }
 
 mxArray* do_info(const Session& session)
@@ -194,60 +195,68 @@ mxArray* do_options(const Session& session)
     return c;
 }
 
-mxArray* do_get(const Session& session, const std::string& field)
-{
-    std::vector<double> data;
-    int rows = 0, cols = 0;
-    if (!session.field_get(field, data, rows, cols))
-    {
-        die("unknown solution field '" + field + "' (see 'info' and the MEX "
-            "README for the field list)");
-    }
-    return make_matrix(data, rows, cols);
-}
-
 mxArray* do_solution(const Session& session)
 {
     auto* s = mxCreateStructMatrix(1, 1, 0, nullptr);
     for (const char* f : kFields)
     {
-        std::vector<double> data;
-        int rows = 0, cols = 0;
-        session.field_get(f, data, rows, cols);
-        struct_set_mat(s, f, make_matrix(data, rows, cols));
+        struct_set_mat(s, f, field_matrix(session, f));
     }
     return s;
 }
 
+/// The per-iteration statistics as a struct: iter, status, names (cell of
+/// column names), rows (n_iter x n_col, one row per iteration, filled
+/// element by element into the column-major mxArray).
 mxArray* do_stats(const Session& session)
 {
-    std::vector<double> data;
-    int rows = 0, cols = 0;
-    session.stat_rows(data, rows, cols);
+    const int n_iter = session.stat_iter();
     const std::vector<std::string> names = session.stat_column_names();
+    const int n_cols = static_cast<int>(names.size());
+    std::vector<double> buf(static_cast<std::size_t>(n_iter) * n_cols, 0.0);
+    session.stat_fill(buf.data(), n_iter, n_cols);
+
     auto* c = mxCreateCellMatrix(1, static_cast<mwSize>(names.size()));
     for (std::size_t i = 0; i < names.size(); ++i)
     {
         mxSetCell(c, static_cast<mwIndex>(i),
                   mxCreateString(names[i].c_str()));
     }
+    auto* rows = mxCreateDoubleMatrix(static_cast<mwSize>(n_iter),
+                                      static_cast<mwSize>(n_cols), mxREAL);
+    if (n_iter > 0 && n_cols > 0)
+    {
+        double* pr = mxGetPr(rows);
+        for (int r = 0; r < n_iter; ++r)
+        {
+            for (int k = 0; k < n_cols; ++k)
+            {
+                pr[static_cast<std::size_t>(r) +
+                   static_cast<std::size_t>(n_iter) * k] =
+                    buf[static_cast<std::size_t>(r) * n_cols + k];
+            }
+        }
+    }
+
     auto* s = mxCreateStructMatrix(1, 1, 0, nullptr);
     struct_set_num(s, "iter", static_cast<double>(session.stat_iter()));
     struct_set_num(s, "status", static_cast<double>(session.stat_status()));
     struct_set_mat(s, "names", c);
-    struct_set_mat(s, "rows", make_matrix(data, rows, cols));
+    struct_set_mat(s, "rows", rows);
     return s;
 }
 
 mxArray* do_stat_col(const Session& session, const std::string& name)
 {
-    std::vector<double> data;
-    if (!session.stat_column(name, data))
+    const int n = session.stat_iter();
+    auto* m = mxCreateDoubleMatrix(n, 1, mxREAL);
+    if (!session.stat_column(name, mxGetPr(m)))
     {
+        mxDestroyArray(m);
         die("unknown statistics column: '" + name +
             "' (see 'stats' for the column names)");
     }
-    return make_matrix(data, static_cast<int>(data.size()), 1);
+    return m;
 }
 
 }  // namespace
@@ -335,10 +344,10 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     else if (cmd == "set")
     {
         const std::string field = arg_str(nrhs, prhs, 1);
-        std::vector<double> data;
-        int rows = 0, cols = 0;
-        arg_matrix(nrhs, prhs, 2, data, rows, cols);
-        if (!session.field_set(field, data, rows, cols))
+        const mxArray* m = arg_matrix(nrhs, prhs, 2);
+        const int rows = static_cast<int>(mxGetM(m));
+        const int cols = static_cast<int>(mxGetN(m));
+        if (!session.field_set(field, mxGetPr(m), rows, cols))
         {
             die("set '" + field + "' rejected (only 'x' and 'u' are "
                 "writable; extents must match the initialized session)");
@@ -357,7 +366,7 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
             die("get: assign the output, e.g.  x = ocp_mex_" +
                 std::string(ocp_mex::kName) + "('get', 'x')");
         }
-        plhs[0] = do_get(session, field);
+        plhs[0] = field_matrix(session, field.c_str());
     }
     else if (cmd == "solution")
     {

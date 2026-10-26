@@ -194,22 +194,21 @@ void test_stat_table()
           "stat_column_names order");
 
     // one named column, int coerced to double
-    std::vector<double> qp_iter;
-    check(inspect::stat_column(stat, "qp_iter", qp_iter)
-          && qp_iter.size() == 2,
+    std::vector<double> qp_iter(2, 0.0);
+    check(inspect::stat_column(stat, "qp_iter", qp_iter.data()),
           "stat_column qp_iter");
     check(qp_iter[0] == 4.0 && qp_iter[1] == 0.0,
           "stat_column qp_iter values");
-    check(!inspect::stat_column(stat, "res_statx", qp_iter),
+    check(!inspect::stat_column(stat, "res_statx", qp_iter.data()),
           "stat_column unknown name");
     AcadosStatistics empty;
-    check(!inspect::stat_column(empty, "res_statx", qp_iter),
+    check(!inspect::stat_column(empty, "res_statx", qp_iter.data()),
           "stat_column unknown name on zero-row table");
 
     // full table: row-major rows x cols
-    std::vector<double> tab;
+    std::vector<double> tab(2 * 10, 0.0);
     int n_rows = 0, n_cols = 0;
-    check(inspect::stat_table(stat, tab, n_rows, n_cols) &&
+    check(inspect::stat_table(stat, tab.data(), n_rows, n_cols) &&
           n_rows == 2 && n_cols == 10,
           "stat_table extents");
     check(tab[0] == 1.0 && tab[4] == 1.0,

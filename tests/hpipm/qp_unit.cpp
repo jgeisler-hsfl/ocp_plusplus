@@ -117,16 +117,16 @@ void check_stat_table()
     check(cols[0] == "alpha_prim_aff" && cols[20] == "npd_reg_hess",
           "stat_column_names order");
 
-    std::vector<double> c;
-    check(ocp::inspect::stat_column(st, "alpha_prim", c) && c.size() == 3 &&
+    std::vector<double> c(3, 0.0);
+    check(ocp::inspect::stat_column(st, "alpha_prim", c.data()) &&
           c[1] == 0.5,
           "stat_column alpha_prim");
-    check(!ocp::inspect::stat_column(st, "nope", c),
+    check(!ocp::inspect::stat_column(st, "nope", c.data()),
           "stat_column unknown name");
 
-    std::vector<double> tab;
+    std::vector<double> tab(3 * 21, 0.0);
     int n_rows = 0, n_cols = 0;
-    check(ocp::inspect::stat_table(st, tab, n_rows, n_cols) &&
+    check(ocp::inspect::stat_table(st, tab.data(), n_rows, n_cols) &&
           n_rows == 3 && n_cols == 21,
           "stat_table extents");
     check(tab[1 * 21 + 4] == 0.5 && tab[1 * 21 + 13] == 1.0,
