@@ -54,7 +54,7 @@ All calls take a char-string command as the first argument.
 | `init` | `N` | logical success (optional output); resizes the session, sets `x_0` from `initial_state` when the initial state is fixed |
 | `options` | – | cell of all option names (`options.*`, `qp.options.*`, `scaling.options.*`) |
 | `opt_get` | `name` | double (int/bool options coerced; bools are 1.0/0.0) |
-| `opt_set` | `name`, `value` **or** `optStruct` | logical success (optional output); the value is written to the live solver, effective on the next `solve`. Struct form: field nesting mirrors the dotted names (`opt.options.max_iter`, `opt.qp.options.warm_start`); unknown fields warn (`ocp_mex:UnknownOption`) and are skipped, so partial structs are fine |
+| `opt_set` | `name`, `value` **or** `optStruct` | logical success (optional output); the value is written to the live solver, effective on the next `solve`. Values are checked against the option's declared bounds; a violation raises `ocp_mex:OptionOutOfRange` (name/value form) or warns and skips (struct form). Struct form: field nesting mirrors the dotted names (`opt.options.max_iter`, `opt.qp.options.warm_start`); unknown fields warn (`ocp_mex:UnknownOption`) and are skipped, so partial structs are fine |
 | `opt_dump` | – | prints a flat `name = value` snapshot to the console |
 | `set` | `field`, `M` | logical success (optional output); warm start; only `x` (`nx x (N+1)`) and `u` (`nu x N`) are writable |
 | `get` | `field` | matrix; column `k+1` = stage `k` (see field list below) |

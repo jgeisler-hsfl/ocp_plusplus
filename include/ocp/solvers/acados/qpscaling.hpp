@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "../hpipm/qp.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -54,8 +55,12 @@ public:
         {
             vis("scale_objective", &Opts::scale_objective);
             vis("scale_constraints", &Opts::scale_constraints);
-            vis("ub_max_abs_eig", &Opts::ub_max_abs_eig);
-            vis("lb_norm_inf_grad_obj", &Opts::lb_norm_inf_grad_obj);
+            // ub_max_abs_eig must stay > 0: it feeds the objective scale
+            // factor, which the rescale divides by (1 / obj_factor).
+            vis("ub_max_abs_eig", &Opts::ub_max_abs_eig,
+                inspect::kMinPositive, std::nullopt);
+            vis("lb_norm_inf_grad_obj", &Opts::lb_norm_inf_grad_obj,
+                0.0, std::nullopt);
         }
     };
 

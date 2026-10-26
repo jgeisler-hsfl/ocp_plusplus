@@ -141,24 +141,39 @@ void test_options()
     check(!s.option_get("options.max_iter.x", v), "unknown dotted tail");
 
     // writes: int, bool and dotted names
-    check(s.option_set("options.max_iter", 40.0), "set max_iter");
+    check(s.option_set("options.max_iter", 40.0).ok(), "set max_iter");
     check(s.solver().options().max_iter == 40, "set wrote the int member");
     check(s.option_get("options.max_iter", v) && v == 40.0, "get after set");
-    check(s.option_set("options.compute_hess_dyn", 0.0), "set bool from 0.0");
+    check(s.option_set("options.compute_hess_dyn", 0.0).ok(), "set bool from 0.0");
     check(!s.solver().options().compute_hess_dyn, "bool member written");
-    check(s.option_set("options.glob.alpha_reduction", 0.9), "set dotted name");
+    check(s.option_set("options.glob.alpha_reduction", 0.9).ok(), "set dotted name");
     check_close(s.solver().options().glob.alpha_reduction, 0.9, 1e-15,
                 "dotted set wrote the glob member");
     // live round-trips on the component option surfaces
-    check(s.option_set("qp.options.warm_start", 3.0),
+    check(s.option_set("qp.options.warm_start", 3.0).ok(),
           "set qp.options.warm_start");
     check(s.option_get("qp.options.warm_start", v) && v == 3.0,
           "qp.options.warm_start round-trip");
-    check(s.option_set("scaling.options.scale_objective", 1.0),
+    check(s.option_set("scaling.options.scale_objective", 1.0).ok(),
           "set scaling.options.scale_objective");
     check(s.option_get("scaling.options.scale_objective", v) && v == 1.0,
           "scaling.options round-trip (bool coerced)");
     check(!s.option_set("nope", 1.0), "set unknown name");
+    check(s.option_set("nope", 1.0).status ==
+              ocp::inspect::SetResult::Status::kUnknownPath,
+          "unknown name -> kUnknownPath");
+
+    // bound enforcement: kOutOfRange is distinct from kUnknownPath and a
+    // rejected write leaves the option untouched
+    const auto oor = s.option_set("qp.options.warm_start", 7.0);
+    check(oor.status == ocp::inspect::SetResult::Status::kOutOfRange,
+          "out-of-range value -> kOutOfRange (not unknown)");
+    check(oor.lo == 0.0 && oor.hi == 3.0, "kOutOfRange carries the bounds");
+    check(s.option_get("qp.options.warm_start", v) && v == 3.0,
+          "rejected write leaves the option untouched");
+    check(s.option_set("options.max_iter", -1.0).status ==
+              ocp::inspect::SetResult::Status::kOutOfRange,
+          "negative max_iter rejected (lo = 0)");
 
     // flat "name = value" dump (what the MEX 'opt_dump' prints)
     const std::string dump = s.option_dump_str();
@@ -180,12 +195,12 @@ void test_live_options()
     // met (check_termination checks the cap first), so the solve stops at
     // kMaxIterations; raising the cap then converges from the warm iterate.
     double cost = 0.0;
-    check(s.option_set("options.max_iter", 1.0), "set max_iter = 1");
+    check(s.option_set("options.max_iter", 1.0).ok(), "set max_iter = 1");
     const Status st1 = s.solve(cost);
     check(st1 == Status::kMaxIterations, "max_iter = 1 stops at the cap");
     check(s.stat_iter() >= 1, "at least one iteration recorded");
 
-    check(s.option_set("options.max_iter", 20.0), "set max_iter = 20");
+    check(s.option_set("options.max_iter", 20.0).ok(), "set max_iter = 20");
     const Status st2 = s.solve(cost);
     check(st2 == Status::kSolved, "max_iter = 20 converges");
 }

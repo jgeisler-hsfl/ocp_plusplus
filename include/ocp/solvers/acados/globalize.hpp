@@ -23,6 +23,7 @@
 
 #include <Eigen/Dense>
 #include "../hpipm/qp.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -47,9 +48,15 @@ struct GlobOptions
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
     {
-        vis("alpha_min", &GlobOptions::alpha_min);
-        vis("alpha_reduction", &GlobOptions::alpha_reduction);
-        vis("eps_sufficient_descent", &GlobOptions::eps_sufficient_descent);
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks the fields that must stay strictly positive (both are
+        // the line-search loop's step-size floor / shrink factor).
+        vis("alpha_min", &GlobOptions::alpha_min, inspect::kMinPositive,
+            1.0);
+        vis("alpha_reduction", &GlobOptions::alpha_reduction,
+            inspect::kMinPositive, 1.0);
+        vis("eps_sufficient_descent", &GlobOptions::eps_sufficient_descent,
+            0.0, std::nullopt);
         vis("full_step_dual", &GlobOptions::full_step_dual);
         vis("use_soc", &GlobOptions::use_soc);
     }

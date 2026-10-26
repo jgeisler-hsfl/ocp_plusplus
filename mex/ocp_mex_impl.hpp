@@ -268,12 +268,14 @@ mxArray* do_stat_col(const Session& session, const std::string& name)
 /// Recursively walk a MATLAB options struct: field nesting mirrors the
 /// dotted option names (e.g. opt.options.max_iter,
 /// opt.qp.options.warm_start). Scalar leaves are written via
-/// session.option_set; unknown option names and non-scalar, non-struct
-/// values raise a MATLAB warning (skipped, no error) — partial structs
-/// are fine (docs/plans/MEX_IMPROVEMENTS_PLAN.md P5).
+/// session.option_set; unknown option names, out-of-range values and
+/// non-scalar, non-struct values raise a MATLAB warning (skipped, no
+/// error) — partial structs are fine
+/// (docs/plans/MEX_IMPROVEMENTS_PLAN.md P5).
 void set_option_struct(Session& session, const mxArray* s,
                        const std::string& prefix)
 {
+    using Status = ocp::inspect::SetResult::Status;
     const int nfields = mxGetNumberOfFields(s);
     for (int i = 0; i < nfields; ++i)
     {
@@ -283,12 +285,21 @@ void set_option_struct(Session& session, const mxArray* s,
         if (mxIsDouble(v) && !mxIsComplex(v) &&
             mxGetNumberOfElements(v) == 1)
         {
-            if (!session.option_set(path, mxGetScalar(v)))
+            const auto res = session.option_set(path, mxGetScalar(v));
+            if (res.status == Status::kUnknownPath)
             {
                 mexWarnMsgIdAndTxt("ocp_mex:UnknownOption",
                                    "unknown option: '%s' "
                                    "(skipped; see 'options')",
                                    path.c_str());
+            }
+            else if (!res.ok())
+            {
+                mexWarnMsgIdAndTxt("ocp_mex:OptionOutOfRange",
+                                   "option '%s' = %g is outside the "
+                                   "allowed range [%g, %g] (skipped)",
+                                   path.c_str(), mxGetScalar(v), res.lo,
+                                   res.hi);
             }
         }
         else if (mxIsStruct(v))
@@ -378,9 +389,20 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
         {
             const std::string name = arg_str(nrhs, prhs, 1);
             const double value = arg_scalar(nrhs, prhs, 2);
-            if (!session.option_set(name, value))
+            const auto res = session.option_set(name, value);
+            if (res.status ==
+                ocp::inspect::SetResult::Status::kUnknownPath)
             {
                 die("unknown option: '" + name + "' (see 'options')");
+            }
+            else if (!res.ok())
+            {
+                // Distinct id + message from the unknown-name error:
+                // the option exists, the value violates its bounds.
+                mexErrMsgIdAndTxt("ocp_mex:OptionOutOfRange",
+                                  "option '%s' = %g is outside the "
+                                  "allowed range [%g, %g]",
+                                  name.c_str(), value, res.lo, res.hi);
             }
         }
         else if (mxIsStruct(prhs[1]))

@@ -117,9 +117,12 @@ public:
     }
 
     /// Write an option by name (dotted names allowed, value coerced to the
-    /// leaf's type). Writes the live solver option directly, so it takes
-    /// effect on the next solve() without a separate push step.
-    bool option_set(std::string_view name, double value)
+    /// leaf's type), enforcing the field's declared [lo, hi] bounds.
+    /// Writes the live solver option directly, so it takes effect on the
+    /// next solve() without a separate push step. kOk on success,
+    /// kOutOfRange (bounds in lo / hi) when the value violates them,
+    /// kUnknownPath when the name is unknown or ends at a child.
+    inspect::SetResult option_set(std::string_view name, double value)
     {
         return inspect::set_double(solver_, name, value);
     }

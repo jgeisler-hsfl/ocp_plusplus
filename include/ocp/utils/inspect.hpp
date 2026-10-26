@@ -9,10 +9,15 @@
 //     template <class Visitor>
 //     static constexpr void inspect(Visitor&& vis);
 //
-// that calls `vis(name, &Self::member)` once per exposed field, where
+// that calls `vis(name, &Self::member[, lo, hi])` once per exposed
+// field, where
 //   - a scalar leaf is a double / int / bool member,
 //   - a child is a member that itself provides inspect() (a nested
-//     "registry" node reached via dotted names).
+//     "registry" node reached via dotted names),
+//   - `lo` / `hi` (optional) are the closed-interval bounds enforced by
+//     the named writers on that leaf: a number (int / double) or
+//     std::nullopt for an unbounded side; kMinPositive is the
+//     convenience bound for fields that must stay strictly positive.
 // A class that may or may not expose fields inherits InspectableLeaf
 // (no-op inspect) so the generic walkers below keep working.
 //
@@ -30,11 +35,22 @@
 // (e.g. a double literal into an int leaf truncates); the double
 // coerced get_double / set_double are the strict host (MATLAB) path.
 // Names must be unique at each level; the first match wins.
+//
+// The named writers enforce the declared bounds on the double-coerced
+// value before writing: NaN is always rejected, +/-inf is rejected
+// against a finite bound (int / bool leaves reject any non-finite
+// value), and an out-of-range value leaves the field untouched and
+// yields kOutOfRange. Bounds are a host-side guardrail: the read
+// path and direct member access bypass them by design.
 
 #pragma once
 
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -46,6 +62,11 @@ namespace ocp
 
 namespace inspect
 {
+
+/// Smallest positive normal double; the bounds constant for option
+/// leaves that must stay strictly positive (denominators, barrier
+/// floors).
+constexpr double kMinPositive = std::numeric_limits<double>::min();
 
 /// Base for a class that may or may not expose fields: the inherited
 /// no-op inspect() lets the generic walkers recurse into it and find
@@ -66,8 +87,8 @@ namespace detail
 /// definition point, so the probe must already be visible).
 struct probe
 {
-    template <class Name, class MemberPtr>
-    void operator()(Name, MemberPtr) const
+    template <class Name, class MemberPtr, class... Limits>
+    void operator()(Name, MemberPtr, Limits...) const
     {
     }
 };
@@ -112,15 +133,31 @@ inline std::pair<std::string_view, std::string_view> split_first(
     return {path.substr(0, pos), path.substr(pos + 1)};
 }
 
-/// Walk `path` on `obj` and call `fn(leaf)` exactly once if a scalar
-/// leaf is reached (first matching name per level); false if the path
-/// is unknown or ends at a child.
+/// Interpret one limit operand: a number becomes the bound,
+/// std::nullopt_t leaves that side unbounded.
+template <class L>
+constexpr std::optional<double> limit_of(L limit)
+{
+    if constexpr (std::is_same_v<std::decay_t<L>, std::nullopt_t>)
+    {
+        return std::nullopt;
+    }
+    else
+    {
+        return static_cast<double>(limit);
+    }
+}
+
+/// Walk `path` on `obj` and call `fn(leaf, lo, hi)` exactly once if a
+/// scalar leaf is reached (first matching name per level), passing the
+/// leaf's declared bounds (std::nullopt: that side unbounded). False if
+/// the path is unknown or ends at a child.
 template <class T, class Fn>
 bool walk(T& obj, std::string_view path, const Fn& fn)
 {
     const auto [head, rest] = split_first(path, '.');
     bool done = false;
-    obj.inspect([&](std::string_view name, auto mem_ptr) {
+    obj.inspect([&](std::string_view name, auto mem_ptr, auto... limits) {
         if (done || name != head)
         {
             return;
@@ -131,7 +168,14 @@ bool walk(T& obj, std::string_view path, const Fn& fn)
         {
             if constexpr (is_scalar<M>)
             {
-                fn(m);
+                std::array<std::optional<double>, 2> bounds{
+                    std::nullopt, std::nullopt};
+                if constexpr (sizeof...(limits) == 2)
+                {
+                    std::size_t i = 0;
+                    ((void)(bounds[i++] = limit_of(limits)), ...);
+                }
+                fn(m, bounds[0], bounds[1]);
                 done = true;
             }
         }
@@ -148,7 +192,7 @@ bool walk(T& obj, std::string_view path, const Fn& fn)
 template <class T>
 void collect_names(std::string_view prefix, std::vector<std::string>& out)
 {
-    T::inspect([&](std::string_view name, auto mem_ptr) {
+    T::inspect([&](std::string_view name, auto mem_ptr, auto...) {
         using M = std::decay_t<decltype(std::declval<T>().*mem_ptr)>;
         if constexpr (is_scalar<M>)
         {
@@ -167,7 +211,7 @@ void collect_names(std::string_view prefix, std::vector<std::string>& out)
 template <class T>
 void dump_rec(const T& obj, const std::string& prefix, std::FILE* f)
 {
-    obj.inspect([&](std::string_view name, auto mem_ptr) {
+    obj.inspect([&](std::string_view name, auto mem_ptr, auto...) {
         const auto& m = obj.*mem_ptr;
         using M = std::decay_t<decltype(m)>;
         if constexpr (is_scalar<M>)
@@ -200,7 +244,7 @@ void dump_rec(const T& obj, const std::string& prefix, std::FILE* f)
 template <class T>
 void dump_str_rec(const T& obj, const std::string& prefix, std::string& out)
 {
-    obj.inspect([&](std::string_view name, auto mem_ptr) {
+    obj.inspect([&](std::string_view name, auto mem_ptr, auto...) {
         const auto& m = obj.*mem_ptr;
         using M = std::decay_t<decltype(m)>;
         if constexpr (is_scalar<M>)
@@ -237,24 +281,63 @@ void dump_str_rec(const T& obj, const std::string& prefix, std::string& out)
 //  Field access (allocation-free)
 // ---------------------------------------------------------------
 
+/// Result of a named write (set_field / set_double).
+struct SetResult
+{
+    enum class Status { kOk, kUnknownPath, kOutOfRange };
+
+    Status status = Status::kUnknownPath;
+    // The leaf's declared bounds; only meaningful when
+    // status == kOutOfRange (+/- infinity: that side unbounded).
+    double lo = 0.0;
+    double hi = 0.0;
+
+    bool ok() const { return status == Status::kOk; }
+
+    /// Boolean context (legacy call sites): true on success.
+    explicit operator bool() const { return ok(); }
+};
+
 /// Read the scalar field at dotted `path` from `obj` into `out`
 /// (plain C++ assignment conversion). False if `path` is unknown or
 /// ends at a child. Never throws.
 template <class T, class Value>
 bool get_field(const T& obj, std::string_view path, Value& out)
 {
-    return detail::walk(obj, path,
-                        [&](const auto& leaf) { out = leaf; });
+    return detail::walk(obj, path, [&](const auto& leaf, std::optional<double>,
+                                       std::optional<double>) { out = leaf; });
 }
 
 /// Write `value` into the scalar field at dotted `path` of `obj`
-/// (plain C++ assignment conversion). False if `path` is unknown or
-/// ends at a child.
+/// (plain C++ assignment conversion), enforcing the field's declared
+/// [lo, hi] bounds on the double-coerced value: NaN is always rejected,
+/// +/-inf against a finite bound is rejected, and int / bool leaves
+/// reject any non-finite value (they cannot represent it). An out-of-
+/// range value leaves the field untouched. kOk on success,
+/// kOutOfRange (with the bounds in lo / hi) on a violation,
+/// kUnknownPath if `path` is unknown or ends at a child.
 template <class T, class Value>
-bool set_field(T& obj, std::string_view path, Value&& value)
+SetResult set_field(T& obj, std::string_view path, Value&& value)
 {
-    return detail::walk(obj, path,
-                        [&](auto& leaf) { leaf = std::forward<Value>(value); });
+    SetResult r;
+    detail::walk(obj, path, [&](auto& leaf, std::optional<double> lo,
+                                std::optional<double> hi) {
+        using M = std::decay_t<decltype(leaf)>;
+        const double v = static_cast<double>(value);
+        const bool finite_ok =
+            std::is_same_v<M, double> ? !std::isnan(v) : std::isfinite(v);
+        if (!finite_ok || (lo.has_value() && v < lo.value()) ||
+            (hi.has_value() && v > hi.value()))
+        {
+            r.status = SetResult::Status::kOutOfRange;
+            r.lo = lo.value_or(-std::numeric_limits<double>::infinity());
+            r.hi = hi.value_or(std::numeric_limits<double>::infinity());
+            return;
+        }
+        leaf = std::forward<Value>(value);
+        r.status = SetResult::Status::kOk;
+    });
+    return r;
 }
 
 /// Double-coerced read (double-only hosts, e.g. MATLAB): int leaves
@@ -263,7 +346,9 @@ bool set_field(T& obj, std::string_view path, Value&& value)
 template <class T>
 bool get_double(const T& obj, std::string_view path, double& out)
 {
-    return detail::walk(obj, path, [&](const auto& leaf) {
+    return detail::walk(obj, path,
+                        [&](const auto& leaf, std::optional<double>,
+                            std::optional<double>) {
         using M = std::decay_t<decltype(leaf)>;
         if constexpr (std::is_same_v<M, double>)
         {
@@ -280,27 +365,16 @@ bool get_double(const T& obj, std::string_view path, double& out)
     });
 }
 
-/// Double-coerced write: the value is cast to the leaf's type (int via
-/// static_cast, bool via `!= 0.0`). False if `path` is unknown or ends
-/// at a child.
+/// Double-coerced write (strict host / MATLAB path): the value is
+/// checked against the field's declared [lo, hi] bounds in the double
+/// domain *before* any int/bool cast (an out-of-range fractional value
+/// is rejected even if it would truncate into range), then converted
+/// like a plain C++ assignment (int via static_cast, bool via
+/// `!= 0.0`). Same SetResult semantics as set_field.
 template <class T>
-bool set_double(T& obj, std::string_view path, double value)
+SetResult set_double(T& obj, std::string_view path, double value)
 {
-    return detail::walk(obj, path, [&](auto& leaf) {
-        using M = std::decay_t<decltype(leaf)>;
-        if constexpr (std::is_same_v<M, double>)
-        {
-            leaf = value;
-        }
-        else if constexpr (std::is_same_v<M, int>)
-        {
-            leaf = static_cast<int>(value);
-        }
-        else
-        {
-            leaf = value != 0.0;
-        }
-    });
+    return set_field(obj, path, value);
 }
 
 // ---------------------------------------------------------------
@@ -359,7 +433,7 @@ template <class Row>
 void fill_row(const Row& row, double* out)
 {
     std::size_t j = 0;
-    row.inspect([&](std::string_view, auto mem_ptr) {
+    row.inspect([&](std::string_view, auto mem_ptr, auto...) {
         const auto& m = row.*mem_ptr;
         using M = std::decay_t<decltype(m)>;
         if constexpr (detail::is_scalar<M>)

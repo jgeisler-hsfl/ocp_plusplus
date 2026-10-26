@@ -621,7 +621,7 @@ void test_driver_warm_start()
         AcadosOptions wo;
         wo.print_level = 0;
         AcadosSolver<DI> w_solver(wo);
-        check(inspect::set_double(w_solver, "qp.options.warm_start", 2.0),
+        check(inspect::set_double(w_solver, "qp.options.warm_start", 2.0).ok(),
               "set qp.options.warm_start = 2");
         Solution<DI> w_sol = make_warm_start(prob, N, a);
 

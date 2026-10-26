@@ -42,6 +42,7 @@
 
 #include <Eigen/Dense>
 #include "qp.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -96,35 +97,47 @@ struct HpipmOptions
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
     {
-        vis("mu0", &HpipmOptions::mu0);
-        vis("alpha_min", &HpipmOptions::alpha_min);
-        vis("res_g_max", &HpipmOptions::res_g_max);
-        vis("res_b_max", &HpipmOptions::res_b_max);
-        vis("res_d_max", &HpipmOptions::res_d_max);
-        vis("res_m_max", &HpipmOptions::res_m_max);
-        vis("dual_gap_max", &HpipmOptions::dual_gap_max);
-        vis("reg_prim", &HpipmOptions::reg_prim);
-        vis("lam_min", &HpipmOptions::lam_min);
-        vis("t_min", &HpipmOptions::t_min);
-        vis("tau_min", &HpipmOptions::tau_min);
-        vis("lam0_min", &HpipmOptions::lam0_min);
-        vis("t0_min", &HpipmOptions::t0_min);
-        vis("m_safe", &HpipmOptions::m_safe);
-        vis("iter_max", &HpipmOptions::iter_max);
-        vis("stat_max", &HpipmOptions::stat_max);
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks fields that must stay strictly positive (barrier
+        // floors and divisors: mu_aff/mu, t_inv = 1/t, lam = mu0/t).
+        vis("mu0", &HpipmOptions::mu0, inspect::kMinPositive,
+            std::nullopt);
+        vis("alpha_min", &HpipmOptions::alpha_min, 0.0, std::nullopt);
+        vis("res_g_max", &HpipmOptions::res_g_max, 0.0, std::nullopt);
+        vis("res_b_max", &HpipmOptions::res_b_max, 0.0, std::nullopt);
+        vis("res_d_max", &HpipmOptions::res_d_max, 0.0, std::nullopt);
+        vis("res_m_max", &HpipmOptions::res_m_max, 0.0, std::nullopt);
+        vis("dual_gap_max", &HpipmOptions::dual_gap_max, 0.0,
+            std::nullopt);
+        vis("reg_prim", &HpipmOptions::reg_prim, 0.0, std::nullopt);
+        vis("lam_min", &HpipmOptions::lam_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("t_min", &HpipmOptions::t_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("tau_min", &HpipmOptions::tau_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("lam0_min", &HpipmOptions::lam0_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("t0_min", &HpipmOptions::t0_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("m_safe", &HpipmOptions::m_safe, 0.0, 1.0);
+        vis("iter_max", &HpipmOptions::iter_max, 0, std::nullopt);
+        vis("stat_max", &HpipmOptions::stat_max, 0, std::nullopt);
         vis("pred_corr", &HpipmOptions::pred_corr);
         vis("cond_pred_corr", &HpipmOptions::cond_pred_corr);
-        vis("itref_pred_max", &HpipmOptions::itref_pred_max);
-        vis("itref_corr_max", &HpipmOptions::itref_corr_max);
-        vis("warm_start", &HpipmOptions::warm_start);
+        vis("itref_pred_max", &HpipmOptions::itref_pred_max, 0,
+            std::nullopt);
+        vis("itref_corr_max", &HpipmOptions::itref_corr_max, 0,
+            std::nullopt);
+        vis("warm_start", &HpipmOptions::warm_start, 0, 3);
         vis("square_root_alg", &HpipmOptions::square_root_alg);
-        vis("lq_fact", &HpipmOptions::lq_fact);
-        vis("abs_form", &HpipmOptions::abs_form);
-        vis("split_step", &HpipmOptions::split_step);
-        vis("var_init_scheme", &HpipmOptions::var_init_scheme);
-        vis("t_lam_min", &HpipmOptions::t_lam_min);
-        vis("t0_init", &HpipmOptions::t0_init);
-        vis("update_fact_exit", &HpipmOptions::update_fact_exit);
+        vis("lq_fact", &HpipmOptions::lq_fact, 0, 2);
+        vis("abs_form", &HpipmOptions::abs_form, 0, 1);
+        vis("split_step", &HpipmOptions::split_step, 0, 1);
+        vis("var_init_scheme", &HpipmOptions::var_init_scheme, 0, 1);
+        vis("t_lam_min", &HpipmOptions::t_lam_min, 0, 2);
+        vis("t0_init", &HpipmOptions::t0_init, 0, 2);
+        vis("update_fact_exit", &HpipmOptions::update_fact_exit, 0, 1);
     }
 };
 

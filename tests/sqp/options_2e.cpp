@@ -107,11 +107,11 @@ void test_options_inspect()
     AcadosOptions o;
 
     // set via name (double coercion, host-style path) -> read the member
-    check(inspect::set_double(o, "max_iter", 40.0), "set max_iter");
+    check(inspect::set_double(o, "max_iter", 40.0).ok(), "set max_iter");
     check(o.max_iter == 40, "set wrote max_iter");
-    check(inspect::set_double(o, "tau_min", 2e-16), "set tau_min");
+    check(inspect::set_double(o, "tau_min", 2e-16).ok(), "set tau_min");
     check_close(o.tau_min, 2e-16, "set wrote tau_min");
-    check(inspect::set_double(o, "print_level", 1.0), "set int from double");
+    check(inspect::set_double(o, "print_level", 1.0).ok(), "set int from double");
     check(o.print_level == 1, "set wrote the int member");
 
     // set the member -> read via name
@@ -127,7 +127,7 @@ void test_options_inspect()
     // strict typed access
     int i = 0;
     check(inspect::get_field(o, "max_iter", i) && i == 40, "typed get int");
-    check(inspect::set_field(o, "tau_min", 3e-16), "typed set double");
+    check(inspect::set_field(o, "tau_min", 3e-16).ok(), "typed set double");
     check_close(o.tau_min, 3e-16, "typed set wrote tau_min");
 
     // unknown names
@@ -153,10 +153,10 @@ void test_options_inspect()
     // copy safety: sets through the copy (flat *and* dotted) must not
     // touch the original
     AcadosOptions o2 = o;
-    check(inspect::set_double(o2, "max_iter", 99.0), "copy: set flat name");
+    check(inspect::set_double(o2, "max_iter", 99.0).ok(), "copy: set flat name");
     check(o2.max_iter == 99 && o.max_iter == 40,
           "copy: flat set left the original untouched");
-    check(inspect::set_double(o2, "glob.alpha_min", 0.11),
+    check(inspect::set_double(o2, "glob.alpha_min", 0.11).ok(),
           "copy: set dotted name");
     check_close(o2.glob.alpha_min, 0.11, "copy: dotted set wrote the copy");
     check_close(o.glob.alpha_min, 0.05, "copy: dotted set left the original");

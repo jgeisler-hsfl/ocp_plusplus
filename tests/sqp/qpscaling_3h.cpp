@@ -264,10 +264,10 @@ void test_scaled_matches_unscaled()
     AcadosOptions on;
     on = off;
     AcadosSolver<DI> solver_on(on);
-    check(inspect::set_double(solver_on, "scaling.options.scale_objective", 1.0),
+    check(inspect::set_double(solver_on, "scaling.options.scale_objective", 1.0).ok(),
           "enable objective scaling via inspect");
     check(inspect::set_double(solver_on, "scaling.options.scale_constraints",
-                              1.0),
+                              1.0).ok(),
           "enable constraint scaling via inspect");
     Solution<DI> sol_on = make_warm_start(prob, N);
     const Status st_on = solver_on.solve(prob, sol_on);
@@ -309,7 +309,7 @@ void test_adaptive_tolerance_strategies()
         AcadosSolver<DI> solver(opts);
         // gives strategy 2 a real factor (set on the live solver)
         check(inspect::set_double(solver, "scaling.options.scale_constraints",
-                                  1.0),
+                                  1.0).ok(),
               "enable constraint scaling via inspect");
         Solution<DI> sol = make_warm_start(prob, N);
         const Status st = solver.solve(prob, sol);
@@ -332,10 +332,10 @@ void test_end_to_end_converges()
     opts.max_iter = 30;
     opts.nlp_qp_tol_strategy = 2;
     AcadosSolver<DI> solver(opts);
-    check(inspect::set_double(solver, "scaling.options.scale_objective", 1.0),
+    check(inspect::set_double(solver, "scaling.options.scale_objective", 1.0).ok(),
           "enable objective scaling via inspect");
     check(inspect::set_double(solver, "scaling.options.scale_constraints",
-                              1.0),
+                              1.0).ok(),
           "enable constraint scaling via inspect");
     Solution<DI> sol = make_warm_start(prob, N);
     const Status st = solver.solve(prob, sol);

@@ -41,6 +41,7 @@
 #include "globalize.hpp"
 #include "qpscaling.hpp"
 #include "regularize.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -768,37 +769,55 @@ struct AcadosOptions
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
     {
-        vis("max_iter", &AcadosOptions::max_iter);
-        vis("tol_stat", &AcadosOptions::tol_stat);
-        vis("tol_eq", &AcadosOptions::tol_eq);
-        vis("tol_ineq", &AcadosOptions::tol_ineq);
-        vis("tol_comp", &AcadosOptions::tol_comp);
-        vis("tol_min_step_norm", &AcadosOptions::tol_min_step_norm);
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks fields that must stay strictly positive.
+        // tol_unbounded is intentionally unbounded (legitimately
+        // negative: the unbounded-detection threshold).
+        vis("max_iter", &AcadosOptions::max_iter, 0, std::nullopt);
+        vis("tol_stat", &AcadosOptions::tol_stat, 0.0, std::nullopt);
+        vis("tol_eq", &AcadosOptions::tol_eq, 0.0, std::nullopt);
+        vis("tol_ineq", &AcadosOptions::tol_ineq, 0.0, std::nullopt);
+        vis("tol_comp", &AcadosOptions::tol_comp, 0.0, std::nullopt);
+        vis("tol_min_step_norm", &AcadosOptions::tol_min_step_norm,
+            0.0, std::nullopt);
         vis("tol_unbounded", &AcadosOptions::tol_unbounded);
         vis("compute_hess_dyn", &AcadosOptions::compute_hess_dyn);
         vis("compute_hess_constr", &AcadosOptions::compute_hess_constr);
-        vis("levenberg_marquardt", &AcadosOptions::levenberg_marquardt);
+        vis("levenberg_marquardt", &AcadosOptions::levenberg_marquardt,
+            0.0, std::nullopt);
         vis("with_adaptive_lm", &AcadosOptions::with_adaptive_lm);
-        vis("adaptive_lm_mu0", &AcadosOptions::adaptive_lm_mu0);
-        vis("adaptive_lm_lam", &AcadosOptions::adaptive_lm_lam);
-        vis("adaptive_lm_mu_min", &AcadosOptions::adaptive_lm_mu_min);
-        vis("adaptive_lm_obj_scalar", &AcadosOptions::adaptive_lm_obj_scalar);
-        vis("print_level", &AcadosOptions::print_level);
+        vis("adaptive_lm_mu0", &AcadosOptions::adaptive_lm_mu0,
+            0.0, std::nullopt);
+        // adaptive_lm_lam divides the LM multiplier (mu / lam); it must
+        // stay strictly positive.
+        vis("adaptive_lm_lam", &AcadosOptions::adaptive_lm_lam,
+            inspect::kMinPositive, std::nullopt);
+        vis("adaptive_lm_mu_min", &AcadosOptions::adaptive_lm_mu_min,
+            0.0, std::nullopt);
+        vis("adaptive_lm_obj_scalar",
+            &AcadosOptions::adaptive_lm_obj_scalar, 0.0, std::nullopt);
+        vis("print_level", &AcadosOptions::print_level, 0, 1);
         vis("warm_start_first_qp", &AcadosOptions::warm_start_first_qp);
         vis("eval_residual_at_max_iter",
             &AcadosOptions::eval_residual_at_max_iter);
-        vis("timeout_heuristic", &AcadosOptions::timeout_heuristic);
-        vis("timeout_max_time", &AcadosOptions::timeout_max_time);
-        vis("nlp_qp_tol_strategy", &AcadosOptions::nlp_qp_tol_strategy);
+        vis("timeout_heuristic", &AcadosOptions::timeout_heuristic, 0, 3);
+        vis("timeout_max_time", &AcadosOptions::timeout_max_time,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_strategy", &AcadosOptions::nlp_qp_tol_strategy,
+            0, 2);
         vis("nlp_qp_tol_reduction_factor",
-            &AcadosOptions::nlp_qp_tol_reduction_factor);
+            &AcadosOptions::nlp_qp_tol_reduction_factor, 0.0, std::nullopt);
         vis("nlp_qp_tol_safety_factor",
-            &AcadosOptions::nlp_qp_tol_safety_factor);
-        vis("nlp_qp_tol_min_stat", &AcadosOptions::nlp_qp_tol_min_stat);
-        vis("nlp_qp_tol_min_eq", &AcadosOptions::nlp_qp_tol_min_eq);
-        vis("nlp_qp_tol_min_ineq", &AcadosOptions::nlp_qp_tol_min_ineq);
-        vis("nlp_qp_tol_min_comp", &AcadosOptions::nlp_qp_tol_min_comp);
-        vis("tau_min", &AcadosOptions::tau_min);
+            &AcadosOptions::nlp_qp_tol_safety_factor, 0.0, 1.0);
+        vis("nlp_qp_tol_min_stat", &AcadosOptions::nlp_qp_tol_min_stat,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_eq", &AcadosOptions::nlp_qp_tol_min_eq,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_ineq", &AcadosOptions::nlp_qp_tol_min_ineq,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_comp", &AcadosOptions::nlp_qp_tol_min_comp,
+            0.0, std::nullopt);
+        vis("tau_min", &AcadosOptions::tau_min, 0.0, std::nullopt);
         vis("glob", &AcadosOptions::glob);
     }
 };

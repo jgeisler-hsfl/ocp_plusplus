@@ -2,11 +2,14 @@
 // typed / double-coerced field access, dotted delegation through a
 // nested inspect(), unknown names, leaf-only path semantics, name
 // discovery (leaf_names), dump format, the has_inspect trait,
-// InspectableLeaf no-op children, private member exposure, and the
-// statistics column / table helpers.
+// InspectableLeaf no-op children, private member exposure, the closed-
+// interval bounds enforced by the named writers, and the statistics
+// column / table helpers.
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -132,6 +135,30 @@ struct FakeStats
     std::vector<Row> rows;
 };
 
+// Bounds fixture: one leaf per bound shape (closed interval, open
+// sides, epsilon floor, int domain), plus an unbounded leaf, an
+// int leaf, and a child to exercise unknown / child-path results.
+struct Bounded
+{
+    double pos = 1.0;      // [kMinPositive, +inf)
+    double unit = 0.5;     // [0, 1]
+    double open_hi = 3.0;  // (-inf, 3]
+    int pick = 1;          // [0, 3]
+    bool flag = false;     // unbounded
+    Inner child;           // unbounded child (2-arg rows)
+    template <class V>
+    static constexpr void inspect(V&& vis)
+    {
+        vis("pos", &Bounded::pos, ocp::inspect::kMinPositive,
+            std::nullopt);
+        vis("unit", &Bounded::unit, 0.0, 1.0);
+        vis("open_hi", &Bounded::open_hi, std::nullopt, 3.0);
+        vis("pick", &Bounded::pick, 0, 3);
+        vis("flag", &Bounded::flag);
+        vis("child", &Bounded::child);
+    }
+};
+
 void test_scalar_access()
 {
     Outer o;
@@ -142,11 +169,11 @@ void test_scalar_access()
     check(get_field(o, "y", yi) && yi == 2, "get int leaf");
     check(get_field(o, "z", zb) && zb == false, "get bool leaf");
 
-    check(set_field(o, "x", 3.5), "set double leaf");
+    check(set_field(o, "x", 3.5).ok(), "set double leaf");
     check(o.x == 3.5, "set wrote the member");
-    check(set_field(o, "y", 11), "set int leaf");
+    check(set_field(o, "y", 11).ok(), "set int leaf");
     check(o.y == 11, "int written");
-    check(set_field(o, "z", true), "set bool leaf");
+    check(set_field(o, "z", true).ok(), "set bool leaf");
     check(o.z, "bool written");
 }
 
@@ -157,9 +184,9 @@ void test_dotted_delegation()
     int bi = 0;
     check(get_field(o, "inner.a", da) && da == 1.5, "get dotted double");
     check(get_field(o, "inner.b", bi) && bi == 7, "get dotted int");
-    check(set_field(o, "inner.a", 4.25), "set dotted double");
+    check(set_field(o, "inner.a", 4.25).ok(), "set dotted double");
     check(o.inner.a == 4.25, "dotted set wrote the member");
-    check(set_field(o, "inner.c", false), "set dotted bool");
+    check(set_field(o, "inner.c", false).ok(), "set dotted bool");
     check(!o.inner.c, "dotted bool written");
 }
 
@@ -170,7 +197,7 @@ void test_conversions()
     Outer o;
     double xd = 0.0;
     check(get_field(o, "y", xd) && xd == 2.0, "int leaf read as double");
-    check(set_field(o, "y", 4.9), "double into int leaf compiles");
+    check(set_field(o, "y", 4.9).ok(), "double into int leaf compiles");
     check(o.y == 4, "implicit conversion truncates");
 }
 
@@ -184,15 +211,15 @@ void test_double_coercion()
     check(get_double(o, "inner.c", d) && d == 1.0, "dotted bool as 1.0");
     check(get_double(o, "inner.b", d) && d == 7.0, "dotted int as double");
 
-    check(set_double(o, "y", 9.0), "set int from double");
+    check(set_double(o, "y", 9.0).ok(), "set int from double");
     check(o.y == 9, "int entry written");
-    check(set_double(o, "z", 1.0), "set bool true from double");
+    check(set_double(o, "z", 1.0).ok(), "set bool true from double");
     check(o.z, "bool set true");
-    check(set_double(o, "z", 0.0), "set bool false from double");
+    check(set_double(o, "z", 0.0).ok(), "set bool false from double");
     check(!o.z, "bool set false");
-    check(set_double(o, "y", 12.9), "fractional double into int");
+    check(set_double(o, "y", 12.9).ok(), "fractional double into int");
     check(o.y == 12, "truncated to int");
-    check(set_double(o, "inner.a", 2.5), "dotted set");
+    check(set_double(o, "inner.a", 2.5).ok(), "dotted set");
     check(o.inner.a == 2.5, "dotted double written");
 }
 
@@ -289,7 +316,7 @@ void test_inspectable_leaf()
 void test_private_member()
 {
     PrivateBox box;
-    check(set_double(box, "secret", 7.0), "set private member by name");
+    check(set_double(box, "secret", 7.0).ok(), "set private member by name");
     check(box.peek() == 7, "private member written");
     double d = 0.0;
     check(get_double(box, "secret", d) && d == 7.0,
@@ -355,6 +382,110 @@ void test_copy_semantics()
           "copy carries values through inspect");
 }
 
+void test_limits()
+{
+    using ocp::inspect::SetResult;
+    const double nan_v = std::numeric_limits<double>::quiet_NaN();
+    const double inf_v = std::numeric_limits<double>::infinity();
+    const double eps = ocp::inspect::kMinPositive;
+
+    Bounded b;
+
+    // In-range writes succeed (bound values included: closed interval).
+    check(set_double(b, "pos", 2.0).ok(), "in range pos");
+    check(set_double(b, "unit", 0.0).ok(), "at lower bound");
+    check(set_double(b, "unit", 1.0).ok(), "at upper bound");
+    check(set_double(b, "open_hi", 3.0).ok(), "at open-side bound");
+    check(set_double(b, "open_hi", -1e300).ok(), "unbounded lower side");
+    check(set_double(b, "pick", 3.0).ok(), "int at upper bound");
+    check(b.pick == 3, "int value written");
+    check(set_double(b, "child.a", 0.25).ok(), "child leaf still reachable");
+
+    // Strict-positivity floor.
+    check(set_double(b, "pos", eps).ok(), "epsilon floor accepted");
+    const auto r_zero = set_double(b, "pos", 0.0);
+    check(r_zero.status == SetResult::Status::kOutOfRange,
+          "zero rejected for positive floor");
+    check(b.pos == eps, "rejected write leaves the member untouched");
+
+    // Out of range: distinct status, bounds reported, member untouched.
+    const auto r_low = set_double(b, "unit", -1e-3);
+    check(r_low.status == SetResult::Status::kOutOfRange, "below lo");
+    check(r_low.lo == 0.0 && r_low.hi == 1.0, "bounds in the result");
+    check(!r_low.ok() && !r_low, "ok() and bool context agree");
+    const auto r_high = set_double(b, "unit", 1.5);
+    check(r_high.status == SetResult::Status::kOutOfRange, "above hi");
+    check(set_double(b, "open_hi", 3.5).status ==
+              SetResult::Status::kOutOfRange,
+          "above hi on the bounded side");
+    const auto r_inf_hi = set_double(b, "open_hi", inf_v);
+    check(r_inf_hi.status == SetResult::Status::kOutOfRange,
+          "+inf against finite bound rejected");
+    check(r_inf_hi.lo == -inf_v, "unbounded side reported as -inf");
+    check(set_double(b, "pick", 4.0).status ==
+              SetResult::Status::kOutOfRange,
+          "int above upper bound");
+    check(b.pick == 3, "out-of-range int leaves the member untouched");
+
+    // Pre-cast check: fractional values are judged in the double domain
+    // before truncation.
+    check(set_double(b, "pick", 3.9).status ==
+              SetResult::Status::kOutOfRange,
+          "3.9 rejected although it would truncate into range");
+    check(set_double(b, "pick", 2.9).ok(), "2.9 accepted, then truncated");
+    check(b.pick == 2, "truncated to 2");
+    check(set_double(b, "pick", 0.99).ok(), "0.99 accepted, then truncated");
+    check(b.pick == 0, "truncated to 0");
+
+    // NaN is always rejected; inf only where its side is unbounded.
+    check(set_double(b, "unit", nan_v).status ==
+              SetResult::Status::kOutOfRange,
+          "NaN rejected on a bounded leaf");
+    check(set_double(b, "pos", nan_v).status ==
+              SetResult::Status::kOutOfRange,
+          "NaN rejected on an unbounded-below leaf");
+    check(set_double(b, "pos", inf_v).status == SetResult::Status::kOk,
+          "+inf accepted where the upper side is unbounded");
+    check(set_double(b, "pos", -inf_v).status ==
+              SetResult::Status::kOutOfRange,
+          "-inf below the epsilon floor");
+
+    // Non-finite values cannot reach int / bool leaves.
+    check(set_double(b, "pick", inf_v).status ==
+              SetResult::Status::kOutOfRange,
+          "+inf rejected for an int leaf");
+    check(set_double(b, "pick", nan_v).status ==
+              SetResult::Status::kOutOfRange,
+          "NaN rejected for an int leaf");
+    check(set_double(b, "flag", 2.5).ok(), "bool leaf accepts any finite value");
+    check(b.flag, "bool coerced true");
+    check(set_double(b, "flag", inf_v).status ==
+              SetResult::Status::kOutOfRange,
+          "non-finite rejected for a bool leaf");
+
+    // Unknown names and child ends keep their status (distinct from
+    // kOutOfRange).
+    check(set_double(b, "nope", 1.0).status ==
+              SetResult::Status::kUnknownPath,
+          "unknown name");
+    check(set_double(b, "child", 1.0).status ==
+              SetResult::Status::kUnknownPath,
+          "child end");
+    check(set_double(b, "child.nope", 1.0).status ==
+              SetResult::Status::kUnknownPath,
+          "unknown child name");
+
+    // The typed writer enforces the same bounds.
+    check(set_field(b, "unit", 0.5).ok(), "set_field in range");
+    check(set_field(b, "unit", -1.0).status ==
+              SetResult::Status::kOutOfRange,
+          "set_field out of range");
+    check(set_field(b, "pick", 7).status == SetResult::Status::kOutOfRange,
+          "set_field int out of range");
+    check(set_field(b, "pick", 2).status == SetResult::Status::kOk,
+          "set_field int in range");
+}
+
 }  // namespace
 
 int main()
@@ -371,6 +502,7 @@ int main()
     test_private_member();
     test_stat();
     test_copy_semantics();
+    test_limits();
 
     if (failures == 0)
     {

@@ -61,11 +61,11 @@ void check_options_inspect()
     ocp::HpipmOptions o;
 
     // set via name -> read the member
-    check(ocp::inspect::set_double(o, "iter_max", 40.0), "set iter_max");
+    check(ocp::inspect::set_double(o, "iter_max", 40.0).ok(), "set iter_max");
     check(o.iter_max == 40, "set wrote iter_max");
-    check(ocp::inspect::set_double(o, "mu0", 0.5), "set mu0");
+    check(ocp::inspect::set_double(o, "mu0", 0.5).ok(), "set mu0");
     check(o.mu0 == 0.5, "set wrote mu0");
-    check(ocp::inspect::set_double(o, "pred_corr", 0.0), "set pred_corr");
+    check(ocp::inspect::set_double(o, "pred_corr", 0.0).ok(), "set pred_corr");
     check(!o.pred_corr, "set wrote pred_corr");
 
     // set the member -> read via name
@@ -95,7 +95,7 @@ void check_options_inspect()
 
     // copy safety: sets through the copy never touch the original
     ocp::HpipmOptions o2 = o;
-    check(ocp::inspect::set_double(o2, "iter_max", 12.0), "copy: set");
+    check(ocp::inspect::set_double(o2, "iter_max", 12.0).ok(), "copy: set");
     check(o2.iter_max == 12 && o.iter_max == 40,
           "copy: set left the original untouched");
     check(ocp::inspect::get_double(o2, "mu0", d) && d == 0.5, "copy: get");

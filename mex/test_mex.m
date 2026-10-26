@@ -80,6 +80,28 @@ assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.05), ...
 assert(ocp_mex_double_integrator('opt_set', 'qp.options.warm_start', 0), ...
        'restore qp warm_start');
 
+% out-of-range opt_set: distinct error id (not UnknownOption), value
+% not written
+try
+    ocp_mex_double_integrator('opt_set', 'qp.options.warm_start', 7);
+    error('out-of-range opt_set must fail');
+catch ME
+    assert(strcmp(ME.identifier, 'ocp_mex:OptionOutOfRange'), ...
+           'expected OptionOutOfRange error id');
+end
+assert(ocp_mex_double_integrator('opt_get', 'qp.options.warm_start') == 0, ...
+       'rejected write must leave the option untouched');
+
+% out-of-range struct field: warning (skipped), symmetric with unknown
+lastwarn('clear');
+opt_bad.qp.options.warm_start = 9;
+ocp_mex_double_integrator('opt_set', opt_bad);
+[~, wid] = lastwarn;
+assert(strcmp(wid, 'ocp_mex:OptionOutOfRange'), ...
+       'out-of-range struct field must warn');
+assert(ocp_mex_double_integrator('opt_get', 'qp.options.warm_start') == 0, ...
+       'out-of-range struct field must be skipped');
+
 % ---- warm start (forward simulation of the constant-acceleration input
 %      that satisfies the terminal equality q_N + v_N = 1 exactly) ------
 den = Ts^2 * N * (N - 1) / 2 + Ts * N;
