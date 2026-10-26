@@ -51,15 +51,16 @@ All calls take a char-string command as the first argument.
 | --- | --- | --- |
 | `info` | – | struct: `nx nu ng ne nl ng_t ne_t nl_t nbx nbu nbx_t fixed_initial_state N solver` |
 | `init` | `N` | logical success; resizes the session, sets `x_0` from `initial_state` when the initial state is fixed |
-| `options` | – | cell of all option names (incl. dotted `glob.*`) |
+| `options` | – | cell of all option names (`options.*`, `qp.options.*`, `scaling.options.*`) |
 | `opt_get` | `name` | double (int/bool options coerced; bools are 1.0/0.0) |
-| `opt_set` | `name`, `value` | logical; dotted names work; the value is pushed into the live solver |
+| `opt_set` | `name`, `value` | logical; the value is written to the live solver, effective on the next `solve` |
 | `opt_dump` | – | prints a flat `name = value` snapshot to the console |
 | `set` | `field`, `M` | logical; warm start; only `x` (`nx x (N+1)`) and `u` (`nu x N`) are writable |
 | `get` | `field` | matrix; column `k+1` = stage `k` (see field list below) |
 | `solution` | – | struct with every `get` field |
 | `solve` | – | `[status, cost]`; `status` = int value of `ocp::Status` (1 = `kSolved`) |
-| `stats` | – | struct: `iter`, `status`, `rows` (`iter x 10` per-iteration table) |
+| `stats` | – | struct: `iter`, `status`, `names` (cell of column names), `rows` (`iter x ncol` per-iteration table) |
+| `stat_col` | `name` | named statistics column as an `(n x 1)` vector; error on unknown name |
 
 `get`/`solution` fields (names = `Solution` member names, verbatim):
 `x`, `u`, `lambda_dyn`, `lambda_ineq_stage`, `lambda_eq_stage`,
@@ -80,8 +81,8 @@ N = 10;
 assert(ocp_mex_double_integrator('init', N));
 
 % live option tweaking (dotted names reach the globalization group)
-assert(ocp_mex_double_integrator('opt_set', 'max_iter', 40));
-assert(ocp_mex_double_integrator('opt_set', 'glob.alpha_min', 0.1));
+assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 40));
+assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.1));
 
 % warm start (optional; the solver also runs from the zero init)
 u0 = 0.01 * ones(1, N);
@@ -91,6 +92,11 @@ assert(ocp_mex_double_integrator('set', 'u', u0));
 assert(status == 1);      % kSolved
 x = ocp_mex_double_integrator('get', 'x');
 assert(size(x, 1) == 2 && size(x, 2) == N + 1);
+
+% per-iteration statistics: named columns
+st = ocp_mex_double_integrator('stats');
+alpha = ocp_mex_double_integrator('stat_col', 'alpha');
+assert(size(alpha, 1) == st.iter);
 ```
 
 The full smoke test (`test_mex.m`) runs the whole table end to end:
