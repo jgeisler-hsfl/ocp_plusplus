@@ -1,11 +1,9 @@
 # AGENTS.md
 ## Core Operational Protocol (Mandatory)
-1. **Ask for clarification** when requirements are ambiguous and
-  different interpretations would lead to materially different implementations.
-2. **Task Breakdown:** Before executing any significant chunk of work, break the task down into distinct execution blocks.
-3. **Intermediate Summaries:** After finishing a major sub-task, output a short summary note (e.g., `Checkpoint: [Sub-task] completed. Result: [Key outcome]`). This preserves state and ensures easy recovery if interrupted.
-4. **Loop Prevention:** If you repeat reasoning without progress or hit a dead end, STOP immediately. State `[STUCK]`, briefly explain the roadblock, and adjust your strategy before continuing.
-5. **When updating tasks or resuming after a long/interrupted/compacted session:** Always call `todoread` first to verify the current state of the panel.
+1. **Ask for clarification** when requirements are ambiguous or simply incomplete.
+2. **Task Breakdown:** Before executing any significant chunk of work, make a plan to break the task down into distinct execution blocks. Write the plan to a file in `docs/plans`.
+3. Once you **Start working on planned tasks** (a) link the plan in AGENTS.md, item "4. Plan currently being executed"; (b) update the planning file with completed sub-tasks and important findings if any; (c) once finished and given permission to commit, move the plan to `docs/plans/finished` and unlink the plan in AGENTS.md. This shall help to track the work and stay focussed even when interrupted or crashed.
+4. Plan currently being executed: no plan
 
 ## Project
 C++17 framework for numerical optimal control problems (OCP). Strict separation of:
@@ -132,6 +130,7 @@ No other dependencies. C++17 required.
 - Do not copy secrets into documentation, source code, or configuration.
 
 ## Commits
+- Always ask for permission to commit, never (even ask to) push.
 - Imperative subject, ≤ 72 chars, optional scope prefix matching the layout:
   `problem:`, `solver:`, `example:`, `docs:`, `build:`.
 - Body (when present) explains *why*, not *what*; reference the TODO item when
@@ -141,4 +140,4 @@ No other dependencies. C++17 required.
 ## Notes for changes
 - Keep `problem.hpp` self-contained (Eigen only) and keep the "Interface
   contract" comment block at the top in sync with the stubs.
-- `docs/plans/TODO.md` is the project roadmap; do not edit it without asking.
+- `docs/plans/TODO.md` is the project roadmap; update when an item is finished and before being committed.
