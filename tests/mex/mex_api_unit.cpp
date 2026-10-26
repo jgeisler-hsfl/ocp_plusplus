@@ -159,6 +159,15 @@ void test_options()
     check(s.option_get("scaling.options.scale_objective", v) && v == 1.0,
           "scaling.options round-trip (bool coerced)");
     check(!s.option_set("nope", 1.0), "set unknown name");
+
+    // flat "name = value" dump (what the MEX 'opt_dump' prints)
+    const std::string dump = s.option_dump_str();
+    check(dump.find("options.max_iter = 40") != std::string::npos,
+          "dump contains max_iter");
+    check(dump.find("qp.options.warm_start = 3") != std::string::npos,
+          "dump contains int qp option");
+    check(dump.find("scaling.options.scale_objective = true") != std::string::npos,
+          "dump contains bool scaling option");
 }
 
 void test_live_options()

@@ -194,6 +194,43 @@ void dump_rec(const T& obj, const std::string& prefix, std::FILE* f)
     });
 }
 
+
+/// String counterpart of dump_rec: appends "name = value" lines to
+/// `out` (identical formatting to dump()).
+template <class T>
+void dump_str_rec(const T& obj, const std::string& prefix, std::string& out)
+{
+    obj.inspect([&](std::string_view name, auto mem_ptr) {
+        const auto& m = obj.*mem_ptr;
+        using M = std::decay_t<decltype(m)>;
+        if constexpr (is_scalar<M>)
+        {
+            char buf[64];
+            if constexpr (std::is_same_v<M, double>)
+            {
+                std::snprintf(buf, sizeof(buf), "%.12e", m);
+            }
+            else if constexpr (std::is_same_v<M, int>)
+            {
+                std::snprintf(buf, sizeof(buf), "%d", m);
+            }
+            else
+            {
+                std::snprintf(buf, sizeof(buf), "%s", m ? "true" : "false");
+            }
+            out += prefix;
+            out += name;
+            out += " = ";
+            out += buf;
+            out += '\n';
+        }
+        else if constexpr (has_inspect<M>::value)
+        {
+            dump_str_rec(m, prefix + std::string(name) + ".", out);
+        }
+    });
+}
+
 }  // namespace detail
 
 // ---------------------------------------------------------------
@@ -287,6 +324,17 @@ template <class T>
 void dump(const T& obj, std::FILE* f = stdout)
 {
     detail::dump_rec(obj, "", f);
+}
+
+/// All "name = value" lines of `obj` as a single string (same format
+/// as dump()). Host/discovery use only (host-side allocation; the MEX
+/// glue prints it via mexPrintf).
+template <class T>
+std::string dump_string(const T& obj)
+{
+    std::string out;
+    detail::dump_str_rec(obj, "", out);
+    return out;
 }
 
 // ---------------------------------------------------------------

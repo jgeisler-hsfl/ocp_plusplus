@@ -130,6 +130,13 @@ public:
         inspect::dump(solver_, f);
     }
 
+    /// Flat "name = value" snapshot of all options as a single string
+    /// (same format as option_dump; the MEX glue prints it via mexPrintf).
+    std::string option_dump_str() const
+    {
+        return inspect::dump_string(solver_);
+    }
+
     // ---------------------------------------------------------------
     //  Solution fields (names = Solution member names, verbatim)
     // ---------------------------------------------------------------

@@ -7,15 +7,16 @@
 // (ocp_mex::{Problem,kHorizon,Solver,kName}) comes from the config header
 // selected by OCP_MEX_CONFIG (see ocp_mex_main.cpp).
 //
-// Command surface (v1, plan section 4):
+// Command surface (v2, docs/plans/MEX_IMPROVEMENTS_PLAN.md):
 //   info | init N | options | opt_get name | opt_set name value |
-//   opt_dump | set field M | get field | solution | solve | stats |
-//   stat_col name
+//   opt_set struct | opt_dump | set field M | get field | solution |
+//   solve | stats | stat_col name
 //
 // Conventions: column-major stage order (MATLAB column k+1 = stage k),
 // active box rows only (2*nbx, [lower; upper]), doubles throughout.
 // Argument types are checked strictly (real double / scalar / 2-D matrix,
-// never a generic numeric).
+// never a generic numeric); success flags are optional outputs (produced
+// only when requested).
 
 #pragma once
 
@@ -50,19 +51,22 @@ std::string usage()
            "qp.options.*, scaling.options.*)\n"
            "  'opt_get' name              option value (double; int/bool "
            "coerced)\n"
-           "  'opt_set' name value        set an option (live: effective on "
-           "the next solve)\n"
+           "  'opt_set' name value        set one option (live: effective "
+           "on the next solve)\n"
+           "  'opt_set' struct            set options by struct (field "
+           "nesting mirrors the dotted names; unknown fields warn)\n"
            "  'opt_dump'                  print a flat option snapshot\n"
            "  'set' field M               warm start: 'x' (nx x (N+1)) or "
            "'u' (nu x N)\n"
            "  'get' field                 solution field (x, u, lambda_*, "
            "cost_value, status, N)\n"
            "  'solution'                  struct with all solution fields\n"
-           "  'solve'                     [status, cost]; status = int "
-           "ocp::Status\n"
-           "  'stats'                     struct: iter, status, names (cell "
-           "of column names), rows (iter x ncol)\n"
-           "  'stat_col' name             one named statistics column (n x 1)\n";
+           "  'solve'                     [status, cost] or cost; status = "
+           "int ocp::Status\n"
+           "  'stats'                     [stats, status]; stats is a "
+           "1 x iter struct array, one field per column name\n"
+           "  'stat_col' name             one named statistics column "
+           "(n x 1)\n";
 }
 
 /// MATLAB-side error (the MEX error channel; the C++ core stays
@@ -111,8 +115,11 @@ const mxArray* arg_matrix(int nrhs, const mxArray* prhs[], int i)
     return prhs[i];
 }
 
-// mxSetField / mxSetCell take ownership of the passed value array (no deep
-// copy); the caller must not destroy it afterwards.
+// Ownership: mxSetField / mxSetCell do not deep-copy — they transfer
+// ownership of the passed array to the owning struct/cell, and the
+// top-level array returned from mexFunction is owned by MATLAB. Every
+// call builds its own fresh arrays, so nothing crosses call boundaries;
+// the only process-persistent state is the C++ Session (P9).
 
 void struct_set_num(mxArray* s, const char* name, double v)
 {
@@ -205,44 +212,43 @@ mxArray* do_solution(const Session& session)
     return s;
 }
 
-/// The per-iteration statistics as a struct: iter, status, names (cell of
-/// column names), rows (n_iter x n_col, one row per iteration, filled
-/// element by element into the column-major mxArray).
+/// The per-iteration statistics as a 1 x iter struct array: one field per
+/// column name, element r = iteration r (docs/plans/
+/// MEX_IMPROVEMENTS_PLAN.md P3). Filled element by element, so the layout
+/// is correct by construction (the old row-major table memcpy'd into a
+/// column-major mxArray was transposed).
 mxArray* do_stats(const Session& session)
 {
     const int n_iter = session.stat_iter();
     const std::vector<std::string> names = session.stat_column_names();
     const int n_cols = static_cast<int>(names.size());
-    std::vector<double> buf(static_cast<std::size_t>(n_iter) * n_cols, 0.0);
-    session.stat_fill(buf.data(), n_iter, n_cols);
-
-    auto* c = mxCreateCellMatrix(1, static_cast<mwSize>(names.size()));
-    for (std::size_t i = 0; i < names.size(); ++i)
+    std::vector<const char*> cnames;
+    cnames.reserve(names.size());
+    for (const std::string& n : names)
     {
-        mxSetCell(c, static_cast<mwIndex>(i),
-                  mxCreateString(names[i].c_str()));
+        cnames.push_back(n.c_str());
     }
-    auto* rows = mxCreateDoubleMatrix(static_cast<mwSize>(n_iter),
-                                      static_cast<mwSize>(n_cols), mxREAL);
-    if (n_iter > 0 && n_cols > 0)
+    auto* s =
+        mxCreateStructMatrix(1, static_cast<mwSize>(n_iter), n_cols,
+                              cnames.data());
+    if (n_iter > 0)
     {
-        double* pr = mxGetPr(rows);
+        // row-major table: buf[r * n_cols + c] = row r, column c
+        std::vector<double> buf(static_cast<std::size_t>(n_iter) * n_cols,
+                                0.0);
+        session.stat_fill(buf.data(), n_iter, n_cols);
         for (int r = 0; r < n_iter; ++r)
         {
-            for (int k = 0; k < n_cols; ++k)
+            for (int c = 0; c < n_cols; ++c)
             {
-                pr[static_cast<std::size_t>(r) +
-                   static_cast<std::size_t>(n_iter) * k] =
-                    buf[static_cast<std::size_t>(r) * n_cols + k];
+                const double v =
+                    buf[static_cast<std::size_t>(r) * n_cols + c];
+                mxSetFieldByNumber(s, static_cast<mwIndex>(r),
+                                   static_cast<int>(c),
+                                   mxCreateDoubleScalar(v));
             }
         }
     }
-
-    auto* s = mxCreateStructMatrix(1, 1, 0, nullptr);
-    struct_set_num(s, "iter", static_cast<double>(session.stat_iter()));
-    struct_set_num(s, "status", static_cast<double>(session.stat_status()));
-    struct_set_mat(s, "names", c);
-    struct_set_mat(s, "rows", rows);
     return s;
 }
 
@@ -257,6 +263,46 @@ mxArray* do_stat_col(const Session& session, const std::string& name)
             "' (see 'stats' for the column names)");
     }
     return m;
+}
+
+/// Recursively walk a MATLAB options struct: field nesting mirrors the
+/// dotted option names (e.g. opt.options.max_iter,
+/// opt.qp.options.warm_start). Scalar leaves are written via
+/// session.option_set; unknown option names and non-scalar, non-struct
+/// values raise a MATLAB warning (skipped, no error) — partial structs
+/// are fine (docs/plans/MEX_IMPROVEMENTS_PLAN.md P5).
+void set_option_struct(Session& session, const mxArray* s,
+                       const std::string& prefix)
+{
+    const int nfields = mxGetNumberOfFields(s);
+    for (int i = 0; i < nfields; ++i)
+    {
+        const char* fname = mxGetFieldNameByNumber(s, i);
+        const mxArray* v = mxGetFieldByNumber(s, 0, i);
+        const std::string path = prefix + fname;
+        if (mxIsDouble(v) && !mxIsComplex(v) &&
+            mxGetNumberOfElements(v) == 1)
+        {
+            if (!session.option_set(path, mxGetScalar(v)))
+            {
+                mexWarnMsgIdAndTxt("ocp_mex:UnknownOption",
+                                   "unknown option: '%s' "
+                                   "(skipped; see 'options')",
+                                   path.c_str());
+            }
+        }
+        else if (mxIsStruct(v))
+        {
+            set_option_struct(session, v, path + ".");
+        }
+        else
+        {
+            mexWarnMsgIdAndTxt("ocp_mex:BadOptionValue",
+                               "option '%s' must be a scalar double or a "
+                               "struct (skipped)",
+                               path.c_str());
+        }
+    }
 }
 
 }  // namespace
@@ -292,12 +338,11 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
         {
             die("init: N must be a positive integer");
         }
-        if (nlhs < 1)
+        const bool ok = session.init(N);
+        if (nlhs >= 1)
         {
-            die("init: assign the output, e.g.  ok = ocp_mex_" +
-                std::string(ocp_mex::kName) + "('init', N)");
+            plhs[0] = mxCreateLogicalScalar(ok);
         }
-        plhs[0] = mxCreateLogicalScalar(session.init(N));
     }
     else if (cmd == "options")
     {
@@ -325,21 +370,36 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     }
     else if (cmd == "opt_set")
     {
-        const std::string name = arg_str(nrhs, prhs, 1);
-        const double value = arg_scalar(nrhs, prhs, 2);
-        if (!session.option_set(name, value))
+        if (nrhs < 2)
         {
-            die("unknown option: '" + name + "' (see 'options')");
+            die("opt_set: usage: 'opt_set' name value or 'opt_set' struct");
         }
-        if (nlhs < 1)
+        if (mxIsChar(prhs[1]))
         {
-            die("opt_set: assign the output (logical success flag)");
+            const std::string name = arg_str(nrhs, prhs, 1);
+            const double value = arg_scalar(nrhs, prhs, 2);
+            if (!session.option_set(name, value))
+            {
+                die("unknown option: '" + name + "' (see 'options')");
+            }
         }
-        plhs[0] = mxCreateLogicalScalar(1);
+        else if (mxIsStruct(prhs[1]))
+        {
+            set_option_struct(session, prhs[1], "");
+        }
+        else
+        {
+            die("opt_set: argument 2 must be an option name (char) or an "
+                "options struct");
+        }
+        if (nlhs >= 1)
+        {
+            plhs[0] = mxCreateLogicalScalar(1);
+        }
     }
     else if (cmd == "opt_dump")
     {
-        session.option_dump(stdout);
+        mexPrintf("%s", session.option_dump_str().c_str());
     }
     else if (cmd == "set")
     {
@@ -352,11 +412,10 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
             die("set '" + field + "' rejected (only 'x' and 'u' are "
                 "writable; extents must match the initialized session)");
         }
-        if (nlhs < 1)
+        if (nlhs >= 1)
         {
-            die("set: assign the output (logical success flag)");
+            plhs[0] = mxCreateLogicalScalar(1);
         }
-        plhs[0] = mxCreateLogicalScalar(1);
     }
     else if (cmd == "get")
     {
@@ -379,24 +438,29 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     }
     else if (cmd == "solve")
     {
-        if (nlhs < 2)
-        {
-            die("solve: use  [status, cost] = ocp_mex_" +
-                std::string(ocp_mex::kName) + "('solve')");
-        }
         double cost = 0.0;
         const ocp::Status st = session.solve(cost);
-        plhs[0] = mxCreateDoubleScalar(static_cast<double>(st));
-        plhs[1] = mxCreateDoubleScalar(cost);
+        if (nlhs >= 2)
+        {
+            plhs[0] = mxCreateDoubleScalar(static_cast<double>(st));
+            plhs[1] = mxCreateDoubleScalar(cost);
+        }
+        else if (nlhs == 1)
+        {
+            plhs[0] = mxCreateDoubleScalar(cost);
+        }
     }
     else if (cmd == "stats")
     {
-        if (nlhs < 1)
+        if (nlhs >= 1)
         {
-            die("stats: assign the output, e.g.  st = ocp_mex_" +
-                std::string(ocp_mex::kName) + "('stats')");
+            plhs[0] = do_stats(session);
         }
-        plhs[0] = do_stats(session);
+        if (nlhs >= 2)
+        {
+            plhs[1] = mxCreateDoubleScalar(
+                static_cast<double>(session.stat_status()));
+        }
     }
     else if (cmd == "stat_col")
     {

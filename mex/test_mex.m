@@ -58,6 +58,28 @@ assert(ocp_mex_double_integrator('opt_get', 'scaling.options.scale_objective') =
 assert(ocp_mex_double_integrator('opt_set', 'scaling.options.scale_objective', 0), ...
        'restore scaling.options.scale_objective');
 
+% struct opt_set: field nesting mirrors the dotted names; unknown fields
+% raise a warning and are skipped (partial structs are fine)
+lastwarn('clear');
+opt.options.max_iter = 40;
+opt.options.glob.alpha_min = 0.1;
+opt.qp.options.warm_start = 2;
+opt.bogus = 5;
+ocp_mex_double_integrator('opt_set', opt);
+assert(ocp_mex_double_integrator('opt_get', 'options.max_iter') == 40, ...
+       'struct opt_set not live');
+assert(abs(ocp_mex_double_integrator('opt_get', 'options.glob.alpha_min') - 0.1) < 1e-15, ...
+       'struct opt_set glob not live');
+assert(ocp_mex_double_integrator('opt_get', 'qp.options.warm_start') == 2, ...
+       'struct opt_set qp not live');
+[~, wid] = lastwarn;
+assert(strcmp(wid, 'ocp_mex:UnknownOption'), 'unknown struct field must warn');
+assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 20), 'restore max_iter');
+assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.05), ...
+       'restore glob.alpha_min');
+assert(ocp_mex_double_integrator('opt_set', 'qp.options.warm_start', 0), ...
+       'restore qp warm_start');
+
 % ---- warm start (forward simulation of the constant-acceleration input
 %      that satisfies the terminal equality q_N + v_N = 1 exactly) ------
 den = Ts^2 * N * (N - 1) / 2 + Ts * N;
@@ -87,6 +109,8 @@ end
 [status, cost] = ocp_mex_double_integrator('solve');
 assert(status == 1, 'expected kSolved (status == 1), got %d', status);
 assert(isfinite(cost), 'cost must be finite');
+cost2 = ocp_mex_double_integrator('solve');   % single-output form
+assert(abs(cost2 - cost) < 1e-12, 'single-output solve cost mismatch');
 
 % ---- read back --------------------------------------------------------
 x = ocp_mex_double_integrator('get', 'x');
@@ -106,16 +130,18 @@ assert(numel(ocp_mex_double_integrator('get', 'lambda_eq_stage')) == 0, ...
        'zero-extent field must be empty');
 
 % ---- stats -------------------------------------------------------------
-st = ocp_mex_double_integrator('stats');
-assert(st.iter >= 1, 'at least one iteration recorded');
-assert(iscell(st.names) && numel(st.names) == 10, 'stats.names must have 10 entries');
-assert(strcmp(st.names{1}, 'res_stat') && strcmp(st.names{end}, 'funnel_width'), ...
-       'stats.names order');
-assert(size(st.rows, 2) == 10, 'stats rows must have 10 columns');
-assert(st.status == status, 'stats status mismatch');
+[st, ststatus] = ocp_mex_double_integrator('stats');
+assert(ststatus == status, 'stats status mismatch');
+assert(isstruct(st) && numel(st) >= 1, 'stats must be a non-empty struct array');
+assert(isfield(st, 'res_stat') && isfield(st, 'funnel_width'), ...
+       'stats must carry one field per column name');
+assert(numel(st) >= 1, 'at least one iteration recorded');
 alpha = ocp_mex_double_integrator('stat_col', 'alpha');
-assert(size(alpha, 1) == st.iter && size(alpha, 2) == 1, 'stat_col extent');
+assert(size(alpha, 1) == numel(st) && size(alpha, 2) == 1, 'stat_col extent');
+assert(isequal(st.alpha, alpha), 'struct-array column must match stat_col');
 assert(all(alpha >= 0 & alpha <= 1), 'alpha in [0, 1]');
+st2 = ocp_mex_double_integrator('stats');   % single-output form
+assert(isequal(st2.res_stat, st.res_stat), 'single-output stats mismatch');
 try
     ocp_mex_double_integrator('stat_col', 'bogus');
     error('unknown stat_col must fail');
@@ -131,5 +157,9 @@ try
     error('unknown command must fail');
 catch
 end
+
+% optional outputs: bare calls without assignment must also work
+ocp_mex_double_integrator('init', N);
+ocp_mex_double_integrator('set', 'u', u);
 
 disp('All MEX smoke checks passed.');
