@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <string>
 
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/acados/qpscaling.hpp"
 
@@ -255,8 +256,6 @@ void test_scaled_matches_unscaled()
 
     AcadosOptions off;
     off.max_iter = 20;
-    off.scale_qp_objective = false;
-    off.scale_qp_constraints = false;
     AcadosSolver<DI> solver_off(off);
     Solution<DI> sol_off = make_warm_start(prob, N);
     const Status st_off = solver_off.solve(prob, sol_off);
@@ -264,9 +263,12 @@ void test_scaled_matches_unscaled()
 
     AcadosOptions on;
     on = off;
-    on.scale_qp_objective = true;
-    on.scale_qp_constraints = true;
     AcadosSolver<DI> solver_on(on);
+    check(inspect::set_double(solver_on, "scaling.options.scale_objective", 1.0).ok(),
+          "enable objective scaling via inspect");
+    check(inspect::set_double(solver_on, "scaling.options.scale_constraints",
+                              1.0).ok(),
+          "enable constraint scaling via inspect");
     Solution<DI> sol_on = make_warm_start(prob, N);
     const Status st_on = solver_on.solve(prob, sol_on);
     check(st_on == Status::kSolved, "scaled: kSolved");
@@ -304,8 +306,11 @@ void test_adaptive_tolerance_strategies()
         AcadosOptions opts;
         opts.max_iter = 30;
         opts.nlp_qp_tol_strategy = strategy;
-        opts.scale_qp_constraints = true;  // gives strategy 2 a real factor
         AcadosSolver<DI> solver(opts);
+        // gives strategy 2 a real factor (set on the live solver)
+        check(inspect::set_double(solver, "scaling.options.scale_constraints",
+                                  1.0).ok(),
+              "enable constraint scaling via inspect");
         Solution<DI> sol = make_warm_start(prob, N);
         const Status st = solver.solve(prob, sol);
         check(st == Status::kSolved,
@@ -322,13 +327,16 @@ void test_end_to_end_converges()
     DI prob;
     const int N = 10;
 
-    // All features on at once.
+    // All features on at once (scaling set on the live solver).
     AcadosOptions opts;
     opts.max_iter = 30;
-    opts.scale_qp_objective = true;
-    opts.scale_qp_constraints = true;
     opts.nlp_qp_tol_strategy = 2;
     AcadosSolver<DI> solver(opts);
+    check(inspect::set_double(solver, "scaling.options.scale_objective", 1.0).ok(),
+          "enable objective scaling via inspect");
+    check(inspect::set_double(solver, "scaling.options.scale_constraints",
+                              1.0).ok(),
+          "enable constraint scaling via inspect");
     Solution<DI> sol = make_warm_start(prob, N);
     const Status st = solver.solve(prob, sol);
     check(st == Status::kSolved, "all-scaling end-to-end: kSolved");

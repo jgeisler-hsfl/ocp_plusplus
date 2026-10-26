@@ -90,15 +90,17 @@ The remaining options, all with sensible defaults (grouped by topic):
 - **Adaptive Levenberg-Marquardt:** `with_adaptive_lm`, `adaptive_lm_mu0`,
   `adaptive_lm_lam`, `adaptive_lm_mu_min`, `adaptive_lm_obj_scalar`
   (chapter 5).
-- **QP warm starting:** `qp_warm_start` (0 = cold, 2 = primal+dual, 3 =
-  hot), `warm_start_first_qp` (chapter 7).
+- **QP warm starting:** the QP solver's `warm_start` option (0 = cold,
+  2 = primal+dual, 3 = hot; by name: `qp.options.warm_start`) and
+  `warm_start_first_qp` (chapter 7).
 - **QP condensing:** `qp_cond_N` — number of condensation blocks used by
   `kPartialCondensed` (0 = fall back to `kStaged`); see chapter 7.5.
 - **Timeout:** `timeout_max_time` (wall-clock budget in seconds, 0 = none),
   `timeout_heuristic` (per-iteration duration estimate: 0 = ZERO, 1 =
   LAST, 2 = MAX, 3 = AVERAGE).
-- **QP scaling:** `scale_qp_objective`, `scale_qp_constraints` and their
-  bounds `ub_max_abs_eig`, `lb_norm_inf_grad_obj` (chapter 7).
+- **QP scaling:** the live scaling options on the solver's QP scaler,
+  `scaling.options.scale_objective`, `scaling.options.scale_constraints`
+  and their bounds (chapter 7).
 - **Per-iteration QP tolerances:** `nlp_qp_tol_strategy` (0 = fixed, 1 =
   from the NLP residuals, 2 = from the scaling factors) and its parameters
   (chapter 7).
@@ -140,6 +142,7 @@ solver.statistics().write_csv("sqp_stat.csv");
 | `kNanDetected` (7) | NaN in the residuals | check the model functions for invalid evaluations |
 | `kAborted` (8) | internal solver error | — |
 | `kTimeout` (9) | wall-clock budget exceeded | raise `timeout_max_time` |
+| `kNotInitialized` (10) | `solve()` called before `init()` | call `init()` first |
 
 ## 3.6 Convergence: the four residual norms
 

@@ -7,15 +7,16 @@
 //     kStaged (DoubleIntegrator, dynamic N = 10 and fixed NH = 10): both
 //     kSolved, same x / u / cost (the QP is solved through
 //     condense_full -> HpipmDenseQpSolver -> expand_full_sol);
-//   - the dense path with qp_warm_start = 2 (dual warm start across SQP
-//     iterations through the persistent dense solution) also converges to
-//     the same solution;
+//   - the dense path with qp.options.warm_start = 2 (dual warm start across
+//     SQP iterations through the persistent dense solution) also converges
+//     to the same solution;
 //   - the cond_time stat: 0 in kStaged mode, > 0 in kFullCondensed.
 
 #include <cmath>
 #include <cstdio>
 #include <string>
 
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/acados/acados.hpp"
 
 #include "../../examples/double_integrator/double_integrator.hpp"
@@ -133,9 +134,10 @@ void test_qpmode(const char* name, int N)
     check(total_cond_time(s2.statistics()) > 0.0,
           p + ": condensed cond_time > 0");
 
-    // full condensed + dual warm start (qp_warm_start = 2): the dense
-    // duals (lam / t) persist in the driver workspace across SQP
-    // iterations; the primal step stays cold.
+    // full condensed + dual warm start (qp.options.warm_start = 2, set
+    // by name on the live solver): the dense duals (lam / t) persist in
+    // the driver workspace across SQP iterations; the primal step stays
+    // cold.
     int ws2_iter = 0;
     {
         Solution<DI, NH> sol_ws;
@@ -149,8 +151,8 @@ void test_qpmode(const char* name, int N)
         }
         AcadosOptions o3;
         o3.qp_mode = QpMode::kFullCondensed;
-        o3.qp_warm_start = 2;
         AcadosSolver<DI, NH> s3(o3);
+        inspect::set_double(s3, "qp.options.warm_start", 2.0);
         const Status st3 = s3.solve(prob, sol_ws);
         ws2_iter = s3.statistics().iter;
         check(st3 == Status::kSolved, p + ": condensed + ws2 kSolved");

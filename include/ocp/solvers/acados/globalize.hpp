@@ -38,8 +38,8 @@
 #include <functional>
 
 #include <Eigen/Dense>
-
 #include "../hpipm/qp.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -56,6 +56,24 @@ struct GlobOptions
     double eps_sufficient_descent = 1e-4;  // Armijo sufficient-descent factor
     bool full_step_dual = false;        // full-step dual update vs. relaxed
     bool use_soc = false;               // second-order-correction pre-pass
+
+    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md);
+    /// linked into AcadosOptions under "glob" (glob.* paths).
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks the fields that must stay strictly positive (both are
+        // the line-search loop's step-size floor / shrink factor).
+        vis("alpha_min", &GlobOptions::alpha_min, inspect::kMinPositive,
+            1.0);
+        vis("alpha_reduction", &GlobOptions::alpha_reduction,
+            inspect::kMinPositive, 1.0);
+        vis("eps_sufficient_descent", &GlobOptions::eps_sufficient_descent,
+            0.0, std::nullopt);
+        vis("full_step_dual", &GlobOptions::full_step_dual);
+        vis("use_soc", &GlobOptions::use_soc);
+    }
 };
 
 // =========================================================================

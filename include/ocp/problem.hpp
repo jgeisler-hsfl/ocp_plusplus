@@ -1451,7 +1451,8 @@ enum class Status
     kUnbounded,      // problem detected as unbounded
     kNanDetected,    // NaN encountered during iteration
     kAborted,        // internal solver error
-    kTimeout         // wall-clock timeout reached
+    kTimeout,        // wall-clock timeout reached
+    kNotInitialized  // solve called before init()
 };
 
 /// Solver-independent solution (and warm-start) container.

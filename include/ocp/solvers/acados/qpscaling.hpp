@@ -34,6 +34,7 @@
 #include <cmath>
 
 #include "../hpipm/qp.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -68,10 +69,40 @@ public:
         bool scale_constraints = false;      // enable constraint scaling
         double ub_max_abs_eig = 1e5;         // cap for max-abs-eig estimate
         double lb_norm_inf_grad_obj = 1e-4;  // floor for scaled grad inf-norm
+
+        /// By-name access (docs/plans/OPTION_INSPECT_PLAN.md): linked under
+        /// "options" by QpScaler::inspect (paths scaling.options.*).
+        template <class Visitor>
+        static constexpr void inspect(Visitor&& vis)
+        {
+            vis("scale_objective", &Opts::scale_objective);
+            vis("scale_constraints", &Opts::scale_constraints);
+            // ub_max_abs_eig must stay > 0: it feeds the objective scale
+            // factor, which the rescale divides by (1 / obj_factor).
+            vis("ub_max_abs_eig", &Opts::ub_max_abs_eig,
+                inspect::kMinPositive, std::nullopt);
+            vis("lb_norm_inf_grad_obj", &Opts::lb_norm_inf_grad_obj,
+                0.0, std::nullopt);
+        }
     };
 
     explicit QpScaler(Opts opts = {}) : opts_(opts)
     {
+    }
+
+    /// Replace the scaling options between uses (e.g. from an interactive
+    /// environment). The factors are re-derived on the next scale_qp().
+    void set_opts(const Opts& o)
+    {
+        opts_ = o;
+    }
+
+    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// scaling options (by-name paths: scaling.options.*).
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("options", &QpScaler::opts_);
     }
 
     /// @param n_stages number of stages N

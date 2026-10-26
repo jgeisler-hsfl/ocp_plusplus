@@ -20,7 +20,10 @@
 #include <string>
 #include <vector>
 
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/acados/acados.hpp"
+
+#include "double_integrator/double_integrator.hpp"
 
 namespace
 {
@@ -67,15 +70,12 @@ void test_options_defaults()
     check_close(o.levenberg_marquardt, 0.0, "levenberg_marquardt default 0");
     check(!o.with_adaptive_lm, "with_adaptive_lm default false");
     check(o.print_level == 0, "print_level default 0");
-    check(o.qp_warm_start == 0, "qp_warm_start default 0");
     check(!o.warm_start_first_qp, "warm_start_first_qp default false");
     check(o.qp_mode == QpMode::kStaged, "qp_mode default kStaged");
     check(o.qp_cond_N == 0, "qp_cond_N default 0 (identity fast path)");
     check(!o.eval_residual_at_max_iter,
           "eval_residual_at_max_iter default false");
     check_close(o.timeout_max_time, 0.0, "timeout_max_time default 0");
-    check(!o.scale_qp_objective, "scale_qp_objective default false");
-    check(!o.scale_qp_constraints, "scale_qp_constraints default false");
     check_close(o.tau_min, 1e-16, "tau_min default 1e-16");
 
     // embedded GlobOptions defaults (ocp_nlp_globalization_common.h)
@@ -84,6 +84,139 @@ void test_options_defaults()
     check_close(o.glob.eps_sufficient_descent, 1e-4,
                 "glob.eps_sufficient_descent default 1e-4");
     check(!o.glob.full_step_dual, "glob.full_step_dual default false");
+
+    // the 5 options removed from AcadosOptions now live on the owning
+    // components (docs/plans/OPTION_INSPECT_PLAN.md sec. 2.1)
+    HpipmOptions h;
+    check(h.warm_start == 0, "HpipmOptions warm_start default 0");
+    QpScaler<DoubleIntegrator>::Opts so;
+    check(!so.scale_objective, "QpScaler::Opts scale_objective default false");
+    check(!so.scale_constraints,
+          "QpScaler::Opts scale_constraints default false");
+    check_close(so.ub_max_abs_eig, 1e5,
+                "QpScaler::Opts ub_max_abs_eig default 1e5");
+    check_close(so.lb_norm_inf_grad_obj, 1e-4,
+                "QpScaler::Opts lb_norm_inf_grad_obj default 1e-4");
+}
+
+// ---------------------------------------------------------------------
+// AcadosOptions by-name access (inspect protocol;
+// docs/plans/OPTION_INSPECT_PLAN.md)
+// ---------------------------------------------------------------------
+
+void test_options_inspect()
+{
+    AcadosOptions o;
+
+    // set via name (double coercion, host-style path) -> read the member
+    check(inspect::set_double(o, "max_iter", 40.0).ok(), "set max_iter");
+    check(o.max_iter == 40, "set wrote max_iter");
+    check(inspect::set_double(o, "tau_min", 2e-16).ok(), "set tau_min");
+    check_close(o.tau_min, 2e-16, "set wrote tau_min");
+    check(inspect::set_double(o, "print_level", 1.0).ok(), "set int from double");
+    check(o.print_level == 1, "set wrote the int member");
+
+    // set the member -> read via name
+    o.compute_hess_dyn = false;
+    double d = 0.0;
+    check(inspect::get_double(o, "print_level", d) && d == 1.0,
+          "get print_level (int coerced to double)");
+    check(inspect::get_double(o, "compute_hess_dyn", d) && d == 0.0,
+          "get bool as 0.0");
+    check(inspect::get_double(o, "glob.alpha_min", d) && d == 0.05,
+          "get glob.alpha_min (dotted)");
+
+    // strict typed access
+    int i = 0;
+    check(inspect::get_field(o, "max_iter", i) && i == 40, "typed get int");
+    check(inspect::set_field(o, "tau_min", 3e-16).ok(), "typed set double");
+    check_close(o.tau_min, 3e-16, "typed set wrote tau_min");
+
+    // unknown names
+    check(!inspect::get_double(o, "i_max", d), "get unknown name");
+    check(!inspect::set_double(o, "nope", 1.0), "set unknown name");
+    check(!inspect::get_double(o, "glob.alpha_min.x", d),
+          "get unknown dotted tail");
+
+    // names(): 28 flat leaves + 5 glob leaves
+    const std::vector<std::string> names =
+        inspect::leaf_names<AcadosOptions>();
+    check(names.size() == 33, "leaf_names: 28 flat + 5 glob leaves");
+    bool has_glob_alpha_min = false;
+    bool has_glob_use_soc = false;
+    for (const std::string& n : names)
+    {
+        has_glob_alpha_min = has_glob_alpha_min || (n == "glob.alpha_min");
+        has_glob_use_soc = has_glob_use_soc || (n == "glob.use_soc");
+    }
+    check(has_glob_alpha_min && has_glob_use_soc,
+          "leaf_names: dotted glob leaves present");
+
+    // copy safety: sets through the copy (flat *and* dotted) must not
+    // touch the original
+    AcadosOptions o2 = o;
+    check(inspect::set_double(o2, "max_iter", 99.0).ok(), "copy: set flat name");
+    check(o2.max_iter == 99 && o.max_iter == 40,
+          "copy: flat set left the original untouched");
+    check(inspect::set_double(o2, "glob.alpha_min", 0.11).ok(),
+          "copy: set dotted name");
+    check_close(o2.glob.alpha_min, 0.11, "copy: dotted set wrote the copy");
+    check_close(o.glob.alpha_min, 0.05, "copy: dotted set left the original");
+    double ar = 0.0;
+    check(inspect::get_double(o2, "glob.alpha_reduction", ar) && ar == 0.7,
+          "copy: get dotted name");
+}
+
+// ---------------------------------------------------------------------
+// Statistics table access (inspect protocol;
+// docs/plans/OPTION_INSPECT_PLAN.md sec. 5)
+// ---------------------------------------------------------------------
+
+void test_stat_table()
+{
+    AcadosStatistics stat;
+    SqpIteration r0;
+    r0.res_stat = 1.0;
+    r0.qp_status = 1;
+    r0.qp_iter = 4;
+    r0.step_norm = 0.5;
+    r0.alpha = 0.7;
+    stat.record(r0);
+    SqpIteration r1;
+    r1.res_stat = 1e-3;
+    r1.funnel_iter_type = 2;
+    r1.funnel_width = 0.25;
+    stat.record(r1);
+
+    // column names: the SqpIteration leaves in declaration order
+    const std::vector<std::string> cols = inspect::stat_column_names(stat);
+    check(cols.size() == 11, "stat_column_names: 11 columns");
+    check(cols[0] == "res_stat" && cols[4] == "qp_status" &&
+          cols[9] == "funnel_width" && cols[10] == "cond_time",
+          "stat_column_names order");
+
+    // one named column, int coerced to double
+    std::vector<double> qp_iter(2, 0.0);
+    check(inspect::stat_column(stat, "qp_iter", qp_iter.data()),
+          "stat_column qp_iter");
+    check(qp_iter[0] == 4.0 && qp_iter[1] == 0.0,
+          "stat_column qp_iter values");
+    check(!inspect::stat_column(stat, "res_statx", qp_iter.data()),
+          "stat_column unknown name");
+    AcadosStatistics empty;
+    check(!inspect::stat_column(empty, "res_statx", qp_iter.data()),
+          "stat_column unknown name on zero-row table");
+
+    // full table: row-major rows x cols
+    std::vector<double> tab(2 * 11, 0.0);
+    int n_rows = 0, n_cols = 0;
+    check(inspect::stat_table(stat, tab.data(), n_rows, n_cols) &&
+          n_rows == 2 && n_cols == 11,
+          "stat_table extents");
+    check(tab[0] == 1.0 && tab[4] == 1.0,
+          "stat_table row 0 (res_stat, qp_status)");
+    check(tab[11 + 0] == 1e-3 && tab[11 + 8] == 2.0,
+          "stat_table row 1 (res_stat, funnel_iter_type)");
 }
 
 // ---------------------------------------------------------------------
@@ -260,6 +393,8 @@ int run_options_2e_tests()
 {
     failures = 0;
     test_options_defaults();
+    test_options_inspect();
+    test_stat_table();
     test_statistics_record();
     test_statistics_csv();
     test_print_iteration();

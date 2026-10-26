@@ -62,6 +62,7 @@
 #include "globalize.hpp"
 #include "qpscaling.hpp"
 #include "regularize.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -776,7 +777,6 @@ struct AcadosOptions
                                           // 2 = + QP IPM stat table per QP solve
                                           // and a globalization-failure message
                                           // (QP print_level of 1 for levels > 2)
-    int qp_warm_start = 0;                // 0 = cold, 2 = primal+dual, 3 = hot
     bool warm_start_first_qp = false;     // also warm-start the very first QP
     QpMode qp_mode = QpMode::kStaged;     // kStaged | kFullCondensed | kPartialCondensed
     /// Phase 2: number of condensation blocks N2 used by kPartialCondensed
@@ -788,10 +788,6 @@ struct AcadosOptions
     int timeout_heuristic = 0;            // 0 = ZERO, 1 = LAST, 2 = MAX,
                                           // 3 = AVERAGE
     double timeout_max_time = 0.0;        // wall-clock budget; 0 = none
-    bool scale_qp_objective = false;      // Gershgorin objective scaling
-    bool scale_qp_constraints = false;    // inf-norm constraint scaling
-    double ub_max_abs_eig = 1e5;          // objective-scaling upper bound
-    double lb_norm_inf_grad_obj = 1e-4;   // objective-scaling grad floor
     // Per-iteration QP tolerance strategy:
     //   0 = kFixedQpTol              (QP solver defaults, no per-iter update)
     //   1 = kAdaptiveCurrentResJoint (from the NLP residuals)
@@ -805,6 +801,65 @@ struct AcadosOptions
     double nlp_qp_tol_min_comp = 1e-11;
     double tau_min = 1e-16;               // res_comp floor
     GlobOptions glob;
+
+    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md):
+    /// `inspect::set_double(o, "max_iter", 40.0)` /
+    /// `inspect::get_double(o, "glob.alpha_min", x)`; the nested GlobOptions
+    /// is linked under "glob". Direct member access is unchanged.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks fields that must stay strictly positive.
+        // tol_unbounded is intentionally unbounded (legitimately
+        // negative: the unbounded-detection threshold).
+        vis("max_iter", &AcadosOptions::max_iter, 0, std::nullopt);
+        vis("tol_stat", &AcadosOptions::tol_stat, 0.0, std::nullopt);
+        vis("tol_eq", &AcadosOptions::tol_eq, 0.0, std::nullopt);
+        vis("tol_ineq", &AcadosOptions::tol_ineq, 0.0, std::nullopt);
+        vis("tol_comp", &AcadosOptions::tol_comp, 0.0, std::nullopt);
+        vis("tol_min_step_norm", &AcadosOptions::tol_min_step_norm,
+            0.0, std::nullopt);
+        vis("tol_unbounded", &AcadosOptions::tol_unbounded);
+        vis("compute_hess_dyn", &AcadosOptions::compute_hess_dyn);
+        vis("compute_hess_constr", &AcadosOptions::compute_hess_constr);
+        vis("levenberg_marquardt", &AcadosOptions::levenberg_marquardt,
+            0.0, std::nullopt);
+        vis("with_adaptive_lm", &AcadosOptions::with_adaptive_lm);
+        vis("adaptive_lm_mu0", &AcadosOptions::adaptive_lm_mu0,
+            0.0, std::nullopt);
+        // adaptive_lm_lam divides the LM multiplier (mu / lam); it must
+        // stay strictly positive.
+        vis("adaptive_lm_lam", &AcadosOptions::adaptive_lm_lam,
+            inspect::kMinPositive, std::nullopt);
+        vis("adaptive_lm_mu_min", &AcadosOptions::adaptive_lm_mu_min,
+            0.0, std::nullopt);
+        vis("adaptive_lm_obj_scalar",
+            &AcadosOptions::adaptive_lm_obj_scalar, 0.0, std::nullopt);
+        vis("print_level", &AcadosOptions::print_level, 0, 2);
+        vis("warm_start_first_qp", &AcadosOptions::warm_start_first_qp);
+        vis("eval_residual_at_max_iter",
+            &AcadosOptions::eval_residual_at_max_iter);
+        vis("timeout_heuristic", &AcadosOptions::timeout_heuristic, 0, 3);
+        vis("timeout_max_time", &AcadosOptions::timeout_max_time,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_strategy", &AcadosOptions::nlp_qp_tol_strategy,
+            0, 2);
+        vis("nlp_qp_tol_reduction_factor",
+            &AcadosOptions::nlp_qp_tol_reduction_factor, 0.0, std::nullopt);
+        vis("nlp_qp_tol_safety_factor",
+            &AcadosOptions::nlp_qp_tol_safety_factor, 0.0, 1.0);
+        vis("nlp_qp_tol_min_stat", &AcadosOptions::nlp_qp_tol_min_stat,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_eq", &AcadosOptions::nlp_qp_tol_min_eq,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_ineq", &AcadosOptions::nlp_qp_tol_min_ineq,
+            0.0, std::nullopt);
+        vis("nlp_qp_tol_min_comp", &AcadosOptions::nlp_qp_tol_min_comp,
+            0.0, std::nullopt);
+        vis("tau_min", &AcadosOptions::tau_min, 0.0, std::nullopt);
+        vis("glob", &AcadosOptions::glob);
+    }
 };
 
 /// One row of the SQP statistics.
@@ -824,6 +879,24 @@ struct SqpIteration
     /// Wall-clock seconds spent in condense + expand for this iteration's QP
     /// (kFullCondensed mode only; 0 in kStaged mode).
     double cond_time = 0.0;
+
+    /// inspect protocol (docs/plans/OPTION_INSPECT_PLAN.md sec. 5): the
+    /// stat table's column names are this struct's leaf field names.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("res_stat", &SqpIteration::res_stat);
+        vis("res_eq", &SqpIteration::res_eq);
+        vis("res_ineq", &SqpIteration::res_ineq);
+        vis("res_comp", &SqpIteration::res_comp);
+        vis("qp_status", &SqpIteration::qp_status);
+        vis("qp_iter", &SqpIteration::qp_iter);
+        vis("step_norm", &SqpIteration::step_norm);
+        vis("alpha", &SqpIteration::alpha);
+        vis("funnel_iter_type", &SqpIteration::funnel_iter_type);
+        vis("funnel_width", &SqpIteration::funnel_width);
+        vis("cond_time", &SqpIteration::cond_time);
+    }
 };
 
 /// Per-iteration records of a SQP solve.
@@ -968,7 +1041,6 @@ public:
 
     explicit AcadosSolver(AcadosOptions opts = AcadosOptions{})
         : opts_(opts)
-        , scaler_(make_scaler_opts(opts))
     {
         if (NB == 0 && opts_.qp_mode == QpMode::kPartialCondensed)
         {
@@ -1105,6 +1177,18 @@ public:
 
     const AcadosOptions& options() const { return opts_; }
     const AcadosStatistics& statistics() const { return stat_; }
+
+    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// driver options, the QP sub-solver and the QP scaler. By-name paths:
+    /// options.*, qp.options.*, scaling.options.*.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("options", &AcadosSolver::opts_);
+        vis("qp", &AcadosSolver::qp_);
+        vis("scaling", &AcadosSolver::scaler_);
+    }
+
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
@@ -2167,9 +2251,10 @@ public:
 
             // QP warm start: the primal step is always cold; only the
             // duals carried in the scaled-space output from the previous
-            // QP are reused. The first QP is cold unless
-            // warm_start_first_qp is set.
-            int ws = opts_.qp_warm_start;
+            // QP are reused. The mode lives in the QP solver's options
+            // (HpipmOptions::warm_start, by name "qp.options.warm_start");
+            // the first QP is cold unless warm_start_first_qp is set.
+            int ws = qp_.options().warm_start;
             if (iter == 0 && !opts_.warm_start_first_qp)
             {
                 ws = 0;
@@ -2252,19 +2337,6 @@ public:
     }
 
 private:
-    /// Map AcadosOptions to QpScaler opts (internal glue; used only by the
-    /// constructor).
-    static typename QpScaler<P, NH>::Opts make_scaler_opts(
-        const AcadosOptions& o)
-    {
-        typename QpScaler<P, NH>::Opts so;
-        so.scale_objective = o.scale_qp_objective;
-        so.scale_constraints = o.scale_qp_constraints;
-        so.ub_max_abs_eig = o.ub_max_abs_eig;
-        so.lb_norm_inf_grad_obj = o.lb_norm_inf_grad_obj;
-        return so;
-    }
-
     // ---------------------------------------------------------------
     //  Driver helpers
     // ---------------------------------------------------------------

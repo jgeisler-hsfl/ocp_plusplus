@@ -40,6 +40,9 @@ No other dependencies. C++17 required.
   family. `solvers/hpipm/` holds the HPIPM QP solver (`hpipm.hpp`) and its
   staged QP data model (`qp.hpp`: `QpDim<P>`, `Qp<P,NH>`, `QpSol<P,NH>`,
   `QpRes<P,NH>`).
+- `include/ocp/utils/` — cross-cutting support headers shared by problem,
+  solvers and the MEX glue. `utils/inspect.hpp` holds the inspect protocol
+  (named option/statistics access, `ocp::inspect` walkers).
 - `examples/double_integrator/` — minimal concrete problem + finite-difference sanity test.
 - `docs/plans/` — working plan docs; `docs/plans/finished/` holds completed
   plans/worklogs (SQP phases 1–4, GN-Hessian, model API, generator,
@@ -91,6 +94,14 @@ No other dependencies. C++17 required.
 - Solver-internal state (slacks, barrier/regularization params, multiplier
   orderings) stays inside each solver; only shared solution quantities
   (x, u, KKT multipliers, cost, status) go into `ocp::Solution`.
+- Option leaves may declare closed-interval bounds as trailing `vis()`
+  arguments in `inspect()` (number or `std::nullopt`;
+  `inspect::kMinPositive` = strict-positivity floor). The named writers
+  (`inspect::set_field` / `set_double`) enforce them on the double-coerced
+  value before any int/bool cast and return a `SetResult`
+  (`kOk` / `kUnknownPath` / `kOutOfRange`, with bounds in `lo`/`hi`).
+  Bounds are a host-side guardrail: the read path and direct member
+  writes bypass them.
 - Further information can be found in the docs/ARCHITECTURE.md file.
 - Current development plans live in docs/plans. Finished developments are documented 
   in docs/plans/finished.

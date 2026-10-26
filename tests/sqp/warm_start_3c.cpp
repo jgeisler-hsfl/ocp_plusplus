@@ -7,14 +7,15 @@
 //     iterate preserved) converges in fewer IPM iterations to the same
 //     solution; a warm-dual re-solve (warm_start=2, ux zeroed) also converges
 //     to the same primal.
-//   - Driver-level: AcadosSolver with qp_warm_start=2 on DoubleIntegrator uses
-//     fewer total IPM iterations than qp_warm_start=0, both kSolved.
+//   - Driver-level: AcadosSolver with qp.options.warm_start set to 2 via
+//     the inspect protocol vs. the default 0, both kSolved.
 
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <string>
 
+#include "ocp/utils/inspect.hpp"
 #include "ocp/solvers/acados/acados.hpp"
 #include "ocp/solvers/hpipm/hpipm.hpp"
 
@@ -585,7 +586,9 @@ void test_qp_warm_start(const char* name, int N)
 }
 
 // ---------------------------------------------------------------------
-// Driver-level: qp_warm_start=2 vs 0 on DoubleIntegrator
+// Driver-level: qp.options.warm_start = 2 vs 0 on DoubleIntegrator
+// (the QP warm-start mode lives in HpipmOptions; see
+// docs/plans/OPTION_INSPECT_PLAN.md)
 // ---------------------------------------------------------------------
 
 void test_driver_warm_start()
@@ -594,10 +597,9 @@ void test_driver_warm_start()
     const int N = 10;
     const double a = terminal_eq_feasible_control(prob, N);
 
-    // Cold (qp_warm_start = 0)
+    // Cold (qp.options.warm_start = 0, the default)
     {
         AcadosOptions co;
-        co.qp_warm_start = 0;
         co.print_level = 0;
         AcadosSolver<DI> solver(co);
         Solution<DI> sol = make_warm_start(prob, N, a);
@@ -614,11 +616,13 @@ void test_driver_warm_start()
         std::printf("  driver cold: total_ipm=%d cost=%.6f\n", cold_ipm,
                     cold_cost);
 
-        // Warm (qp_warm_start = 2)
+        // Warm (qp.options.warm_start = 2, set on the live solver via the
+        // inspect protocol)
         AcadosOptions wo;
-        wo.qp_warm_start = 2;
         wo.print_level = 0;
         AcadosSolver<DI> w_solver(wo);
+        check(inspect::set_double(w_solver, "qp.options.warm_start", 2.0).ok(),
+              "set qp.options.warm_start = 2");
         Solution<DI> w_sol = make_warm_start(prob, N, a);
 
         const Status w_st = w_solver.solve(prob, w_sol);

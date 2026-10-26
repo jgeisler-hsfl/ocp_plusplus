@@ -63,6 +63,7 @@
 #include "dense_qp.hpp"
 #include "qp.hpp"
 #include "seed.hpp"
+#include "../../utils/inspect.hpp"
 
 namespace ocp
 {
@@ -109,6 +110,56 @@ struct HpipmOptions
     int t_lam_min = 2;           // clip t and lam: 0 no / 1 in Gamma / 2 in sol
     int t0_init = 2;             // slack init: 0 sqrt(mu0) / 1 1.0 / 2 heuristic
     int update_fact_exit = 1;    // leave an updated factorization on exit
+
+    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md):
+    /// `inspect::set_double(o, "mu0", 2.0)` /
+    /// `inspect::get_double(o, "iter_max", i)`. Direct member access is
+    /// unchanged.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        // Closed-interval bounds for the named writers; kMinPositive
+        // marks fields that must stay strictly positive (barrier
+        // floors and divisors: mu_aff/mu, t_inv = 1/t, lam = mu0/t).
+        vis("mu0", &HpipmOptions::mu0, inspect::kMinPositive,
+            std::nullopt);
+        vis("alpha_min", &HpipmOptions::alpha_min, 0.0, std::nullopt);
+        vis("res_g_max", &HpipmOptions::res_g_max, 0.0, std::nullopt);
+        vis("res_b_max", &HpipmOptions::res_b_max, 0.0, std::nullopt);
+        vis("res_d_max", &HpipmOptions::res_d_max, 0.0, std::nullopt);
+        vis("res_m_max", &HpipmOptions::res_m_max, 0.0, std::nullopt);
+        vis("dual_gap_max", &HpipmOptions::dual_gap_max, 0.0,
+            std::nullopt);
+        vis("reg_prim", &HpipmOptions::reg_prim, 0.0, std::nullopt);
+        vis("lam_min", &HpipmOptions::lam_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("t_min", &HpipmOptions::t_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("tau_min", &HpipmOptions::tau_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("lam0_min", &HpipmOptions::lam0_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("t0_min", &HpipmOptions::t0_min, inspect::kMinPositive,
+            std::nullopt);
+        vis("m_safe", &HpipmOptions::m_safe, 0.0, 1.0);
+        vis("iter_max", &HpipmOptions::iter_max, 0, std::nullopt);
+        vis("stat_max", &HpipmOptions::stat_max, 0, std::nullopt);
+        vis("pred_corr", &HpipmOptions::pred_corr);
+        vis("cond_pred_corr", &HpipmOptions::cond_pred_corr);
+        vis("itref_pred_max", &HpipmOptions::itref_pred_max, 0,
+            std::nullopt);
+        vis("itref_corr_max", &HpipmOptions::itref_corr_max, 0,
+            std::nullopt);
+        vis("warm_start", &HpipmOptions::warm_start, 0, 3);
+        vis("square_root_alg", &HpipmOptions::square_root_alg);
+        vis("lq_fact", &HpipmOptions::lq_fact, 0, 2);
+        vis("abs_form", &HpipmOptions::abs_form, 0, 1);
+        vis("split_step", &HpipmOptions::split_step, 0, 1);
+        vis("var_init_scheme", &HpipmOptions::var_init_scheme, 0, 1);
+        vis("t_lam_min", &HpipmOptions::t_lam_min, 0, 2);
+        vis("t0_init", &HpipmOptions::t0_init, 0, 2);
+        vis("update_fact_exit", &HpipmOptions::update_fact_exit, 0, 1);
+    }
 };
 
 // =========================================================================
@@ -140,6 +191,34 @@ struct HpipmIteration
     double lin_res_ineq = 0;
     double lin_res_comp = 0;
     int npd_reg_hess = 0;       // 1: Hessian found non-PSD, was regularized
+
+    /// inspect protocol (docs/plans/OPTION_INSPECT_PLAN.md sec. 5): the
+    /// stat table's column names are this struct's leaf field names.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("alpha_prim_aff", &HpipmIteration::alpha_prim_aff);
+        vis("alpha_dual_aff", &HpipmIteration::alpha_dual_aff);
+        vis("mu_aff", &HpipmIteration::mu_aff);
+        vis("sigma", &HpipmIteration::sigma);
+        vis("alpha_prim", &HpipmIteration::alpha_prim);
+        vis("alpha_dual", &HpipmIteration::alpha_dual);
+        vis("mu", &HpipmIteration::mu);
+        vis("res_stat", &HpipmIteration::res_stat);
+        vis("res_eq", &HpipmIteration::res_eq);
+        vis("res_ineq", &HpipmIteration::res_ineq);
+        vis("res_comp", &HpipmIteration::res_comp);
+        vis("dual_gap", &HpipmIteration::dual_gap);
+        vis("obj", &HpipmIteration::obj);
+        vis("lq_fact", &HpipmIteration::lq_fact);
+        vis("itref_pred", &HpipmIteration::itref_pred);
+        vis("itref_corr", &HpipmIteration::itref_corr);
+        vis("lin_res_stat", &HpipmIteration::lin_res_stat);
+        vis("lin_res_eq", &HpipmIteration::lin_res_eq);
+        vis("lin_res_ineq", &HpipmIteration::lin_res_ineq);
+        vis("lin_res_comp", &HpipmIteration::lin_res_comp);
+        vis("npd_reg_hess", &HpipmIteration::npd_reg_hess);
+    }
 };
 
 /// Per-IPM-iteration records: `stat_max + 1` rows; row 0 holds the
@@ -2047,6 +2126,14 @@ public:
 
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
+
+    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// HPIPM options (by-name paths: options.*).
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("options", &HpipmQpSolver::opts_);
+    }
 
     /// Override the warm-start mode for subsequent solve() calls (the SQP
     /// driver sets this per QP solve). 0: cold, 2: primal+dual, 3: hot.

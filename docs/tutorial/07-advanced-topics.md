@@ -90,10 +90,12 @@ Notes:
 
 - The solver-internal slacks are warm-started across repeated solves on
   the same solver object automatically (when the horizon matches).
-- The QP warm start is controlled separately: `opts.qp_warm_start` (0 =
-  cold, 2 = primal+dual, 3 = hot) and `opts.warm_start_first_qp` (also
-  warm-start the very first QP). By default the SQP driver warms the QP
-  duals from the previous iteration and keeps the primal step cold.
+- The QP warm start is controlled separately: the mode lives in the QP
+  solver's options (`ocp::HpipmOptions::warm_start`, 0 = cold, 2 =
+  primal+dual, 3 = hot), reachable by name as `qp.options.warm_start`,
+  plus `opts.warm_start_first_qp` (also warm-start the very first QP).
+  The SQP driver always keeps the primal step cold; with mode 2 or 3 it
+  reuses the duals from the previous QP, with mode 0 each QP starts cold.
 - On the small convex example the warm solve takes the same two
   iterations as the cold one — the QP step is already exact on this
   problem, so both need one step plus the confirming iteration. The warm
@@ -161,9 +163,10 @@ plus acados overrides), statistics (21 columns per IPM iteration) and
 residual tolerances (`solver.qp()`-level `set_residual_tolerances`) are
 rarely touched — the SQP driver drives them via the options of chapter 3:
 
-- **QP scaling:** `opts.scale_qp_objective` / `opts.scale_qp_constraints`
-  (Gershgorin objective scaling, inf-norm constraint scaling) improve
-  badly scaled problems.
+- **QP scaling:** the live scaling options live on the solver's QP scaler
+  (`QpScaler::Opts`, reachable by name as `scaling.options.scale_objective`
+  / `scaling.options.scale_constraints`; Gershgorin objective scaling,
+  inf-norm constraint scaling) and improve badly scaled problems.
 - **Per-iteration QP tolerances:** `opts.nlp_qp_tol_strategy` (0 = fixed
   HPIPM defaults, 1 = from the NLP residuals, 2 = from the scaling
   factors) trades inner QP effort against SQP iterations.
@@ -388,10 +391,11 @@ ocp::RtiSolver<MinimalProblem> rti_solver(rti);
 ocp::Status st = rti_solver.solve(problem, sol);   // one QP, full step
 ```
 
-`RtiOptions` mirrors the relevant `AcadosOptions` fields:
+`RtiOptions` carries its own copies of the relevant driver options:
 `compute_hess_dyn` / `compute_hess_constr`, `levenberg_marquardt`,
-`qp_mode` + `qp_cond_N`, `qp_warm_start` / `warm_start_first_qp`, and the
-QP tolerance strategy. `rti_solver.statistics()` returns an
+`qp_mode` + `qp_cond_N`, `qp_warm_start` (HPIPM warm-start mode, as in
+`HpipmOptions::warm_start`) / `warm_start_first_qp`, and the QP tolerance
+strategy. `rti_solver.statistics()` returns an
 `ocp::RtiStatistics` with the pre-/post-step NLP residuals of the last call
 (populated when `rti_log_residuals` is set) and a running `n_calls` count.
 

@@ -50,6 +50,9 @@ the first (reference) solver implementations.
   problem class.
 - `tests/` — unit tests for the QP and SQP solvers and the integrators, plus
   comparisons against the acados reference solver.
+- `mex/` — optional MATLAB MEX wrapper (one MEX binary per problem/solver
+  configuration, persistent session state, by-name option and solution
+  access); see [mex/README.md](mex/README.md).
 
 ## Examples
 
