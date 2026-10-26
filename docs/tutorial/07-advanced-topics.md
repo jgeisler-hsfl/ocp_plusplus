@@ -409,6 +409,9 @@ slack-penalty helpers are shared via `solvers/acados/cost.hpp`.
   funnel, SOC, timeout, scaling, integrators, DAE autodiff, ...) — the
   fastest reference for the exact semantics of an option.
 - `docs/ARCHITECTURE.md` documents the design principles.
+- By-name option/statistics discovery exists via the inspect protocol
+  (chapter 3.3, `include/ocp/utils/inspect.hpp`) and is exposed to MATLAB
+  through the MEX `options` / `opt_get` / `opt_dump` / `stats` commands
+  (chapter 8).
 - Not yet part of the interface (anticipated extensions): parameter
-  sensitivities and algebraic (eliminated) variables; an interactive
-  "discovery" mechanism for options and statistics is on the roadmap.
+  sensitivities and algebraic (eliminated) variables.
