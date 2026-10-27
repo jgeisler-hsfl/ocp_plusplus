@@ -43,6 +43,9 @@ struct DoubleIntegratorDims
     static constexpr bool fixed_initial_state = true;  // x_0 = [1; 0.5] given
     static constexpr bool has_dynamics_hess = true;  // HVP implemented (zero; linear map)
     static constexpr bool has_constr_hess   = true;  // HVPs implemented (zero; linear maps)
+    // component names for CSV headers / plot labels
+    static constexpr std::array<const char*, 2> state_names   = {"q", "v"};
+    static constexpr std::array<const char*, 1> control_names = {"a"};
     static constexpr std::array<int, 2> state_box_idx   = {0, 1};
     static constexpr std::array<int, 1> control_box_idx = {0};
     static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};

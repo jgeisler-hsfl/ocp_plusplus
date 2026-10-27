@@ -183,6 +183,38 @@ int main()
         check_close("term eq value", et(0), sol.x[N](0) + sol.x[N](1) - 1.0, 1e-12);
     }
 
+    // ---- component names + solution export ----------------------------
+    {
+        // Dims declares state_names = {"q", "v"} and control_names = {"a"};
+        // problems without name arrays fall back to "x_i" / "u_i".
+        const std::string q = DoubleIntegrator::state_name(0);
+        const std::string v = DoubleIntegrator::state_name(1);
+        const std::string a = DoubleIntegrator::control_name(0);
+        if (q != "q" || v != "v" || a != "a")
+        {
+            std::printf("FAIL: component names (%s, %s, %s)\n", q.c_str(),
+                        v.c_str(), a.c_str());
+            ++nfail;
+        }
+        else
+        {
+            std::printf("ok   component names (q, v, a)\n");
+        }
+
+        if (!sol.to_csv("double_integrator_solution.csv"))
+        {
+            std::printf("FAIL: sol.to_csv\n");
+            ++nfail;
+        }
+        else
+        {
+            std::printf("ok   wrote double_integrator_solution.csv (%d rows)\n",
+                        N + 1);
+            std::printf("hint: python3 tools/plot_solution.py "
+                        "double_integrator_solution.csv\n");
+        }
+    }
+
     // ---- fixed-horizon mode -------------------------------------------
     // compile-time extents, stack-allocated, value-initialized (zeroed)
     {
