@@ -187,7 +187,65 @@ while the IRK variant consumes the hand-written `jacobian` / `hess_prod`
 through `OdeToDae` — both feed the same `dynamics_value_jac_hess` contract
 of chapter 5.
 
-## 6.6 Choosing a scheme
+## 6.6 DAE derivatives via AutoDiffDae
+
+Section 6.3 named two DAE adapters: `OdeToDae` (wraps a hand-written ODE
+with its own `jacobian` / `hess_prod`) and `ocp::AutoDiffDae` (in
+`include/ocp/integrators/dae_autodiff.hpp`) — a CRTP base that generates
+the implicit integrator's `F_jac` and `F_hess_prod` from a *single
+scalar-templated residual*, via forward-mode AD on the vendored multidual
+header (dual-number background in section 6.5). This is the route to
+take when the residual is long or awkward to differentiate by hand.
+
+```cpp
+#include "ocp/integrators/dae_autodiff.hpp"
+
+// the only method to write: the residual, templated on the scalar D.
+// An ODE is expressed as the residual  F = xdot - f(x, u, t).
+struct DuffingDae : ocp::AutoDiffDae<DuffingDae, DuffingDims>
+{
+    template <class D>
+    Eigen::Matrix<D, 2, 1> F(const Eigen::Matrix<D, 2, 1>& x,
+                             const Eigen::Matrix<D, 2, 1>& xdot,
+                             const Eigen::Matrix<D, 1, 1>& u,
+                             double /*t*/) const
+    {
+        Eigen::Matrix<D, 2, 1> f;
+        f(0) = x(1);
+        f(1) = -x(0) - 0.5 * x(0) * x(0) * x(0) + u(0);
+        return xdot - f;
+    }
+};
+
+using IrkDae  = ocp::ImplicitRkIntegrator<DuffingDims, DuffingDae, 4,
+                                          ocp::GaussLegendre4Tag>;
+using DaeBase = ocp::ContinuousProblem<DuffingDims, DuffingDae, IrkDae>;
+DuffingDae dae;
+DuffingProblem<DaeBase> irk_ad(dae, 0.05);   // same problem class as 6.4
+```
+
+The base generates the Jacobian blocks with one dual pass over
+`z = [x; xdot; u]` and the Hessian-vector product with a nested-dual
+pass, both allocation-free. The third template parameter selects the
+Hessian model of the whole solver:
+
+- `AutoDiffDae<D, Dims>` (default, `WithHess = true`): provides
+  `F_hess_prod`, so the integrator computes the full second-order
+  sensitivities (exact-Newton Hessian model, as in section 6.4 variant
+  2);
+- `AutoDiffDae<D, Dims, false>`: no `F_hess_prod`, so the integrator's
+  `hess_prod` returns zeros and the SQP runs the Gauss-Newton model
+  (pair with `Dims::has_dynamics_hess = false` to skip the dynamics
+  Hessian assembly as well, chapter 5).
+
+AD costs an extra forward pass per derivative block, so hand-written
+derivatives (`OdeToDae` over a hand-written ODE) are cheaper for
+closed-form residuals; `AutoDiffDae` pays off for long or
+numerically-composed residuals where hand-deriving the blocks is
+impractical. See `tests/integrators/dae_autodiff_4j.cpp` for
+finite-difference-verified checks of both Hessian models.
+
+## 6.7 Choosing a scheme
 
 - **Smooth dynamics, moderate accuracy:** explicit RK (`K2Tag`..`K4Tag`)
   with AD — the cheapest and fastest derivatives.
@@ -203,7 +261,7 @@ of chapter 5.
   still the solution (cost agrees with ERK4 to 1e-6), but the exit status
   tells you the residual floor was hit.
 
-## 6.7 Time-varying problems
+## 6.8 Time-varying problems
 
 Every ODE/DAE method receives the physical evaluation time `t` (the
 integrator computes the per-stage time from the Butcher abscissae), so a
