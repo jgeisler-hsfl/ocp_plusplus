@@ -7,13 +7,18 @@
 // 3. warm-started re-solve: shifting the solution and re-solving the same
 //    solver object (receding-horizon pattern)
 // 4. per-iteration statistics export to CSV
+// 5. NLP-level scaling: the ScaledProblem wrapper rescales the states
+//    and controls before the solver sees the problem; unscale() recovers
+//    the solution in natural units
 //
 // Problem: the double integrator of chapters 2-3.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
 #include "ocp/problem.hpp"
+#include "ocp/scaling.hpp"
 #include "ocp/solvers/acados/acados.hpp"
 
 // ---------------------------------------------------------------------------
@@ -287,6 +292,78 @@ static void free_initial_state(const AdvMhe& problem)
                 sol.cost_value, sol.x[0](0), sol.x[0](1));
 }
 
+// ---------------------------------------------------------------------------
+// Part 5: NLP-level scaling (ScaledProblem wrapper).
+// ---------------------------------------------------------------------------
+static void nlp_scaling(AdvFixed& problem)
+{
+    constexpr int N = 10;
+
+    // Wrap the same problem in scaled coordinates x_s = sx_ x,
+    // u_s = su_ u. The control enters the cost with a small weight
+    // (wa_ = 0.01), so its natural magnitude is small; scaling it up by
+    // 20 brings all decision variables closer to O(1) for the solver.
+    ocp::ScaledProblem<AdvFixed> scaled(problem);
+    scaled.sx_ << 1.0, 20.0;
+    scaled.su_ << 20.0;
+
+    // Solve the scaled problem (warm start: zero controls, dynamics
+    // propagated in scaled coordinates from the scaled initial state)
+    ocp::Solution<ocp::ScaledProblem<AdvFixed>, N> sol_s;
+    sol_s.x[0] = scaled.initial_state();
+    for (int k = 0; k < N; ++k)
+    {
+        sol_s.u[k].setZero();
+        sol_s.x[k + 1] =
+            scaled.dynamics_next_state(k, sol_s.x[k], sol_s.u[k]);
+    }
+    ocp::AcadosSolver<ocp::ScaledProblem<AdvFixed>, N> solver_s;
+    solver_s.solve(scaled, sol_s);
+    std::printf("scaled   solve: status=%d iters=%d cost=%.9f\n",
+                static_cast<int>(sol_s.status), solver_s.statistics().iter,
+                sol_s.cost_value);
+
+    // Unscale the solution back to natural units (primal divided, co-
+    // variable multipliers multiplied by the scaling entries)
+    ocp::Solution<AdvFixed, N> sol_raw = scaled.unscale(sol_s);
+
+    // Reference: solve the unscaled problem directly from the same
+    // (unscaled) warm start; the two solutions must agree to solver
+    // tolerance, proving the wrapper is exactly equivalent.
+    ocp::Solution<AdvFixed, N> sol_direct;
+    sol_direct.x[0] = problem.initial_state();
+    for (int k = 0; k < N; ++k)
+    {
+        sol_direct.u[k].setZero();
+        sol_direct.x[k + 1] =
+            problem.dynamics_next_state(k, sol_direct.x[k], sol_direct.u[k]);
+    }
+    ocp::AcadosSolver<AdvFixed, N> solver;
+    solver.solve(problem, sol_direct);
+
+    double dx = 0.0;
+    double du = 0.0;
+    for (int k = 0; k <= N; ++k)
+    {
+        dx = std::max(dx,
+                      (sol_raw.x[k] - sol_direct.x[k]).cwiseAbs().maxCoeff());
+    }
+    for (int k = 0; k < N; ++k)
+    {
+        du = std::max(du,
+                      (sol_raw.u[k] - sol_direct.u[k]).cwiseAbs().maxCoeff());
+    }
+    std::printf("unscaled vs direct: |dx| = %.2e, |du| = %.2e, "
+                "cost %.9f vs %.9f\n",
+                dx, du, sol_raw.cost_value, sol_direct.cost_value);
+
+    // Show the scaling effect on the terminal state
+    std::printf("x[N]  natural = [%.6f; %.6f]\n",
+                sol_raw.x[N](0), sol_raw.x[N](1));
+    std::printf("x_s[N] scaled  = [%.6f; %.6f]\n",
+                sol_s.x[N](0), sol_s.x[N](1));
+}
+
 int main()
 {
     AdvFixed fixed_problem;
@@ -297,6 +374,9 @@ int main()
 
     std::printf("\n== free initial state (MHE-style) ==\n");
     free_initial_state(mhe_problem);
+
+    std::printf("\n== NLP-level scaling (ScaledProblem) ==\n");
+    nlp_scaling(fixed_problem);
 
     return 0;
 }
