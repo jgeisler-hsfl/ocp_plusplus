@@ -272,3 +272,27 @@ is expanded back to the staged layout with
 forward simulation carries the seed `b` (dynamics p-derivative). The
 x0-sensitivity path (5h) keeps the default `include_b = false` (its seed
 has no dynamics offset).
+
+# 9. Solution naming and CSV export
+
+Component names are a property of the problem's `Dims` tag, not of a problem
+instance: the tag may optionally declare
+`state_names` (`std::array<const char*, nx>`) and
+`control_names` (`std::array<const char*, nu>`). `Problem` detects their
+presence with SFINAE traits (`detail::has_state_names` /
+`has_control_names`, the same pattern as the optional `np`) and exposes them
+through the static accessors `Problem::state_name(i)` /
+`Problem::control_name(i)`; when the arrays are absent, the default names
+`"x_0", ..., "x_{nx-1}"` / `"u_0", ..., "u_{nu-1}"` apply. A declared array
+with the wrong entry count is a compile-time error (`static_assert` in
+`Problem`).
+
+`ocp::Solution::to_csv(path)` writes the primal trajectories to a CSV file:
+header `k` followed by one named column per state and control component, one
+row per stage `k = 0..N` with values in `%.12e` format, and blank control
+fields on the terminal row (`k = N`, where no `u_N` exists). The method
+returns `bool` (no exceptions in the numerical core; `false` when the file
+cannot be opened). The CSV is the input of `tools/plot_solution.py`, a
+plotly-based script that renders one subplot per variable to HTML (default)
+or a static PNG (kaleido); the Python dependencies are user-installed and
+not part of the C++ build.

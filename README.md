@@ -26,7 +26,8 @@ the first (reference) solver implementations.
 ## What is here
 
 - `include/ocp/problem.hpp` — the problem interface: `Problem<Dims, Scalar>`
-  (CRTP), `Trajectory`, `Solution`, box / linear / terminal constraint specs.
+  (CRTP), `Trajectory`, `Solution` (with optional `Dims` component names and
+  `to_csv` export), box / linear / terminal constraint specs.
 - `include/ocp/integrators/` — continuous-time support: ODE models and a
   continuous-problem interface wrapped by explicit, implicit and multistep
   Runge-Kutta integrators to produce a discrete-time problem.
@@ -48,6 +49,11 @@ the first (reference) solver implementations.
 - `tools/acados2ocp_pp.py` — generator that ports an acados OCP (from its
   CasADi-generated `acados_ocp_nlp.json` + C model files) into an ocp++
   problem class.
+- `tools/plot_solution.py` — plots a solution CSV written by
+  `ocp::Solution::to_csv` as a self-contained HTML page (or a static PNG via
+  kaleido) with one subplot per variable, using plotly. Python dependencies
+  are user-installed (`pip install plotly [kaleido]`) and not required for
+  the C++ build.
 - `tests/` — unit tests for the QP and SQP solvers and the integrators, plus
   comparisons against the acados reference solver.
 - `mex/` — optional MATLAB MEX wrapper (one MEX binary per problem/solver

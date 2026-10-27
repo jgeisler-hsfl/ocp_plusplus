@@ -213,6 +213,37 @@ looks the way it does:
 They are also the warm start for the next solve (e.g. in a receding-horizon
 scheme, chapter 7).
 
+## 3.9 Exporting and plotting the solution
+
+`ocp::Solution::to_csv` writes the primal trajectories to a CSV file:
+
+```cpp
+sol.to_csv("solution.csv");  // returns bool; false if the file cannot be opened
+```
+
+The file has the header `k` followed by one column per state and control
+component — the column names come from the problem's `Dims` tag
+(`state_names` / `control_names`, chapter 2; defaults `x_i` / `u_i`) — and
+one row per stage `k = 0..N`, with values in scientific notation. The
+terminal row leaves the control columns blank (there is no `u_N`). The
+objective value and the KKT multipliers are not included in the file.
+
+To plot the trajectories, the repository ships `tools/plot_solution.py`, a
+small script built on [plotly](https://plotly.com/python/) that draws one
+subplot per variable (shared x-axis over the stage index `k`):
+
+```bash
+pip install plotly        # user-installed; not needed for the C++ build
+python3 tools/plot_solution.py solution.csv             # -> solution.html
+python3 tools/plot_solution.py solution.csv -o out.png  # static PNG
+```
+
+The HTML output is self-contained and can be opened in any browser; the PNG
+export additionally requires kaleido (`pip install plotly kaleido`). Blank
+terminal-row cells are drawn as gaps in the control traces. The
+`examples/double_integrator` program demonstrates the feature: it checks
+the component names and writes `double_integrator_solution.csv`.
+
 ## What's next
 
 Chapter 4 adds constraints to the problem — box, linear, nonlinear and
