@@ -31,7 +31,7 @@
 - [ ] do we really need the NS number of stage in the integrators, is that not already encoded in the tags?
 - [ ] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
 - [ ] make it possible to set the integrator step size per stage from the problem
-- [ ] add a ProblemScaling crtp class for scaling states and inputs. (how to recover the unscaled values from Solution?)
+- [x] add a ProblemScaling class for scaling states and inputs (done: `ocp::ScaledProblem<Base>` composition wrapper in `include/ocp/scaling.hpp`; unscaled values are recovered via `scaled.unscale(sol)`; plan in `docs/plans/finished/SCALED_PROBLEM_PLAN.md`)
 - [ ] add a linear and a nonlinear least sqquares tracking problem crtp class with gauss newton approximation option
 - [ ] add receding horizon shifting to Solution, what about the solver-internal slacks?
 

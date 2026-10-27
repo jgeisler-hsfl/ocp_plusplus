@@ -30,6 +30,11 @@ the first (reference) solver implementations.
 - `include/ocp/integrators/` — continuous-time support: ODE models and a
   continuous-problem interface wrapped by explicit, implicit and multistep
   Runge-Kutta integrators to produce a discrete-time problem.
+- `include/ocp/scaling.hpp` — `ScaledProblem<Base>`, a composition wrapper
+  that presents any problem in diagonally scaled state/input coordinates
+  (`x_s = sx * x`, `u_s = su * u`), turning a badly scaled problem into a
+  well-conditioned one; the solver sees only the scaled interface, and
+  `unscale()` recovers the primal + KKT solution in the original units.
 - `include/ocp/solvers/hpipm/` — the HPIPM QP solvers: a staged QP solver and
   a dense QP solver (used by the SQP full-condensed mode), the first
   (reference) QP solver implementations. The staged solver also supports

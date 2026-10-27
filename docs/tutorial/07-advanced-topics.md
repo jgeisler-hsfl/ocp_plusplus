@@ -448,7 +448,51 @@ The shared LHS/RHS stage assembly used by both `AcadosSolver` and
 `RtiSolver` lives in `solvers/acados/assemble.hpp`; the cost and
 slack-penalty helpers are shared via `solvers/acados/cost.hpp`.
 
-## 7.9 Where to go from here
+## 7.9 NLP-level scaling (`ScaledProblem`)
+
+When your states/inputs span very different magnitudes (e.g. position in
+metres vs. an angle in radians vs. a torque in newton-metres), the solver
+converges faster when all variables are O(1). `ocp::ScaledProblem<Base>`
+(`include/ocp/scaling.hpp`) presents any problem in diagonally scaled
+coordinates — no changes to your problem class are needed:
+
+```cpp
+DoubleIntegrator raw;                         // your problem in natural units
+ocp::ScaledProblem<DoubleIntegrator> scaled(raw);
+scaled.sx_ << 1.0, 0.1;                        // scale the states
+scaled.su_ << 0.5;                             // scale the controls
+```
+
+The wrapper holds `raw` by reference (keep it alive) and implements the
+full `ocp::Problem` interface: every model call is evaluated in
+unscaled coordinates and the values/Jacobians/Hessians/bounds are mapped
+to scaled units (values stay invariant, gradients scale with `D^-T`,
+Hessians with `D^-T H D^-1`, box bounds and their soft-penalty rows scale
+with the variable, nonlinear soft penalties stay unchanged). Feed it to
+any solver exactly like the raw problem:
+
+```cpp
+ocp::Solution<ocp::ScaledProblem<DoubleIntegrator>> sol(N);
+// warm-start sol in scaled units ...
+ocp::AcadosSolver<ocp::ScaledProblem<DoubleIntegrator>> solver(opts);
+auto st = solver.solve(scaled, sol);          // st: kSolved, sol in scaled units
+
+auto sol_raw = scaled.unscale(sol);           // back in natural units
+// sol_raw.x[k], sol_raw.u[k], all KKT multipliers, cost_value, status
+```
+
+`unscale()` recovers the complete solution in the original units: the
+primal is divided by the scaling entries, the dynamics and box multipliers
+are multiplied back by them (they are co-variable), and the
+(in)equality/linear multipliers are copied unchanged. The scaling vectors
+are public, user-managed members (all entries must be strictly positive);
+changing them takes effect on the next model call.
+
+> **Tip.** The solver's own *QP-level* scaling (section 7.5) operates on
+> the assembled QP and is a different, complementary mechanism; NLP-level
+> scaling rescales the model itself before the QP is ever assembled.
+
+## 7.10 Where to go from here
 
 - `tests/` contains a unit test per feature (options, warm start,
   funnel, SOC, timeout, scaling, integrators, DAE autodiff, ...) — the

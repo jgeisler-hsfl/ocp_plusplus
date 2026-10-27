@@ -272,3 +272,60 @@ is expanded back to the staged layout with
 forward simulation carries the seed `b` (dynamics p-derivative). The
 x0-sensitivity path (5h) keeps the default `include_b = false` (its seed
 has no dynamics offset).
+
+# 9. Problem Wrappers: Diagonal State/Input Scaling
+
+When state/input magnitudes span several orders of magnitude, solvers
+converge faster on a rescaled problem. `include/ocp/scaling.hpp` provides
+`ocp::ScaledProblem<Base>`, a **composition wrapper**: it holds a
+reference to a concrete problem `Base` and inherits
+`ocp::Problem<Base::dims_t, Base::scalar_t>`, presenting the full problem
+interface in scaled coordinates
+
+    x_s = sx_ ⊙ x,     u_s = su_ ⊙ u       (all scaling entries > 0)
+
+`sx_` / `su_` are public, user-managed members (default `Ones()`, like
+problem parameters); no affine offset in v1. The wrapper is a drop-in
+replacement for `Base` in any solver:
+
+```cpp
+ocp::ScaledProblem<RawProblem> scaled(raw);
+scaled.sx_ << 1.0, 0.1;
+scaled.su_ << 0.5;
+solver.solve(scaled, sol_s);            // solver works in scaled units
+auto sol = scaled.unscale(sol_s);       // primal + KKT back in raw units
+```
+
+**Transform rules** (every model call is evaluated in unscaled
+coordinates, then mapped; `D = blkdiag(sx_, su_)`):
+
+* cost/constraint **values** and linear-constraint **bounds** are
+  invariant; nonlinear soft-penalty vectors are invariant;
+* gradients scale as `D⁻ᵀ` (terminal: `sx_⁻¹` only);
+* Hessians scale as `D⁻ᵀ H D⁻¹` (terminal: `sx_⁻ᵀ H sx_⁻¹`);
+* dynamics Jacobians left-scale state rows by `sx_` and right-scale
+  variable columns by `D⁻¹` (`A_s = sx_ ⊙ A ⊙ sx_⁻ᵀ` columnwise,
+  `B_s = sx_ ⊙ B ⊙ su_⁻ᵀ`); other constraint Jacobians right-scale only;
+* box bounds and their soft-penalty rows scale with the variable:
+  `lo_s = lo ⊙ s`, `hi_s = hi ⊙ s`, `quad_s = quad / s²`, `lin_s = lin / s`;
+* the parameter-derivative (`*_sens_p`) quantities follow the same rules
+  (e.g. rows of `f_p`, `grad_p`, `dlo_dp`, `dhi_dp` scale with the
+  variable, values invariant).
+
+**Multiplier recovery:** `unscale()` (templated over the horizon `NH`)
+returns a `Solution<Base, NH>` in the original units: primal
+`x = sx_⁻¹ ⊙ x_s`, `u = su_⁻¹ ⊙ u_s`. The dynamics and state/control box
+multipliers are *co-variable* and are multiplied back by
+`sx_` / `su_` (box rows in `state_box_idx` / `control_box_idx` order,
+`[lo; hi]` layout); (in)equality and linear multipliers multiply
+invariant constraint values and are copied unchanged. `cost_value` and
+`status` are copied as-is.
+
+Implementation note: unqualified name lookup does not reach into the
+dependent base `Problem<...>` inside the wrapper's class template, and a
+`using`-declaration may only name members of a base class, so the type
+aliases and static dimensions used in the wrapper body are re-exposed as
+local aliases/constants (the wrapper's base is `Problem<...>`, not
+`Base`). The wrapper is covered by `tests/scaling/scaling_test.cpp`
+(value invariance, derivative transforms, identity-scaling bit-match,
+synthetic `unscale()`, end-to-end SQP equivalence).

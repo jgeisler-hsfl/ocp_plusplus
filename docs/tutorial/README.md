@@ -41,7 +41,7 @@ with `-DOCP_BUILD_MEX=ON`; its reference program is `mex/test_mex.m`.
 | 4 | [04-constraints.md](04-constraints.md) | Box, linear, nonlinear and soft constraints |
 | 5 | [05-second-order-models.md](05-second-order-models.md) | Exact Hessians vs Gauss-Newton, Levenberg-Marquardt |
 | 6 | [06-continuous-time-and-integrators.md](06-continuous-time-and-integrators.md) | ODE/DAE models, Runge-Kutta integrators, automatic differentiation |
-| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals (condensing, NLP- and QP-level sensitivities, classical Riccati), RTI solver, code generation |
+| 7 | [07-advanced-topics.md](07-advanced-topics.md) | Compile-time horizons, free initial state, QP internals (condensing, NLP- and QP-level sensitivities, classical Riccati), RTI solver, NLP-level scaling, code generation |
 | 8 | [08-mex-matlab.md](08-mex-matlab.md) | MATLAB MEX interface: C++ provisioning (session core, config headers, build) and the MATLAB command surface |
 
 ## Further reading
