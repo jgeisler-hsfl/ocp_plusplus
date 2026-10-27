@@ -111,7 +111,7 @@ struct HpipmOptions
     int t0_init = 2;             // slack init: 0 sqrt(mu0) / 1 1.0 / 2 heuristic
     int update_fact_exit = 1;    // leave an updated factorization on exit
 
-    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md):
+    /// By-name access to the fields above (docs/plans/finished/OPTION_INSPECT_PLAN.md):
     /// `inspect::set_double(o, "mu0", 2.0)` /
     /// `inspect::get_double(o, "iter_max", i)`. Direct member access is
     /// unchanged.
@@ -192,7 +192,7 @@ struct HpipmIteration
     double lin_res_comp = 0;
     int npd_reg_hess = 0;       // 1: Hessian found non-PSD, was regularized
 
-    /// inspect protocol (docs/plans/OPTION_INSPECT_PLAN.md sec. 5): the
+    /// inspect protocol (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 5): the
     /// stat table's column names are this struct's leaf field names.
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
@@ -2127,7 +2127,7 @@ public:
     const HpipmOptions& options() const { return opts_; }
     const HpipmStatistics& statistics() const { return stat_; }
 
-    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// inspect children (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 3): the live
     /// HPIPM options (by-name paths: options.*).
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)

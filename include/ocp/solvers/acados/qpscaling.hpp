@@ -70,7 +70,7 @@ public:
         double ub_max_abs_eig = 1e5;         // cap for max-abs-eig estimate
         double lb_norm_inf_grad_obj = 1e-4;  // floor for scaled grad inf-norm
 
-        /// By-name access (docs/plans/OPTION_INSPECT_PLAN.md): linked under
+        /// By-name access (docs/plans/finished/OPTION_INSPECT_PLAN.md): linked under
         /// "options" by QpScaler::inspect (paths scaling.options.*).
         template <class Visitor>
         static constexpr void inspect(Visitor&& vis)
@@ -97,7 +97,7 @@ public:
         opts_ = o;
     }
 
-    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// inspect children (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 3): the live
     /// scaling options (by-name paths: scaling.options.*).
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)

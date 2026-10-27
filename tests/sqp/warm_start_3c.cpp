@@ -588,7 +588,7 @@ void test_qp_warm_start(const char* name, int N)
 // ---------------------------------------------------------------------
 // Driver-level: qp.options.warm_start = 2 vs 0 on DoubleIntegrator
 // (the QP warm-start mode lives in HpipmOptions; see
-// docs/plans/OPTION_INSPECT_PLAN.md)
+// docs/plans/finished/OPTION_INSPECT_PLAN.md)
 // ---------------------------------------------------------------------
 
 void test_driver_warm_start()

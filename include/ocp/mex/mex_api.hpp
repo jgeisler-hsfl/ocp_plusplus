@@ -12,7 +12,7 @@
 // Pure C++ (no mex.h): unit-testable without MATLAB. Scalars cross the host
 // boundary as double (MATLAB is double-only), so option access goes through
 // the inspect protocol (get_double / set_double on the live solver;
-// docs/plans/OPTION_INSPECT_PLAN.md).
+// docs/plans/finished/OPTION_INSPECT_PLAN.md).
 
 #pragma once
 
@@ -38,7 +38,7 @@ namespace mex
 /// name operate on the live solver through the inspect protocol, so a write
 /// takes effect on the next solve() without a separate push step.
 ///
-/// Solver contract (docs/plans/OPTION_INSPECT_PLAN.md sec. 6): `Solver`
+/// Solver contract (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 6): `Solver`
 /// must provide
 ///   1. `static constexpr inspect(Visitor)` exposing its option children
 ///      (dotted leaf paths are the option names);
@@ -99,7 +99,7 @@ public:
     }
 
     // ---------------------------------------------------------------
-    //  Options (by name, inspect protocol; docs/plans/OPTION_INSPECT_PLAN.md)
+    //  Options (by name, inspect protocol; docs/plans/finished/OPTION_INSPECT_PLAN.md)
     // ---------------------------------------------------------------
 
     /// All discoverable option names (dotted paths: options.*, qp.options.*,
@@ -335,7 +335,7 @@ public:
 
     // ---------------------------------------------------------------
     //  Statistics (named columns via the inspect protocol;
-    //  docs/plans/OPTION_INSPECT_PLAN.md sec. 5)
+    //  docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 5)
     // ---------------------------------------------------------------
 
     int stat_iter() const { return solver_.statistics().iter; }

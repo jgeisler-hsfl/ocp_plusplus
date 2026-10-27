@@ -1,7 +1,7 @@
 // ocp/utils/inspect.hpp
 //
 // inspect protocol: dual access (by member / by name) over the scalar
-// fields of an object tree (docs/plans/OPTION_INSPECT_PLAN.md). Replaces
+// fields of an object tree (docs/plans/finished/OPTION_INSPECT_PLAN.md). Replaces
 // the former offset-based ValueRegistry.
 //
 // Each type that exposes fields provides a static member

@@ -802,7 +802,7 @@ struct AcadosOptions
     double tau_min = 1e-16;               // res_comp floor
     GlobOptions glob;
 
-    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md):
+    /// By-name access to the fields above (docs/plans/finished/OPTION_INSPECT_PLAN.md):
     /// `inspect::set_double(o, "max_iter", 40.0)` /
     /// `inspect::get_double(o, "glob.alpha_min", x)`; the nested GlobOptions
     /// is linked under "glob". Direct member access is unchanged.
@@ -880,7 +880,7 @@ struct SqpIteration
     /// (kFullCondensed mode only; 0 in kStaged mode).
     double cond_time = 0.0;
 
-    /// inspect protocol (docs/plans/OPTION_INSPECT_PLAN.md sec. 5): the
+    /// inspect protocol (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 5): the
     /// stat table's column names are this struct's leaf field names.
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
@@ -1178,7 +1178,7 @@ public:
     const AcadosOptions& options() const { return opts_; }
     const AcadosStatistics& statistics() const { return stat_; }
 
-    /// inspect children (docs/plans/OPTION_INSPECT_PLAN.md sec. 3): the live
+    /// inspect children (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 3): the live
     /// driver options, the QP sub-solver and the QP scaler. By-name paths:
     /// options.*, qp.options.*, scaling.options.*.
     template <class Visitor>

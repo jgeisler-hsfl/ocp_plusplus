@@ -4,7 +4,7 @@
 > replaced by the inspect protocol, which implements the full open scope of
 > this plan (live solver-exposed options, named statistics columns,
 > solver-agnostic MEX session) without any (re-)allocation in the core.
-> See `docs/plans/OPTION_INSPECT_PLAN.md` (phases P1–P5, all completed).
+> See `docs/plans/finished/OPTION_INSPECT_PLAN.md` (phases P1–P5, all completed).
 > `include/ocp/named_values.hpp` and `tests/registry/` were deleted.
 
 Advances TODO.md item 10; implements the "Separation of parameters" principle

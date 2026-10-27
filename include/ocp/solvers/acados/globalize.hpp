@@ -57,7 +57,7 @@ struct GlobOptions
     bool full_step_dual = false;        // full-step dual update vs. relaxed
     bool use_soc = false;               // second-order-correction pre-pass
 
-    /// By-name access to the fields above (docs/plans/OPTION_INSPECT_PLAN.md);
+    /// By-name access to the fields above (docs/plans/finished/OPTION_INSPECT_PLAN.md);
     /// linked into AcadosOptions under "glob" (glob.* paths).
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)

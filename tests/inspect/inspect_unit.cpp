@@ -1,4 +1,4 @@
-// inspect protocol unit tests (docs/plans/OPTION_INSPECT_PLAN.md, P1):
+// inspect protocol unit tests (docs/plans/finished/OPTION_INSPECT_PLAN.md, P1):
 // typed / double-coerced field access, dotted delegation through a
 // nested inspect(), unknown names, leaf-only path semantics, name
 // discovery (leaf_names), dump format, the has_inspect trait,

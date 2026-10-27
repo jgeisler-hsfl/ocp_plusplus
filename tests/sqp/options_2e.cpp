@@ -86,7 +86,7 @@ void test_options_defaults()
     check(!o.glob.full_step_dual, "glob.full_step_dual default false");
 
     // the 5 options removed from AcadosOptions now live on the owning
-    // components (docs/plans/OPTION_INSPECT_PLAN.md sec. 2.1)
+    // components (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 2.1)
     HpipmOptions h;
     check(h.warm_start == 0, "HpipmOptions warm_start default 0");
     QpScaler<DoubleIntegrator>::Opts so;
@@ -101,7 +101,7 @@ void test_options_defaults()
 
 // ---------------------------------------------------------------------
 // AcadosOptions by-name access (inspect protocol;
-// docs/plans/OPTION_INSPECT_PLAN.md)
+// docs/plans/finished/OPTION_INSPECT_PLAN.md)
 // ---------------------------------------------------------------------
 
 void test_options_inspect()
@@ -169,7 +169,7 @@ void test_options_inspect()
 
 // ---------------------------------------------------------------------
 // Statistics table access (inspect protocol;
-// docs/plans/OPTION_INSPECT_PLAN.md sec. 5)
+// docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 5)
 // ---------------------------------------------------------------------
 
 void test_stat_table()

@@ -7,7 +7,7 @@
 // (ocp_mex::{Problem,kHorizon,Solver,kName}) comes from the config header
 // selected by OCP_MEX_CONFIG (see ocp_mex_main.cpp).
 //
-// Command surface (v2, docs/plans/MEX_IMPROVEMENTS_PLAN.md):
+// Command surface (v2, docs/plans/finished/MEX_IMPROVEMENTS_PLAN.md):
 //   info | init N | options | opt_get name | opt_set name value |
 //   opt_set struct | opt_dump | set field M | get field | solution |
 //   solve | stats | stat_col name
@@ -271,7 +271,7 @@ mxArray* do_stat_col(const Session& session, const std::string& name)
 /// session.option_set; unknown option names, out-of-range values and
 /// non-scalar, non-struct values raise a MATLAB warning (skipped, no
 /// error) — partial structs are fine
-/// (docs/plans/MEX_IMPROVEMENTS_PLAN.md P5).
+/// (docs/plans/finished/MEX_IMPROVEMENTS_PLAN.md P5).
 void set_option_struct(Session& session, const mxArray* s,
                        const std::string& prefix)
 {
