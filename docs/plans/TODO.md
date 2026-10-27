@@ -43,7 +43,7 @@
 
 ### D. Docs / tutorial / README / license
 
-- [ ] add ocp::Status conversion to string
+- [x] add ocp::Status conversion to string (done — `ocp::to_string(Status)` in `problem.hpp`, tested in `tests/problem/status_unit.cpp`)
 - [ ] in 06-continuous-time-and-integrators.md, add a usage example for AutoDiffDae (explanation is now in §6.3/§6.5; the tutorial example uses OdeToDae only — usage currently shown only in `tests/integrators/dae_autodiff_4j.cpp`)
 - [ ] is the funnel globalization adequately addressed in the tutorial? (07 §7.6 covers the default merit backtracking with its options and the funnel statistics fields; still missing: a concrete `Funnel<P, NH>` template-instantiation example and the funnel-specific parameters — initialization factors, `sufficient_decrease_factor`, `kappa`, penalty params, `use_merit_fun_only`)
 - [x] check about this "hess * v  =  sum_i lam_i * D^2 f_i(x, u) * v" in 05-second-order-models.md. i believe the "v" is no longer there (checked — 05 §5.3 now reads `hess = sum_i lam_i * D^2 f_i(x, u)`)

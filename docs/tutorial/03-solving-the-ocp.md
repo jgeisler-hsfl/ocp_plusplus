@@ -144,6 +144,9 @@ solver.statistics().write_csv("sqp_stat.csv");
 | `kTimeout` (9) | wall-clock budget exceeded | raise `timeout_max_time` |
 | `kNotInitialized` (10) | `solve()` called before `init()` | call `init()` first |
 
+For log output, `ocp::to_string(sol.status)` returns the enumerator
+spelling (e.g. `"kSolved"`).
+
 ## 3.6 Convergence: the four residual norms
 
 The solver measures convergence with four infinity norms

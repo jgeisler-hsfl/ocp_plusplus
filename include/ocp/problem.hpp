@@ -1455,6 +1455,28 @@ enum class Status
     kNotInitialized  // solve called before init()
 };
 
+/// Human-readable name of a solve status (the enumerator spelling,
+/// e.g. "kSolved"), for logging and diagnostics. A value outside the
+/// enum range maps to "unknown".
+constexpr const char* to_string(Status s)
+{
+    switch (s)
+    {
+        case Status::kUnset:          return "kUnset";
+        case Status::kSolved:         return "kSolved";
+        case Status::kMaxIterations:  return "kMaxIterations";
+        case Status::kInfeasible:     return "kInfeasible";
+        case Status::kQpFailure:      return "kQpFailure";
+        case Status::kMinStep:        return "kMinStep";
+        case Status::kUnbounded:      return "kUnbounded";
+        case Status::kNanDetected:    return "kNanDetected";
+        case Status::kAborted:        return "kAborted";
+        case Status::kTimeout:        return "kTimeout";
+        case Status::kNotInitialized: return "kNotInitialized";
+    }
+    return "unknown";
+}
+
 /// Solver-independent solution (and warm-start) container.
 ///
 /// The same object is used both as the initial iterate supplied to a
