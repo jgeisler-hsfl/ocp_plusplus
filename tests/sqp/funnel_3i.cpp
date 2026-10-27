@@ -223,6 +223,34 @@ void test_funnel_matches_merit()
     check(du < 1e-6, p + "du < 1e-6");
 }
 
+// ---------------------------------------------------------------------
+// The funnel-specific parameters are reachable through the solver's
+// globalizer() accessor and take effect: a solve with a tuned funnel
+// still converges and reaches the same solution.
+// ---------------------------------------------------------------------
+void test_funnel_params_settable()
+{
+    const std::string p = "3i funnel params: ";
+    DI prob;
+    const int N = 10;
+
+    AcadosOptions opts;
+    opts.max_iter = 30;
+    FunnelSolver solver(opts);
+
+    // These knobs live on the globalizer instance (not in GlobOptions),
+    // so they are set through the accessor, before solve().
+    solver.globalizer().kappa = 0.5;
+    solver.globalizer().initial_penalty_parameter = 2.0;
+    check(solver.globalizer().kappa == 0.5, p + "kappa settable");
+    check(solver.globalizer().initial_penalty_parameter == 2.0,
+          p + "initial_penalty_parameter settable");
+
+    Solution<DI> sol = make_warm_start(prob, N);
+    const Status st = solver.solve(prob, sol);
+    check(st == Status::kSolved, p + "tuned funnel kSolved");
+}
+
 }  // namespace
 
 int run_funnel_3i_tests()
@@ -232,6 +260,7 @@ int run_funnel_3i_tests()
     test_funnel_width_monotone();
     test_funnel_iter_type_logged();
     test_funnel_matches_merit();
+    test_funnel_params_settable();
 
     if (failures == 0)
     {

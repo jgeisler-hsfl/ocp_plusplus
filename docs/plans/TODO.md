@@ -45,7 +45,7 @@
 
 - [x] add ocp::Status conversion to string (done — `ocp::to_string(Status)` in `problem.hpp`, tested in `tests/problem/status_unit.cpp`)
 - [ ] in 06-continuous-time-and-integrators.md, add a usage example for AutoDiffDae (explanation is now in §6.3/§6.5; the tutorial example uses OdeToDae only — usage currently shown only in `tests/integrators/dae_autodiff_4j.cpp`)
-- [ ] is the funnel globalization adequately addressed in the tutorial? (07 §7.6 covers the default merit backtracking with its options and the funnel statistics fields; still missing: a concrete `Funnel<P, NH>` template-instantiation example and the funnel-specific parameters — initialization factors, `sufficient_decrease_factor`, `kappa`, penalty params, `use_merit_fun_only`)
+- [x] is the funnel globalization adequately addressed in the tutorial? (done — 07 §7.6 now documents the `f`/`h`/`b`/`p` accept semantics, a concrete `Funnel<P, NH>` instantiation, and all 9 funnel parameters; funnel params are settable via the new `AcadosSolver::globalizer()` accessor, tested in `tests/sqp/funnel_3i.cpp`)
 - [x] check about this "hess * v  =  sum_i lam_i * D^2 f_i(x, u) * v" in 05-second-order-models.md. i believe the "v" is no longer there (checked — 05 §5.3 now reads `hess = sum_i lam_i * D^2 f_i(x, u)`)
 - [x] definition of IrkBase is missing in the example in 06-continuous-time-and-integrators.md (fixed — `using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;` in 06 §6.4)
 - [x] in 06-continuous-time-and-integrators.md, 6.5 Automatic differentiation, add a link to an explanation of duals and the original repo (done — 06 §6.5 links the Wikipedia dual-numbers AD article and names the vendored multidual header)

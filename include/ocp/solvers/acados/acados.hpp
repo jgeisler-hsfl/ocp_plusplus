@@ -1192,6 +1192,14 @@ public:
     const Qp<P, NH>& last_qp() const { return qp_in_; }
     const QpSol<P, NH>& last_qp_sol() const { return qp_out_; }
 
+    /// The active globalizer instance. The shared line-search options are
+    /// copied from `opts_.glob` into it at the start of every `solve()`, so
+    /// they are configured via `opts.glob` as usual; strategy-specific
+    /// members that are not part of `GlobOptions` (e.g. the funnel width
+    /// parameters of `ocp::Funnel`) live on this instance and must be set
+    /// here, before `solve()`.
+    Globalizer& globalizer() { return glob_; }
+
     /// First-order sensitivity of the OCP solution w.r.t. the fixed
     /// initial state (HPIPM QP sensitivities, docs/ARCHITECTURE.md sec. 8).
     ///

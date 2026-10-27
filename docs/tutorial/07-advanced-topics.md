@@ -305,6 +305,51 @@ as template parameters, so they can be swapped:
 ocp::AcadosSolver<P, NH, QpSolver, Regularizer, Globalizer>
 ```
 
+The alternative globalizer is `ocp::Funnel<P, NH>` (funnel acceptance,
+after acados `ocp_nlp_globalization_funnel.c`). Instead of accepting a
+step only on a merit decrease, it keeps a "funnel" of acceptable L1
+infeasibility: steps are accepted while the trial iterate stays inside
+the funnel, and the funnel is contracted whenever the infeasibility
+drops sufficiently. Each accepted step is labeled `f`/`h`/`b`/`p`
+(`funnel_iter_type` 1–4, section 7.4):
+
+- `f` — inside the funnel with a predicted objective decrease that
+  passes the switching condition, plus an Armijo test on the objective;
+- `h` — the L1 infeasibility falls below
+  `sufficient_decrease_factor` times the funnel width: accept and
+  shrink the funnel;
+- `b` — infeasibility improves but the objective does not: accept on
+  the (penalty-weighted) merit and enter penalty mode;
+- `p` — in penalty mode: accept on a merit decrease; leave penalty mode
+  and shrink the funnel once the infeasibility drops again.
+
+Swap it in as the globalizer template argument and (optionally) tune
+the funnel-specific parameters via `solver.globalizer()` — they live on
+the globalizer instance itself; the shared line-search options still
+come from `opts.glob` (copied into the globalizer at the start of each
+`solve()`):
+
+```cpp
+ocp::AcadosSolver<P, NH, ocp::HpipmQpSolver<P, NH>,
+                  ocp::GlmRegularizer<P, NH>, ocp::Funnel<P, NH>>
+    solver(opts);
+solver.globalizer().kappa = 0.9;   // funnel shrink blend, before solve()
+```
+
+The funnel-specific parameters (public members of `ocp::Funnel`):
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `initialization_increase_factor` | 15.0 | initial width = `max(initialization_upper_bound, factor * L1_0)` |
+| `initialization_upper_bound` | 1.0 | floor of the initial funnel width |
+| `sufficient_decrease_factor` | 0.9 | `c_sd`: accept as `h` and shrink when `L1_trial <= c_sd * width` |
+| `kappa` | 0.9 | shrink rule `width <- (1-kappa) * L1_trial + kappa * width` |
+| `fraction_switching_condition` | 1e-3 | gate for an `f` accept: the predicted objective decrease must be at least this fraction of the current L1 infeasibility |
+| `initial_penalty_parameter` | 1.0 | initial penalty weight `rho` of the merit `rho * F + L1` |
+| `penalty_contraction` | 0.5 | contraction factor for `rho` in penalty mode |
+| `penalty_eta` | 1e-6 | threshold that triggers the `rho` update |
+| `use_merit_fun_only` | false | disable the funnel gate; acceptance reduces to the merit/objective tests |
+
 The statistics expose which mechanism accepted each step
 (`funnel_iter_type`: `-1` for merit backtracking; a funnel globalizer
 records `f`/`h`/`b`/`p` accept types and its width).
