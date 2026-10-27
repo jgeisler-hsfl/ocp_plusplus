@@ -556,6 +556,11 @@ template <class Dims, class Scalar = double>
 class Problem
 {
 public:
+    /// The Dims tag this problem was instantiated with; re-exposed so
+    /// wrapper classes (e.g. ScaledProblem) can name the base without
+    /// the user repeating the tag.
+    using dims_t = Dims;
+
     // ---------------------------------------------------------------
     // Structural dimensions (compile time)
     // ---------------------------------------------------------------

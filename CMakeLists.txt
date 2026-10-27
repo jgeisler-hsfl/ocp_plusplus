@@ -310,6 +310,10 @@ add_executable(mex_api_unit tests/mex/mex_api_unit.cpp)
 target_include_directories(mex_api_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mex_api_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(scaling_test tests/scaling/scaling_test.cpp)
+target_include_directories(scaling_test PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(scaling_test PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(sqp_double_integrator
                tests/sqp_double_integrator/sqp_double_integrator.cpp)
 target_include_directories(sqp_double_integrator
