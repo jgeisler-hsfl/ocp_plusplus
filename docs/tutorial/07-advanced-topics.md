@@ -2,8 +2,9 @@
 
 This chapter covers the remaining features: compile-time horizons, free
 initial states (moving-horizon estimation), warm starting, the QP
-internals, globalization, and the acados JSON generator. The companion
-example is `examples/tutorial/advanced.cpp` (target `tutorial_advanced`).
+internals, globalization, the acados JSON generator, real-time iteration
+and NLP-level scaling. The companion example is
+`examples/tutorial/advanced.cpp` (target `tutorial_advanced`).
 
 ## 7.1 Compile-time horizons
 
@@ -491,6 +492,11 @@ changing them takes effect on the next model call.
 > **Tip.** The solver's own *QP-level* scaling (section 7.5) operates on
 > the assembled QP and is a different, complementary mechanism; NLP-level
 > scaling rescales the model itself before the QP is ever assembled.
+
+The companion example demonstrates this in `nlp_scaling()` (Part 5):
+it wraps the chapter's double integrator, solves the scaled problem,
+recovers the solution in natural units with `unscale()`, and compares
+against a direct (unscaled) solve — the two agree to solver tolerance.
 
 ## 7.10 Where to go from here
 

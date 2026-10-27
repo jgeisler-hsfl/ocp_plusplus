@@ -101,6 +101,9 @@ The remaining options, all with sensible defaults (grouped by topic):
 - **QP scaling:** the live scaling options on the solver's QP scaler,
   `scaling.options.scale_objective`, `scaling.options.scale_constraints`
   and their bounds (chapter 7).
+- **NLP-level scaling:** if your states/controls span very different
+  magnitudes, wrap the problem in `ocp::ScaledProblem` to rescale the
+  model itself before any QP is assembled (chapter 7.9).
 - **Per-iteration QP tolerances:** `nlp_qp_tol_strategy` (0 = fixed, 1 =
   from the NLP residuals, 2 = from the scaling factors) and its parameters
   (chapter 7).
