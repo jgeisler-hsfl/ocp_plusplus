@@ -64,15 +64,15 @@ all transcribed from the acados reference:
 | `RadauIia2Tag` / `3` / `4` | Radau IIA collocation | implicit, L-stable |
 | `GaussLegendre2Tag` / `3` / `4` | Gauss-Legendre collocation | implicit; GL4 is the acados IRK default, no L-stability |
 
-**Explicit integrator** (`ocp::ExplicitRkIntegrator<Dims, Ode, NS, Tag,
-NumSteps = 1>`): `NS` is the number of RK stages, `Tag` the scheme.
-`NumSteps` subdivides each OCP interval of size `h` into `NumSteps`
-sub-steps of size `h/NumSteps` (multi-step mode; the default 1 is the
-plain single-step scheme) — a cheap way to improve accuracy without
-changing the OCP grid.
+**Explicit integrator** (`ocp::ExplicitRkIntegrator<Dims, Ode, Tag,
+NumSteps = 1>`): `Tag` selects the scheme (K1Tag..K4Tag); the number of
+RK stages is derived from the tag (`Tag::ns`). `NumSteps` subdivides each
+OCP interval of size `h` into `NumSteps` sub-steps of size `h/NumSteps`
+(multi-step mode; the default 1 is the plain single-step scheme) — a
+cheap way to improve accuracy without changing the OCP grid.
 
-**Implicit integrator** (`ocp::ImplicitRkIntegrator<Dims, Dae, NS, Tag,
-NumSteps = 1>`): consumes the DAE residual
+**Implicit integrator** (`ocp::ImplicitRkIntegrator<Dims, Dae, Tag,
+NumSteps = 1>`): same scheme selection by tag; consumes the DAE residual
 
 ```cpp
 state_t F(const state_t& x, const state_t& xdot,
@@ -115,14 +115,14 @@ ways:
 
 ```cpp
 // variant 1: explicit RK4, automatic differentiation path
-using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde, 4,
+using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                        ocp::K4Tag>;
 using ErkBase = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
 DuffingProblem<ErkBase> erk(ode, 0.05);
 
 // variant 2: implicit RK, Gauss-Legendre 4-stage collocation
 using Dae = ocp::OdeToDae<DuffingOde, DuffingDims>;
-using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae, 4,
+using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae,
                                          ocp::GaussLegendre4Tag>;
 using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;
 DuffingProblem<IrkBase> irk(dae, 0.05);
@@ -217,7 +217,7 @@ struct DuffingDae : ocp::AutoDiffDae<DuffingDae, DuffingDims>
     }
 };
 
-using IrkDae  = ocp::ImplicitRkIntegrator<DuffingDims, DuffingDae, 4,
+using IrkDae  = ocp::ImplicitRkIntegrator<DuffingDims, DuffingDae,
                                           ocp::GaussLegendre4Tag>;
 using DaeBase = ocp::ContinuousProblem<DuffingDims, DuffingDae, IrkDae>;
 DuffingDae dae;
@@ -307,7 +307,7 @@ int main()
 {
     DuffingParams params;            // user-owned; keep alive
     DuffingOde ode{params};
-    using Erk4  = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde, 4,
+    using Erk4  = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                             ocp::K4Tag>;
     using Base  = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
     DuffingProblem<Base> problem(ode, 0.05);

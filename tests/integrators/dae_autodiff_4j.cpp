@@ -208,15 +208,15 @@ static_assert(ocp::ode_supports_hess_prod<OdeXsqURef, Dims>,
               "the hand-written reference must expose hess_prod");
 
 static_assert(
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag>::
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag>::
         supports_value_jac_hess_prod,
     "explicit integrator over a dual-evaluable f must flag the fused HVP");
 static_assert(
-    !ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, 4, ocp::K4Tag>::
+    !ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, ocp::K4Tag>::
         supports_value_jac_hess_prod,
     "explicit integrator over a hand-written ODE must not");
 static_assert(
-    !ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2, ocp::RadauIia2Tag>::
+    !ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, ocp::RadauIia2Tag>::
         supports_value_jac_hess_prod,
     "implicit integrator has no dual-Newton fused entry");
 static_assert(ocp::ode_ad_hess_prod_enabled<OdeXsqUAd>,
@@ -224,7 +224,7 @@ static_assert(ocp::ode_ad_hess_prod_enabled<OdeXsqUAd>,
 static_assert(!ocp::ode_ad_hess_prod_enabled<OdeXsqUAdNoHess>,
               "ad_hess_prod = false must disable the AD HVP pass");
 static_assert(
-    !ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, 4, ocp::K4Tag>::
+    !ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, ocp::K4Tag>::
         supports_value_jac_hess_prod,
     "opted-out AD ODE must not flag the fused HVP");
 
@@ -588,7 +588,7 @@ void check_integ_value_jac_hess_prod(Integ& integ, const char* name)
 void check_gn_switch()
 {
     DaeXsqUGn dae_gn;
-    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2, ocp::RadauIia2Tag> irk_gn(
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, ocp::RadauIia2Tag> irk_gn(
         dae_gn, 0.1, 8);
 
     const state_t x(0.3, -0.7);
@@ -740,7 +740,7 @@ void check_cross_backend(IntegAd& ig_ad, IntegRef& ig_ref, const char* name)
 void check_ad_hess_opt_out()
 {
     // The Dual1 value_jac path is unaffected by the opt-out.
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, 4, ocp::K4Tag> erk_no(
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, ocp::K4Tag> erk_no(
         OdeXsqUAdNoHess{}, 0.1);
     check_integ_value_jac(erk_no, "K4-AD-NoHess");
 
@@ -749,7 +749,7 @@ void check_ad_hess_opt_out()
     // match the enabled ODE at the same point.
     static_assert(!GnDims::has_dynamics_hess, "GN dims variant");
     using ErkNoHess =
-        ocp::ExplicitRkIntegrator<GnDims, OdeXsqUAdNoHess, 4, ocp::K4Tag>;
+        ocp::ExplicitRkIntegrator<GnDims, OdeXsqUAdNoHess, ocp::K4Tag>;
     ocp::ContinuousProblem<GnDims, OdeXsqUAdNoHess, ErkNoHess> prob(
         OdeXsqUAdNoHess{}, 0.1);
     const state_t x(0.3, -0.7);
@@ -763,7 +763,7 @@ void check_ad_hess_opt_out()
     df_dx_t Jx_ad;
     df_du_t Ju_ad;
     OdeXsqUAd ad;
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag> erk_ad(ad, 0.1);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk_ad(ad, 0.1);
     erk_ad.value_jac(x, u, 0.0, x_next_ad, Jx_ad, Ju_ad);
     check((x_next - x_next_ad).cwiseAbs().maxCoeff() < 1e-12,
           "ad opt-out: dynamics value == enabled ODE");
@@ -781,7 +781,7 @@ void check_ad_hess_opt_out()
 void check_problem_hess()
 {
     DaeXsqUAd dae;
-    using Irk = ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2,
+    using Irk = ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd,
                                           ocp::RadauIia2Tag>;
     ocp::ContinuousProblem<Dims, DaeXsqUAd, Irk> prob(dae, 0.1, 8);
     const state_t x(0.3, -0.7);
@@ -820,7 +820,7 @@ void check_problem_hess()
     // GN variant: WithHess = false assembles an identically zero dynamics
     // Hessian with an unchanged Jacobian (the SQP then runs the GN model).
     DaeXsqUGn dae_gn;
-    using IrkGn = ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2,
+    using IrkGn = ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn,
                                             ocp::RadauIia2Tag>;
     ocp::ContinuousProblem<Dims, DaeXsqUGn, IrkGn> prob_gn(dae_gn, 0.1, 8);
     state_t xn_gn;
@@ -850,14 +850,14 @@ int run_autodiff_4j_tests()
     DaeXsqUAd dae;
     DaeXsqUGn dae_gn;
 
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag> erk(ad, 0.1);
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, 4, ocp::K4Tag, 2> erk2(ad, 0.1);
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, 4, ocp::K4Tag> erk_ref(ref, 0.1);
-    ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, 2, ocp::RadauIia2Tag> irk(
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk(ad, 0.1);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag, 2> erk2(ad, 0.1);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, ocp::K4Tag> erk_ref(ref, 0.1);
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, ocp::RadauIia2Tag> irk(
         dae, 0.1, 8);
-    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, 2, ocp::RadauIia2Tag> irk_gn(
+    ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, ocp::RadauIia2Tag> irk_gn(
         dae_gn, 0.1, 8);
-    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>, 2,
+    ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>,
                               ocp::RadauIia2Tag>
         irk_ref(ref, 0.1, 8);
 

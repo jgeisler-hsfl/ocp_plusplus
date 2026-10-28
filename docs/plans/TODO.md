@@ -28,7 +28,7 @@
 ### B. Problem interface / design ergonomics
 
 - [x] to be examined: how to share parameters between ODE/DAE and cost and constraints (done — duck-typed `params()` hook: a user-defined parameter struct read by the model bodies, optional override on `Problem` with an `EmptyParams` base stub, inspect/MEX by-name access; plan in `docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md`, pattern in tutorial ch. 02/06, MEX `param_*` commands in ch. 08)
-- [ ] do we really need the NS number of stage in the integrators, is that not already encoded in the tags?
+- [x] do we really need the NS number of stage in the integrators, is that not already encoded in the tags? (yes, redundant — dropped: tags now carry `ns`, `ButcherTableau<Dims, Tag>`, `ExplicitRkIntegrator<Dims, Ode, Tag, NumSteps>`, `ImplicitRkIntegrator<Dims, Dae, Tag, NumSteps>`; see docs/plans/finished/DROP_NS_PLAN.md)
 - [ ] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
 - [ ] make it possible to set the integrator step size per stage from the problem
 - [x] add a ProblemScaling class for scaling states and inputs (done: `ocp::ScaledProblem<Base>` composition wrapper in `include/ocp/scaling.hpp`; unscaled values are recovered via `scaled.unscale(sol)`; plan in `docs/plans/finished/SCALED_PROBLEM_PLAN.md`)

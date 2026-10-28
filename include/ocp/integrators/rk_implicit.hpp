@@ -10,7 +10,7 @@
 // (duck type: dae_model.hpp — the same contract the generated CasADi
 // dae_fun / dae_fun_jac code exposes) into the discrete dynamics
 //  x_next = Phi(x, u, t_k)  via a fixed implicit RK scheme
-// (ButcherTableau<Dims, NS, Tag>, Radau IIA or Gauss-Legendre).
+// (ButcherTableau<Dims, Tag>, Radau IIA or Gauss-Legendre).
 //
 // Stage equations (sub-step size h_ss = h / NumSteps, Butcher A, b, c):
 //
@@ -186,9 +186,9 @@ struct IrkWorkspace
 /// Implicit Runge-Kutta (collocation) integrator for a (possibly
 /// time-varying) DAE.
 ///
-/// `NS` is the number of RK stages (2..4 for the Radau IIA / Gauss-
-/// Legendre tags).  `Tag` selects the Butcher scheme (RadauIia2Tag..
-/// RadauIia4Tag, GaussLegendre2Tag..GaussLegendre4Tag).  `h` is the fixed
+/// `Tag` selects the Butcher scheme (RadauIia2Tag..RadauIia4Tag,
+/// GaussLegendre2Tag..GaussLegendre4Tag); the number of RK stages `NS` is
+/// derived from the tag (`Tag::ns`).  `h` is the fixed
 /// step size for the full OCP interval; `NumSteps` is the number
 /// of sub-intervals one OCP step of size `h` is divided into (h/NumSteps per
 /// sub-step), the default of 1 being the plain single-step scheme.  The DAE
@@ -204,21 +204,26 @@ struct IrkWorkspace
 /// scalar_t, so the fused HVP entry is not available
 /// (`supports_value_jac_hess_prod == false`); the forward cache is the
 /// efficiency mechanism for repeated HVP calls with the same (x, u, t_k).
-template <class Dims, class Dae, int NS, class Tag, int NumSteps = 1>
+template <class Dims, class Dae, class Tag, int NumSteps = 1>
 class ImplicitRkIntegrator
 {
     using P   = ocp::Problem<Dims>;
-    using Tab = ocp::ButcherTableau<Dims, NS, Tag>;
+    using Tab = ocp::ButcherTableau<Dims, Tag>;
 
     static constexpr int nx  = P::nx;
     static constexpr int nu  = P::nu;
-    static constexpr int NK  = NS * nx;
     static constexpr int nIn = nx + nu;
-    using Gmat = Eigen::Matrix<typename P::scalar_t, NK, NK>;
-    using Kvec = Eigen::Matrix<typename P::scalar_t, NK, 1>;
+
+    using scalar_t = typename P::scalar_t;
 
 public:
-    using scalar_t  = typename P::scalar_t;
+    /// Number of RK stages, derived from the scheme tag.
+    static constexpr int NS = Tag::ns;
+    static constexpr int NK = NS * nx;
+
+    using Gmat = Eigen::Matrix<scalar_t, NK, NK>;
+    using Kvec = Eigen::Matrix<scalar_t, NK, 1>;
+
     using state_t   = typename P::state_t;
     using control_t = typename P::control_t;
     using df_dx_t   = typename P::dyn_df_dx_t;

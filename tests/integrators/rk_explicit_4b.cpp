@@ -118,10 +118,10 @@ struct OdeNegXU
 //  value
 // ---------------------------------------------------------------------------
 
-template <int NS, class Tag>
+template <class Tag>
 void check_value_neg_x()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, NS, Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, Tag>;
     const Integ integ(OdeNegX{}, 0.1);
     state_t cur(1.0, 1.0);
     control_t u(0.0);
@@ -137,10 +137,10 @@ void check_value_neg_x()
     std::printf("  value xdot=-x   OK  (|err|<1e-5)\n");
 }
 
-template <int NS, class Tag>
+template <class Tag>
 void check_value_xsq()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeXsq, NS, Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeXsq, Tag>;
     const Integ integ(OdeXsq{}, 0.2);
     state_t cur(0.5, 0.5);
     control_t u(0.0);
@@ -161,10 +161,10 @@ void check_value_xsq()
 //  jacobian (central finite differences of the composed map)
 // ---------------------------------------------------------------------------
 
-template <int NS, class Tag>
+template <class Tag>
 void check_jacobian()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, NS, Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, Tag>;
     const Integ integ(OdeNegXU{}, 0.1);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -223,10 +223,10 @@ void check_jacobian()
 //  hess_prod (finite-difference Hessian of the scalar  w' Phi, applied to v)
 // ---------------------------------------------------------------------------
 
-template <int NS, class Tag>
+template <class Tag>
 void check_hess_prod()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, NS, Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, Tag>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
     const Integ integ(OdeNegXU{}, 0.1);
 
@@ -332,16 +332,16 @@ void check_hess_prod()
 int run_erk_4b_tests()
 {
     // value
-    check_value_neg_x<4, ocp::K4Tag>();
-    check_value_xsq<4, ocp::K4Tag>();
+    check_value_neg_x<ocp::K4Tag>();
+    check_value_xsq<ocp::K4Tag>();
 
     // jacobian
-    check_jacobian<2, ocp::K2Tag>();
-    check_jacobian<4, ocp::K4Tag>();
+    check_jacobian<ocp::K2Tag>();
+    check_jacobian<ocp::K4Tag>();
 
     // hess_prod
-    check_hess_prod<2, ocp::K2Tag>();
-    check_hess_prod<4, ocp::K4Tag>();
+    check_hess_prod<ocp::K2Tag>();
+    check_hess_prod<ocp::K4Tag>();
 
     if (failures != 0)
     {

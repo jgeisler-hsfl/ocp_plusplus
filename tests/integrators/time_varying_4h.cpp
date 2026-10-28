@@ -113,7 +113,7 @@ state_t rk4_step(const Ode& ode, const state_t& x, const control_t& u,
 
 void check_value_time_varying()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinXPlusU, 4, ocp::K4Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinXPlusU, ocp::K4Tag>;
     const Integ integ(OdeSinXPlusU{}, 0.1);
     state_t cur;
     cur << 0.3, -0.7;
@@ -147,7 +147,7 @@ void check_value_time_varying()
 
 void check_value_regression()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, 4, ocp::K4Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, ocp::K4Tag>;
     const Integ integ(OdeNegX{}, 0.05);
     state_t cur;
     cur << 1.0, 1.0;
@@ -168,7 +168,7 @@ void check_value_regression()
 
 void check_jacobian_time_varying()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, 4, ocp::K4Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, ocp::K4Tag>;
     const Integ integ(OdeSinCosXU{}, 0.1);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -229,7 +229,7 @@ void check_jacobian_time_varying()
 
 void check_hess_prod_time_varying()
 {
-    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, 2, ocp::K2Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, ocp::K2Tag>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
     const Integ integ(OdeSinCosXU{}, 0.1);
     const state_t x(0.3, -0.7);

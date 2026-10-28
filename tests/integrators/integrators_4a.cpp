@@ -31,10 +31,11 @@ void check(bool cond, const char* msg)
 }
 
 // Common identity checks: row-sum == c, sum(b) == 1.
-template <int NS, class Dims, class Tag>
+template <class Dims, class Tag>
 void check_common(const char* name)
 {
-    using T = ocp::ButcherTableau<Dims, NS, Tag>;
+    using T = ocp::ButcherTableau<Dims, Tag>;
+    const int NS = Tag::ns;
 
     for (int s = 0; s < NS; ++s)
     {
@@ -60,10 +61,11 @@ void check_common(const char* name)
 
 // Radau IIA-specific: last row == b, and collocation order conditions
 // sum_j b_j c_j^k == 1/(k+1) for k = 0..2*NS-2.
-template <int NS, class Dims, class Tag>
+template <class Dims, class Tag>
 void check_irk(const char* name)
 {
-    using T = ocp::ButcherTableau<Dims, NS, Tag>;
+    using T = ocp::ButcherTableau<Dims, Tag>;
+    const int NS = Tag::ns;
 
     // last row of A equals b
     for (int j = 0; j < NS; ++j)
@@ -135,23 +137,23 @@ struct LinearOde
 int run_integrators_4a_tests()
 {
     // Explicit RK tableaus
-    check_common<1, Dims, ocp::K1Tag>("K1");
-    check_common<2, Dims, ocp::K2Tag>("K2");
-    check_common<3, Dims, ocp::K3Tag>("K3");
-    check_common<4, Dims, ocp::K4Tag>("K4");
+    check_common<Dims, ocp::K1Tag>("K1");
+    check_common<Dims, ocp::K2Tag>("K2");
+    check_common<Dims, ocp::K3Tag>("K3");
+    check_common<Dims, ocp::K4Tag>("K4");
 
     // Radau IIA tableaus
-    check_common<2, Dims, ocp::RadauIia2Tag>("RadauIia2");
-    check_irk<2, Dims, ocp::RadauIia2Tag>("RadauIia2");
-    check_common<3, Dims, ocp::RadauIia3Tag>("RadauIia3");
-    check_irk<3, Dims, ocp::RadauIia3Tag>("RadauIia3");
-    check_common<4, Dims, ocp::RadauIia4Tag>("RadauIia4");
-    check_irk<4, Dims, ocp::RadauIia4Tag>("RadauIia4");
+    check_common<Dims, ocp::RadauIia2Tag>("RadauIia2");
+    check_irk<Dims, ocp::RadauIia2Tag>("RadauIia2");
+    check_common<Dims, ocp::RadauIia3Tag>("RadauIia3");
+    check_irk<Dims, ocp::RadauIia3Tag>("RadauIia3");
+    check_common<Dims, ocp::RadauIia4Tag>("RadauIia4");
+    check_irk<Dims, ocp::RadauIia4Tag>("RadauIia4");
 
     // Gauss-Legendre collocation (implicit, nodes in (0,1); no L-stability)
-    check_common<4, Dims, ocp::GaussLegendre4Tag>("GaussLegendre4");
+    check_common<Dims, ocp::GaussLegendre4Tag>("GaussLegendre4");
     {
-        using T = ocp::ButcherTableau<Dims, 4, ocp::GaussLegendre4Tag>;
+        using T = ocp::ButcherTableau<Dims, ocp::GaussLegendre4Tag>;
         for (int k = 0; k <= 2 * 4 - 2; ++k)
         {
             double s = 0.0;

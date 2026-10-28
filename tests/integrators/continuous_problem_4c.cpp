@@ -74,8 +74,8 @@ struct DoubleIntegratorOde
 
 // --- Concrete problem --------------------------------------------------
 
-using Integ = ocp::ExplicitRkIntegrator<ContDims, DoubleIntegratorOde, 4,
-                                          ocp::K4Tag>;
+using Integ = ocp::ExplicitRkIntegrator<ContDims, DoubleIntegratorOde,
+                                        ocp::K4Tag>;
 using Base = ocp::ContinuousProblem<ContDims, DoubleIntegratorOde, Integ>;
 
 struct ContDoubleIntegrator : Base

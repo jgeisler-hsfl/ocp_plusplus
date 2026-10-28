@@ -107,7 +107,7 @@ template <int NumSteps>
 void check_value(double tol)
 {
     using Integ =
-        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, 4, ocp::K4Tag, NumSteps>;
+        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, ocp::K4Tag, NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1);
     state_t cur;
     cur << 0.3, -0.7;
@@ -128,7 +128,7 @@ template <int NumSteps>
 void check_jacobian()
 {
     using Integ =
-        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, 4, ocp::K4Tag, NumSteps>;
+        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, ocp::K4Tag, NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -188,7 +188,7 @@ template <int NumSteps>
 void check_hess_prod()
 {
     using Integ =
-        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, 2, ocp::K2Tag, NumSteps>;
+        ocp::ExplicitRkIntegrator<Dims, OdeXsqU, ocp::K2Tag, NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1);
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
 
@@ -294,7 +294,7 @@ template <int NumSteps>
 void check_value_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, ocp::RadauIia2Tag,
                                   NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1, 8);
     state_t cur;
@@ -316,7 +316,7 @@ template <int NumSteps>
 void check_jacobian_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, ocp::RadauIia2Tag,
                                   NumSteps>;
     const Integ integ(OdeXsqU{}, 0.1, 8);
     const state_t x(0.3, -0.7);
@@ -376,7 +376,7 @@ template <int NumSteps>
 void check_hess_prod_irk()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, 2, ocp::RadauIia2Tag,
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, ocp::RadauIia2Tag,
                                   NumSteps>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
 

@@ -314,7 +314,7 @@ void check_ode_hess_prod_direct()
 
 void check_value()
 {
-    using Integ = ocp::ExplicitRkIntegrator<CstrDims, CstrOde, 4, ocp::K4Tag>;
+    using Integ = ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag>;
     CstrOde ode;
     const Integ integ(ode, 0.1);
 
@@ -498,7 +498,7 @@ void check_hess_prod_fd(const Integ& integ, const char* label)
 // ------------------------------------------------------------------
 
 using ErkInteg =
-    ocp::ExplicitRkIntegrator<CstrDims, CstrOde, 4, ocp::K4Tag>;
+    ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag>;
 using ErkBase  = ocp::ContinuousProblem<CstrDims, CstrOde, ErkInteg>;
 
 struct CstrOcp : ErkBase
@@ -712,24 +712,24 @@ int run_cstr_4i_tests()
     check_ode_hess_prod_direct();
     check_value();
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, 2, ocp::K2Tag> k2(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K2Tag> k2(ode, 0.1);
         check_jacobian_fd_impl(k2, "K2");
     }
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, 4, ocp::K4Tag> k4(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode, 0.1);
         check_jacobian_fd_impl(k4, "K4");
     }
     {
-        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, 2, ocp::RadauIia2Tag> rk(
+        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, ocp::RadauIia2Tag> rk(
             ode, 0.1, 10);
         check_jacobian_fd_impl(rk, "Radau2");
     }
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, 4, ocp::K4Tag> k4(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode, 0.1);
         check_hess_prod_fd(k4, "K4");
     }
     {
-        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, 2, ocp::RadauIia2Tag> rk(
+        ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, ocp::RadauIia2Tag> rk(
             ode, 0.1, 12);
         check_hess_prod_fd(rk, "Radau2");
     }

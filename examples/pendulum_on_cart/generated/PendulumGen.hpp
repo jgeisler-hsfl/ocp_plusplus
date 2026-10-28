@@ -32,7 +32,9 @@ struct PendulumGenDims
     static constexpr int ng_t = 0;
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
-    static constexpr int np   = 0;
+    static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
+    // (the casadi model parameter p_ below is a user-managed scalar; it is
+    //  NOT part of the problem-interface sensitivity parameter vector)
 
     static constexpr bool fixed_initial_state = true;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -98,7 +100,7 @@ struct PendulumGenDae
 };
 
 using PendulumGenInteg =
-    ocp::ImplicitRkIntegrator<PendulumGenDims, PendulumGenDae, 4,
+    ocp::ImplicitRkIntegrator<PendulumGenDims, PendulumGenDae,
                               ocp::GaussLegendre4Tag, 1>;
 
 class PendulumGen

@@ -5,7 +5,7 @@
 // ExplicitRkIntegrator turns a (possibly time-varying) ODE
 //  xdot = f(x, u, t)  into the discrete dynamics
 //  x_next = Phi(x, u, t_k)  via a fixed explicit RK scheme
-// (ButcherTableau<Dims, NS, Tag>). It implements the ODE-derivative contract
+// (ButcherTableau<Dims, Tag>). It implements the ODE-derivative contract
 // (value / jacobian / hess_prod, see ode_model.hpp) plus the fused triplet
 // entries value_jac / value_jac_hess_prod, so it can be wrapped by
 // ContinuousProblem into an ocp::Problem. Nothing downstream of the problem
@@ -128,19 +128,19 @@ struct ErkWorkspace
 
 /// Explicit Runge-Kutta integrator for a (time-varying) ODE.
 ///
-/// `NS` is the number of RK stages (1..4 for the explicit tags). `Tag`
-/// selects the Butcher scheme (K1Tag..K4Tag). `NumSteps` is the
+/// `Tag` selects the Butcher scheme (K1Tag..K4Tag); the number of RK
+/// stages `NS` is derived from the tag (`Tag::ns`). `NumSteps` is the
 /// number of sub-intervals one OCP step of size `h` is divided into; the
 /// default of 1 is the plain single-step scheme. The ODE model must provide
 /// `f` and (unless it is AD-capable, i.e. `f` is a template method in the
 /// scalar type) `jacobian`; a nonlinear ODE must additionally provide
 /// `hess_prod` for the non-AD `hess_prod` path and is enforced by
 /// `ode_supports_hess_prod` at the `hess_prod` call site.
-template <class Dims, class Ode, int NS, class Tag, int NumSteps = 1>
+template <class Dims, class Ode, class Tag, int NumSteps = 1>
 class ExplicitRkIntegrator
 {
     using P   = ocp::Problem<Dims>;
-    using Tab = ocp::ButcherTableau<Dims, NS, Tag>;
+    using Tab = ocp::ButcherTableau<Dims, Tag>;
 
     static constexpr int nx  = P::nx;
     static constexpr int nu  = P::nu;
@@ -151,6 +151,9 @@ class ExplicitRkIntegrator
     using Dual2    = duals::dual<Dual1, 1>;
 
 public:
+    /// Number of RK stages, derived from the scheme tag.
+    static constexpr int NS = Tag::ns;
+
     using state_t   = typename P::state_t;
     using control_t = typename P::control_t;
     using df_dx_t   = typename P::dyn_df_dx_t;

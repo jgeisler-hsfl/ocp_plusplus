@@ -1284,7 +1284,7 @@ struct {model_name}
 
     integ = f"""
 using {name}Integ =
-    ocp::{spec['integ_class']}<{name}Dims, {model_name}, {nst},
+    ocp::{spec['integ_class']}<{name}Dims, {model_name},
                               ocp::{spec['gl_tag']}, {nstep}>;
 """
 

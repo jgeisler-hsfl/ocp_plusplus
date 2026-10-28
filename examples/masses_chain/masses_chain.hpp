@@ -166,7 +166,7 @@ struct MassesChainDae
 // =========================================================================
 
 using MassesChainInteg =
-    ocp::ImplicitRkIntegrator<MassesChainDims, MassesChainDae, 4,
+    ocp::ImplicitRkIntegrator<MassesChainDims, MassesChainDae,
                               ocp::GaussLegendre4Tag, 2>;
 
 class MassesChain

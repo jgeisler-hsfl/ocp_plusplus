@@ -249,7 +249,7 @@ int main()
     DuffingOde ode;
 
     // variant 1: explicit RK4 (AD path: value/jacobian from duals)
-    using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde, 4,
+    using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                            ocp::K4Tag>;
     using ErkBase = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
     DuffingProblem<ErkBase> erk(ode, 0.05);
@@ -258,7 +258,7 @@ int main()
     // variant 2: implicit RK, Gauss-Legendre 4-stage collocation (the
     // acados IRK default), via the ODE -> DAE residual adapter
     using Dae = ocp::OdeToDae<DuffingOde, DuffingDims>;
-    using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae, 4,
+    using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae,
                                              ocp::GaussLegendre4Tag>;
     using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;
     Dae dae{ode};

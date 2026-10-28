@@ -878,7 +878,7 @@ struct SqpOde
     }
 };
 
-using SqpInteg = ExplicitRkIntegrator<SqpDims, SqpOde, 4, K4Tag>;
+using SqpInteg = ExplicitRkIntegrator<SqpDims, SqpOde, K4Tag>;
 
 /// AD variant: value functions templated, all derivatives from the mix-in.
 struct SqpAd : ContinuousProblem<SqpDims, SqpOde, SqpInteg>,

@@ -37,49 +37,58 @@ namespace ocp
 //  Scheme tags
 // =========================================================================
 
-/// Explicit Euler (ns = 1).
+/// Explicit Euler (1 stage).
 struct K1Tag
 {
+    static constexpr int ns = 1;
 };
 
-/// Explicit RK2 / Heun (ns = 2).
+/// Explicit RK2 / Heun (2 stages).
 struct K2Tag
 {
+    static constexpr int ns = 2;
 };
 
-/// Explicit RK3 (ns = 3).
+/// Explicit RK3 (3 stages).
 struct K3Tag
 {
+    static constexpr int ns = 3;
 };
 
-/// Classic explicit RK4 (ns = 4).
+/// Classic explicit RK4 (4 stages).
 struct K4Tag
 {
+    static constexpr int ns = 4;
 };
 
 /// Radau IIA collocation, 2 stages (implicit, L-stable).
 struct RadauIia2Tag
 {
+    static constexpr int ns = 2;
 };
 
 /// Radau IIA collocation, 3 stages (implicit, L-stable).
 struct RadauIia3Tag
 {
+    static constexpr int ns = 3;
 };
 
 /// Radau IIA collocation, 4 stages (implicit, L-stable).
 struct RadauIia4Tag
 {
+    static constexpr int ns = 4;
 };
 
 /// Gauss-Legendre collocation, 2 stages (implicit; no L-stability).
 struct GaussLegendre2Tag
 {
+    static constexpr int ns = 2;
 };
 
 /// Gauss-Legendre collocation, 3 stages (implicit; no L-stability).
 struct GaussLegendre3Tag
 {
+    static constexpr int ns = 3;
 };
 
 /// Gauss-Legendre collocation, 4 stages (implicit). Nodes are the mapped
@@ -87,6 +96,7 @@ struct GaussLegendre3Tag
 /// 2*ns-1 = 7 (no L-stability, unlike Radau IIA).
 struct GaussLegendre4Tag
 {
+    static constexpr int ns = 4;
 };
 
 // =========================================================================
@@ -97,22 +107,22 @@ struct GaussLegendre4Tag
 ///
 /// `Dims` is carried for interface symmetry with the integrator template
 /// (which is also parameterised by `Dims`); the tableau values depend only
-/// on `NS` and `Tag`. Supported (NS, Tag) pairs are given by the partial
-/// specialisations below; any other combination fails to compile.
-template <class Dims, int NS, class Tag>
+/// on `Tag`, which also encodes the stage count (`Tag::ns`). Supported
+/// tags are given by the partial specialisations below; any other tag
+/// fails to compile.
+template <class Dims, class Tag>
 struct ButcherTableau
 {
     static_assert(false,
-        "ocp::ButcherTableau: unsupported (NS, Tag); use K1Tag..K4Tag "
+        "ocp::ButcherTableau: unsupported Tag; use K1Tag..K4Tag "
         "(explicit), RadauIia2Tag..RadauIia4Tag (Radau IIA), or "
-        "GaussLegendre2Tag..GaussLegendre4Tag (GL collocation) with the "
-        "matching stage count.");
+        "GaussLegendre2Tag..GaussLegendre4Tag (GL collocation).");
 };
 
 // ---- explicit RK tableaus ----------------------------------------------
 
 template <class Dims>
-struct ButcherTableau<Dims, 1, K1Tag>
+struct ButcherTableau<Dims, K1Tag>
 {
     static constexpr std::array<std::array<double, 1>, 1> A = {
         { { 0.0 } } };
@@ -121,7 +131,7 @@ struct ButcherTableau<Dims, 1, K1Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 2, K2Tag>
+struct ButcherTableau<Dims, K2Tag>
 {
     static constexpr std::array<std::array<double, 2>, 2> A = {
         { { 0.0, 0.0 }, { 0.5, 0.0 } } };
@@ -130,7 +140,7 @@ struct ButcherTableau<Dims, 2, K2Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 3, K3Tag>
+struct ButcherTableau<Dims, K3Tag>
 {
     static constexpr std::array<std::array<double, 3>, 3> A = {
         { { 0.0, 0.0, 0.0 },
@@ -142,7 +152,7 @@ struct ButcherTableau<Dims, 3, K3Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 4, K4Tag>
+struct ButcherTableau<Dims, K4Tag>
 {
     static constexpr std::array<std::array<double, 4>, 4> A = {
         { { 0.0, 0.0, 0.0, 0.0 },
@@ -157,7 +167,7 @@ struct ButcherTableau<Dims, 4, K4Tag>
 // ---- Radau IIA collocation tableaus (a_{s,j} = int_0^{c_s} l_j) ---------
 
 template <class Dims>
-struct ButcherTableau<Dims, 2, RadauIia2Tag>
+struct ButcherTableau<Dims, RadauIia2Tag>
 {
     static constexpr std::array<std::array<double, 2>, 2> A = {
         { { 5.0 / 12.0, -1.0 / 12.0 },
@@ -167,7 +177,7 @@ struct ButcherTableau<Dims, 2, RadauIia2Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 3, RadauIia3Tag>
+struct ButcherTableau<Dims, RadauIia3Tag>
 {
     static constexpr std::array<std::array<double, 3>, 3> A = {
         { { 0.19681547722366044, -0.065535425850198434, 0.023770974348220168 },
@@ -181,7 +191,7 @@ struct ButcherTableau<Dims, 3, RadauIia3Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 4, RadauIia4Tag>
+struct ButcherTableau<Dims, RadauIia4Tag>
 {
     static constexpr std::array<std::array<double, 4>, 4> A = {
         { { 0.11299947932315661, -0.040309220723522464, 0.025802377420336538,
@@ -207,7 +217,7 @@ struct ButcherTableau<Dims, 4, RadauIia4Tag>
 // standard GL roots in (-1,1); b_i = w_i / 2 (collocation interval [0, 1]).
 
 template <class Dims>
-struct ButcherTableau<Dims, 2, GaussLegendre2Tag>
+struct ButcherTableau<Dims, GaussLegendre2Tag>
 {
     static constexpr std::array<std::array<double, 2>, 2> A = {
         { { 0.25, -0.03867513459481289 },
@@ -218,7 +228,7 @@ struct ButcherTableau<Dims, 2, GaussLegendre2Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 3, GaussLegendre3Tag>
+struct ButcherTableau<Dims, GaussLegendre3Tag>
 {
     static constexpr std::array<std::array<double, 3>, 3> A = {
         { { 0.1388888888888889, -0.03597666752493888,
@@ -235,7 +245,7 @@ struct ButcherTableau<Dims, 3, GaussLegendre3Tag>
 };
 
 template <class Dims>
-struct ButcherTableau<Dims, 4, GaussLegendre4Tag>
+struct ButcherTableau<Dims, GaussLegendre4Tag>
 {
     static constexpr std::array<std::array<double, 4>, 4> A = {
         { { 0.08696371128436348, -0.02660418008499881, 0.01262746268940474,

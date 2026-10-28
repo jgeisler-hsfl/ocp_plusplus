@@ -90,8 +90,8 @@ struct DoubleIntegratorOde
 
 // --- ERK variant --------------------------------------------------------
 
-using ErkInteg = ocp::ExplicitRkIntegrator<ContOcpDims, DoubleIntegratorOde, 4,
-                                              ocp::K4Tag>;
+using ErkInteg = ocp::ExplicitRkIntegrator<ContOcpDims, DoubleIntegratorOde,
+                                           ocp::K4Tag>;
 using ErkBase = ocp::ContinuousProblem<ContOcpDims, DoubleIntegratorOde, ErkInteg>;
 
 struct ErkOcp : ErkBase
@@ -216,8 +216,11 @@ struct ErkOcp : ErkBase
 
 // --- IRK variant --------------------------------------------------------
 
-using IrkInteg = ocp::ImplicitRkIntegrator<ContOcpDims, ocp::OdeToDae<DoubleIntegratorOde, ContOcpDims>, 2,
-                                             ocp::RadauIia2Tag>;
+using IrkInteg =
+    ocp::ImplicitRkIntegrator<ContOcpDims,
+                              ocp::OdeToDae<DoubleIntegratorOde,
+                                            ContOcpDims>,
+                              ocp::RadauIia2Tag>;
 using IrkBase = ocp::ContinuousProblem<ContOcpDims, DoubleIntegratorOde, IrkInteg>;
 
 struct IrkOcp : IrkBase

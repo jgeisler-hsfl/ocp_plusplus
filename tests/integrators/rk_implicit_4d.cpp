@@ -146,7 +146,7 @@ struct OdeDoubleInt
 /// unstable (z = h*lambda outside the K4 stability interval).
 void check_value_stiff()
 {
-    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, 2, ocp::RadauIia2Tag>;
+    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
     OdeLin ode;
     ode.lambda = 30.0;
     const Integ integ(ode, 0.1);
@@ -168,7 +168,7 @@ void check_value_stiff()
 /// Order-3 accuracy on a linear ODE against the analytic solution.
 void check_value_accuracy()
 {
-    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, 2, ocp::RadauIia2Tag>;
+    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
     OdeLin ode;
     ode.lambda = 1.0;
     const Integ integ(ode, 0.05);
@@ -189,7 +189,7 @@ void check_value_accuracy()
 void check_value_exact_linear()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, 2, ocp::RadauIia2Tag>;
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, ocp::RadauIia2Tag>;
     const Integ integ(OdeDoubleInt{}, 0.2);
     state_t cur(0.3, -0.5);
     control_t u(0.7);
@@ -210,7 +210,7 @@ void check_value_exact_linear()
 void check_value_xsq()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsq, Dims>, 2, ocp::RadauIia2Tag>;
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsq, Dims>, ocp::RadauIia2Tag>;
     const Integ integ(OdeXsq{}, 0.2, 5);
     state_t cur(0.5, 0.5);
     control_t u(0.0);
@@ -231,7 +231,7 @@ void check_value_xsq()
 void check_newton_convergence()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsq, Dims>, 2, ocp::RadauIia2Tag>;
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsq, Dims>, ocp::RadauIia2Tag>;
     const state_t x(0.5, 0.5);
     const control_t u(0.0);
 
@@ -254,10 +254,10 @@ void check_newton_convergence()
 //  jacobian (finite differences of the composed map)
 // ---------------------------------------------------------------------------
 
-template <int NS, class Tag>
+template <class Tag>
 void check_jacobian_fd()
 {
-    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, NS, Tag>;
+    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, Tag>;
     const Integ integ(OdeXsqU{}, 0.1, 5);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -317,7 +317,7 @@ void check_jacobian_fd()
 void check_jacobian_exact_linear()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, 2, ocp::RadauIia2Tag>;
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, ocp::RadauIia2Tag>;
     const Integ integ(OdeDoubleInt{}, 0.2);
     const state_t x(0.3, -0.5);
     const control_t u(0.7);
@@ -346,7 +346,7 @@ void check_jacobian_exact_linear()
 void check_hess_prod_linear()
 {
     using Integ =
-        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, 2, ocp::RadauIia2Tag>;
+        ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
     const Integ integ(OdeLin{}, 0.1);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -367,10 +367,10 @@ void check_hess_prod_linear()
 /// Gold standard for the nonlinear path: finite-difference the composed-map
 /// Hessian of g(z) = w^T Phi(z), z = [x; u], with central 4-point cross
 /// derivatives, and compare the integrator's bilinear HVP w^T d2Phi . v.
-template <int NS, class Tag>
+template <class Tag>
 void check_hess_prod_fd()
 {
-    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, NS, Tag>;
+    using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, Tag>;
     using z_t = Eigen::Matrix<double, nIn, 1>;
     using hess_t = Eigen::Matrix<double, nIn, nIn>;
     const Integ integ(OdeXsqU{}, 0.1, 8);
@@ -455,7 +455,7 @@ void check_hess_prod_fd()
         const double err = (actual - H * v).cwiseAbs().maxCoeff();
         check(err < 1e-5, "hess_prod fd vs analytic (nonlinear)");
         std::printf("  hess_prod fd %s  OK  (max |err| = %.3e)\n",
-                    (NS == 2 ? "radau2" : "radau4"), err);
+                    (Tag::ns == 2 ? "radau2" : "radau4"), err);
     }
 }
 
@@ -473,14 +473,14 @@ int run_irk_4d_tests()
     check_newton_convergence();
 
     // jacobian
-    check_jacobian_fd<2, ocp::RadauIia2Tag>();
-    check_jacobian_fd<4, ocp::RadauIia4Tag>();
+    check_jacobian_fd<ocp::RadauIia2Tag>();
+    check_jacobian_fd<ocp::RadauIia4Tag>();
     check_jacobian_exact_linear();
 
     // hess_prod (linear + nonlinear FD, 4f)
     check_hess_prod_linear();
-    check_hess_prod_fd<2, ocp::RadauIia2Tag>();
-    check_hess_prod_fd<4, ocp::RadauIia4Tag>();
+    check_hess_prod_fd<ocp::RadauIia2Tag>();
+    check_hess_prod_fd<ocp::RadauIia4Tag>();
 
     if (failures != 0)
     {
