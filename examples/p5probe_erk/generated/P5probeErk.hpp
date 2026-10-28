@@ -96,10 +96,9 @@ using P5probeErkInteg =
                               ocp::K4Tag, 1>;
 
 class P5probeErk
-    : public ocp::ContinuousProblem<P5probeErkDims, P5probeErkOde, P5probeErkInteg>
+    : public ocp::ContinuousProblem<P5probeErkInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<P5probeErkDims, P5probeErkOde, P5probeErkInteg>;
+    using Base = ocp::ContinuousProblem<P5probeErkInteg>;
 
 public:
     P5probeErk() : Base(P5probeErkOde{}, 0.09999999999999999)

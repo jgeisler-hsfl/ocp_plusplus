@@ -2226,10 +2226,9 @@ using {name}Integ =
 
     class_block = f"""
 class {name}
-    : public ocp::ContinuousProblem<{name}Dims, {model_name}, {name}Integ>
+    : public ocp::ContinuousProblem<{name}Integ>
 {{
-    using Base =
-        ocp::ContinuousProblem<{name}Dims, {model_name}, {name}Integ>;
+    using Base = ocp::ContinuousProblem<{name}Integ>;
 
 public:
     {name}() : Base({model_name}{{}}, {dt})

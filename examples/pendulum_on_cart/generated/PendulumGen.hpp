@@ -102,10 +102,9 @@ using PendulumGenInteg =
                               ocp::GaussLegendre4Tag, 1>;
 
 class PendulumGen
-    : public ocp::ContinuousProblem<PendulumGenDims, PendulumGenDae, PendulumGenInteg>
+    : public ocp::ContinuousProblem<PendulumGenInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<PendulumGenDims, PendulumGenDae, PendulumGenInteg>;
+    using Base = ocp::ContinuousProblem<PendulumGenInteg>;
 
 public:
     PendulumGen() : Base(PendulumGenDae{}, 0.05)

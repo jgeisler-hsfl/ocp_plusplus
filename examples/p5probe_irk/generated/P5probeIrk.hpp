@@ -102,10 +102,9 @@ using P5probeIrkInteg =
                               ocp::GaussLegendre2Tag, 1>;
 
 class P5probeIrk
-    : public ocp::ContinuousProblem<P5probeIrkDims, P5probeIrkDae, P5probeIrkInteg>
+    : public ocp::ContinuousProblem<P5probeIrkInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<P5probeIrkDims, P5probeIrkDae, P5probeIrkInteg>;
+    using Base = ocp::ContinuousProblem<P5probeIrkInteg>;
 
 public:
     P5probeIrk() : Base(P5probeIrkDae{}, 0.09999999999999999)
