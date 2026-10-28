@@ -221,11 +221,11 @@ void test_solve_double_integrator()
                 "DI solve: cost = raw cost (soft ineq inactive)");
 
     // statistics: the last row is the accepted iteration
-    const auto& rows = solver.statistics().rows;
-    check(rows.size() == static_cast<std::size_t>(solver.statistics().iter),
-          "DI solve: row count == iter");
-    check(rows.back().alpha > 0.0, "DI solve: last alpha > 0");
-    check(rows.back().qp_iter >= 0, "DI solve: last qp_iter >= 0");
+    const auto& stat = solver.statistics();
+    check(stat.n_rows() == stat.iter, "DI solve: row count == iter");
+    check(stat.row(stat.n_rows() - 1).alpha > 0.0, "DI solve: last alpha > 0");
+    check(stat.row(stat.n_rows() - 1).qp_iter >= 0,
+          "DI solve: last qp_iter >= 0");
 
     // last_qp / last_qp_sol accessors expose the final assembled QP
     check(solver.last_qp().N == N, "DI solve: last_qp horizon");
@@ -256,7 +256,7 @@ void test_solve_warm_start()
     check(st2 == Status::kSolved, "DI warm: second solve kSolved");
     check(solver.statistics().iter == 1, "DI warm: second solve "
           "terminates at iteration 0");
-    check(solver.statistics().rows.back().qp_iter == 0,
+    check(solver.statistics().row(solver.statistics().n_rows() - 1).qp_iter == 0,
           "DI warm: no QP solved in the second solve");
     check(cost_iters_1 >= 2, "DI warm: first solve ran the loop");
 }
@@ -282,8 +282,7 @@ void test_solve_max_iter_zero()
     check(st == Status::kMaxIterations, "DI maxiter: kMaxIterations");
     check(sol.status == Status::kMaxIterations, "DI maxiter: sol.status");
     check(solver.statistics().iter == 1, "DI maxiter: one row recorded");
-    check(solver.statistics().rows[0].qp_iter == 0,
-          "DI maxiter: no QP solved");
+    check(solver.statistics().row(0).qp_iter == 0, "DI maxiter: no QP solved");
 }
 
 // ---------------------------------------------------------------------
@@ -512,7 +511,7 @@ void test_solve_qp_failure()
     check(st == Status::kQpFailure, "FailQp: kQpFailure");
     check(sol.status == Status::kQpFailure, "FailQp: sol.status");
     check(solver.statistics().iter == 1, "FailQp: one row recorded");
-    check(solver.statistics().rows[0].qp_status
+    check(solver.statistics().row(0).qp_status
               == static_cast<int>(Status::kQpFailure),
           "FailQp: qp_status in the row");
 }
@@ -536,10 +535,10 @@ void test_solve_min_step()
     // alpha_min at iteration 0 (globalizer kMinStep, acados :894)
     check(solver.statistics().iter == 1, "ZeroStepQp: one row "
           "(kMinStep at iter 0)");
-    check(solver.statistics().rows[0].step_norm == 0.0,
+    check(solver.statistics().row(0).step_norm == 0.0,
           "ZeroStepQp: step norm recorded");
-    check(solver.statistics().rows[0].alpha > 0.0
-              && solver.statistics().rows[0].alpha < 1.0,
+    check(solver.statistics().row(0).alpha > 0.0
+              && solver.statistics().row(0).alpha < 1.0,
           "ZeroStepQp: shrunken alpha recorded");
 }
 

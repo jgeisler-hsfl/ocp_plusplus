@@ -174,8 +174,8 @@ void check_di_single_iter()
     AcadosSolver<DoubleIntegrator> ac(ao);
     Solution<DoubleIntegrator> sol_ac = make_di(N, p);
     const Status st_ac = ac.solve(p, sol_ac);
-    check_true(ac.statistics().rows.size() >= 1, name + ": acados row");
-    check_true(ac.statistics().rows[0].alpha == 1.0,
+    check_true(ac.statistics().n_rows() >= 1, name + ": acados row");
+    check_true(ac.statistics().row(0).alpha == 1.0,
                name + ": first SQP iteration took a full step");
     check_true(st_ac == Status::kMaxIterations, name + ": max_iter exit");
 
@@ -236,8 +236,8 @@ void check_mc_single_iter()
     AcadosSolver<MassesChain> ac(ao);
     Solution<MassesChain> sol_ac = make_mc(N, p);
     ac.solve(p, sol_ac);
-    check_true(ac.statistics().rows.size() >= 1, name + ": acados row");
-    check_true(ac.statistics().rows[0].alpha == 1.0,
+    check_true(ac.statistics().n_rows() >= 1, name + ": acados row");
+    check_true(ac.statistics().row(0).alpha == 1.0,
                name + ": first SQP iteration took a full step");
 
     RtiOptions ro;

@@ -1767,7 +1767,6 @@ void case5_maxiter(const char* name, int N, const VecD& x0)
 
     HpipmOptions opts;
     opts.iter_max = 1;
-    opts.stat_max = 2;
     HpipmQpSolver<P, NH> solver(opts);
     const Status st = solver.solve(qp, sol);
     check(st == Status::kMaxIterations,

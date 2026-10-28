@@ -123,7 +123,7 @@ converged trajectory (and multipliers), plus `sol.status` and
 sizes its internal workspaces once for the horizon of `sol`.
 
 Per-iteration records are available afterwards via
-`solver.statistics()` (`ocp::AcadosStatistics`), and can be exported as
+`solver.statistics()` (`ocp::AcadosStatistics<>`), and can be exported as
 CSV:
 
 ```cpp

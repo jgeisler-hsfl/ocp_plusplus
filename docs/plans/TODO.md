@@ -4,10 +4,6 @@ Commit hashes and dates refer to `master`.
 
 ## Open items
 
-### A. Numerics / solver internals
-
-- [ ] optional fixed size statistics array with iteration number field and ring buffer filling or ignoring new entries, when the buffer is full (which is better?)
-
 ### B. Problem interface / design ergonomics
 
 - [ ] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
@@ -49,6 +45,7 @@ Commit hashes and dates refer to `master`.
 - [x] why is there not qp_warm_start=1? (answered: acados zeroes the primal `ux` before every QP solve, so HPIPM `warm_start = 1` (primal-only) behaves like `0`; only `{2, 3}` are effective — `docs/plans/finished/SQP_PHASE3_PLAN.md` (3c); see the `RtiOptions::qp_warm_start` comment) (2026-10-02, `c71c2fa`)
 - [x] why is lm damping not applied ("a no-op"), when both `compute_hess_dyn` and `compute_hess_constr` are false? (answered: with both gates off the QP Hessian is the pure cost Hessian + slack diagonal, which is PSD and needs no damping — `add_lm_term` doc comment, tutorial 05 §5.5, `docs/plans/finished/HESSIAN_SWITCH_PLAN.md`; covered by the no-op test in `tests/sqp/assemble_2f.cpp`) (2026-10-10, `3f9dc4f`)
 - [x] make clear, how Levenberg-Marquardt and its options correspond to the different convexification options in acados (done — tutorial ch. 5: §5.1 model table with the acados `hessian_approx` equivalents, §5.4 runtime gates mirroring `exact_hess_dyn` / `exact_hess_constr`, §5.5 fixed + adaptive LM with acados-matching option names, §5.6 summary) (2026-10-10, `65e7b06`)
+- [x] optional fixed size statistics array with iteration number field and ring buffer filling or ignoring new entries, when the buffer is full (which is better?) (done — compile-time `NSlots` FIFO ring via `ocp::RingBuffer`, drop-oldest policy, per-row `iter` stamp; `HpipmOptions::stat_max` removed; `docs/plans/finished/STATS_RING_PLAN.md`) (2026-10-28, branch `feature/stats-ring-buffer`, `e633456`)
 
 ### B. Problem interface / design ergonomics
 

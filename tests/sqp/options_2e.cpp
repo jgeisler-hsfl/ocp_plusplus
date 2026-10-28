@@ -174,7 +174,7 @@ void test_options_inspect()
 
 void test_stat_table()
 {
-    AcadosStatistics stat;
+    AcadosStatistics<> stat;
     SqpIteration r0;
     r0.res_stat = 1.0;
     r0.qp_status = 1;
@@ -190,9 +190,10 @@ void test_stat_table()
 
     // column names: the SqpIteration leaves in declaration order
     const std::vector<std::string> cols = inspect::stat_column_names(stat);
-    check(cols.size() == 11, "stat_column_names: 11 columns");
-    check(cols[0] == "res_stat" && cols[4] == "qp_status" &&
-          cols[9] == "funnel_width" && cols[10] == "cond_time",
+    check(cols.size() == 12, "stat_column_names: 12 columns");
+    check(cols[0] == "iter" && cols[1] == "res_stat" &&
+          cols[5] == "qp_status" && cols[10] == "funnel_width" &&
+          cols[11] == "cond_time",
           "stat_column_names order");
 
     // one named column, int coerced to double
@@ -203,20 +204,21 @@ void test_stat_table()
           "stat_column qp_iter values");
     check(!inspect::stat_column(stat, "res_statx", qp_iter.data()),
           "stat_column unknown name");
-    AcadosStatistics empty;
+    AcadosStatistics<> empty;
     check(!inspect::stat_column(empty, "res_statx", qp_iter.data()),
           "stat_column unknown name on zero-row table");
 
     // full table: row-major rows x cols
-    std::vector<double> tab(2 * 11, 0.0);
+    std::vector<double> tab(2 * 12, 0.0);
     int n_rows = 0, n_cols = 0;
     check(inspect::stat_table(stat, tab.data(), n_rows, n_cols) &&
-          n_rows == 2 && n_cols == 11,
+          n_rows == 2 && n_cols == 12,
           "stat_table extents");
-    check(tab[0] == 1.0 && tab[4] == 1.0,
-          "stat_table row 0 (res_stat, qp_status)");
-    check(tab[11 + 0] == 1e-3 && tab[11 + 8] == 2.0,
-          "stat_table row 1 (res_stat, funnel_iter_type)");
+    check(tab[0] == 0.0 && tab[1] == 1.0 && tab[5] == 1.0,
+          "stat_table row 0 (iter, res_stat, qp_status)");
+    check(tab[12 + 0] == 1.0 && tab[12 + 1] == 1e-3 &&
+          tab[12 + 9] == 2.0,
+          "stat_table row 1 (iter, res_stat, funnel_iter_type)");
 }
 
 // ---------------------------------------------------------------------
@@ -225,9 +227,9 @@ void test_stat_table()
 
 void test_statistics_record()
 {
-    AcadosStatistics stat;
+    AcadosStatistics<> stat;
     check(stat.iter == 0, "initial iter is 0");
-    check(stat.rows.empty(), "initially no rows");
+    check(stat.n_rows() == 0, "initially no rows");
     check(stat.status == Status::kUnset, "initial status kUnset");
 
     SqpIteration r0;
@@ -247,12 +249,14 @@ void test_statistics_record()
     stat.record(r1);
 
     check(stat.iter == 2, "iter counts recorded rows");
-    check(stat.rows.size() == 2, "rows size");
-    check_close(stat.rows[0].res_stat, 1.0, "row 0 res_stat");
-    check(stat.rows[0].qp_iter == 2, "row 0 qp_iter");
-    check_close(stat.rows[1].res_stat, 1e-3, "row 1 res_stat");
-    check(stat.rows[1].qp_status == 0, "row 1 default qp_status");
-    check(stat.rows[0].cond_time == 0.0, "row 0 default cond_time 0");
+    check(stat.n_rows() == 2, "rows size");
+    check(stat.row(0).iter == 0, "row 0 iter stamp");
+    check(stat.row(1).iter == 1, "row 1 iter stamp");
+    check_close(stat.row(0).res_stat, 1.0, "row 0 res_stat");
+    check(stat.row(0).qp_iter == 2, "row 0 qp_iter");
+    check_close(stat.row(1).res_stat, 1e-3, "row 1 res_stat");
+    check(stat.row(1).qp_status == 0, "row 1 default qp_status");
+    check(stat.row(0).cond_time == 0.0, "row 0 default cond_time 0");
 }
 
 // ---------------------------------------------------------------------
@@ -263,7 +267,7 @@ void test_statistics_csv()
 {
     const char* path = "sqp_stats_2e_test.csv";
 
-    AcadosStatistics stat;
+    AcadosStatistics<> stat;
     SqpIteration r;
     r.res_stat = 1.5e-3;
     r.res_eq = 2.5e-4;

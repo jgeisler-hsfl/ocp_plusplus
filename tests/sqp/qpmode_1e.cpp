@@ -57,12 +57,12 @@ double terminal_eq_feasible_control(const DI& p, int n_stages)
     return (1.0 - (q0 + v0) - Ts * n_stages * v0) / den;
 }
 
-double total_cond_time(const AcadosStatistics& stat)
+double total_cond_time(const AcadosStatistics<>& stat)
 {
     double t = 0.0;
-    for (const auto& row : stat.rows)
+    for (int i = 0; i < stat.n_rows(); ++i)
     {
-        t += row.cond_time;
+        t += stat.row(i).cond_time;
     }
     return t;
 }

@@ -144,6 +144,7 @@ Every solve records one `ocp::SqpIteration` row per iteration:
 ```cpp
 struct SqpIteration
 {
+    int iter;                                     // 0-based iteration of this row
     double res_stat, res_eq, res_ineq, res_comp;  // NLP residuals at start
     int qp_status, qp_iter;                       // inner QP result
     double step_norm, alpha;                      // step norm, accepted step
@@ -152,8 +153,13 @@ struct SqpIteration
 };
 ```
 
-`solver.statistics()` (an `ocp::AcadosStatistics`) exposes the rows and
-the final status, and can export CSV:
+`solver.statistics()` (an `ocp::AcadosStatistics<>`) keeps the rows in a
+fixed-capacity FIFO ring (default 64 slots, `ocp::RingBuffer`): each row
+carries its own 0-based `iter` number, so after the ring wraps around the
+exported table stays self-describing. The ring exposes `n_rows()` /
+`row(i)` (oldest first), and `iter` counts the total number of recorded
+iterations (it may exceed `n_rows()` once the ring has wrapped). It can
+also export CSV:
 
 ```cpp
 solver.statistics().write_csv("tutorial_advanced_stat.csv");
@@ -193,7 +199,8 @@ const ocp::QpSol<AdvFixed, N>& step = solver.last_qp_sol();
 The QP solver itself (`HpipmQpSolver`) is a port of the HPIPM OCP-QP
 interior-point method (relative formulation, Mehrotra
 predictor-corrector). Its options (`ocp::HpipmOptions`, the BALANCE preset
-plus acados overrides), statistics (21 columns per IPM iteration) and
+plus acados overrides), statistics (22 columns per IPM iteration, leading
+with the 1-based iteration label `iter`) and
 residual tolerances (`solver.qp()`-level `set_residual_tolerances`) are
 rarely touched — the SQP driver drives them via the options of chapter 3:
 

@@ -160,11 +160,11 @@ int main()
           "cost finite non-negative");
     check(sol.cost_value < 1e-4, "cost near zero optimum");
 
-    const auto& rows = solver.statistics().rows;
-    check(!rows.empty(), "statistics non-empty");
-    if (!rows.empty())
+    const auto& stat = solver.statistics();
+    check(stat.n_rows() >= 1, "statistics non-empty");
+    if (stat.n_rows() >= 1)
     {
-        const auto& r = rows.back();
+        const auto& r = stat.row(stat.n_rows() - 1);
         check(r.res_stat < 1e-6, "final res_stat < 1e-6");
         check(r.res_eq < 1e-6, "final res_eq < 1e-6");
     }

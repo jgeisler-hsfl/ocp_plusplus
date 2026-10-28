@@ -240,11 +240,14 @@ void solve_case(const char* name, int N)
              p + ": res_m_tau");
     check_le(res.dual_gap, opt.dual_gap_max, p + ": dual_gap");
 
-    // stat row 0 (pre-iteration) and the per-iteration rows are populated.
-    check(stat.rows.size() == static_cast<size_t>(opt.stat_max) + 1,
-          p + ": stat rows = stat_max + 1");
-    if (it >= 1 && it < stat.stat_max)
+    // The pre-iteration row (row 0) and the per-iteration ring rows are
+    // populated (no wrap-around here: it <= iter_max = 50 < NSlots = 64).
+    check(stat.n_rows() == it + 1, p + ": stat rows = iter + 1 (pre + ring)");
+    check(stat.row(0).iter == 0, p + ": pre row iter label = 0");
+    if (it >= 1)
     {
+        check(stat.row(it).iter == it, p + ": stat row " + std::to_string(it) +
+                                           " carries its iter stamp");
         check(stat.row(it).mu > 0.0, p + ": stat row " + std::to_string(it) +
                                          " mu > 0");
         check(stat.row(it).alpha_prim > 0.0,

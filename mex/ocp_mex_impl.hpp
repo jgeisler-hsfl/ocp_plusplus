@@ -236,14 +236,15 @@ mxArray* do_solution(const Session& session)
     return s;
 }
 
-/// The per-iteration statistics as a 1 x iter struct array: one field per
-/// column name, element r = iteration r (docs/plans/
-/// MEX_IMPROVEMENTS_PLAN.md P3). Filled element by element, so the layout
-/// is correct by construction (the old row-major table memcpy'd into a
-/// column-major mxArray was transposed).
+/// The per-iteration statistics as a 1 x n struct array: one field per
+/// column name, element r = stored row r (oldest first; the row's `iter`
+/// field carries its iteration number, authoritative after a ring
+/// wrap-around, docs/plans/STATS_RING_PLAN.md). Filled element by
+/// element, so the layout is correct by construction (the old row-major
+/// table memcpy'd into a column-major mxArray was transposed).
 mxArray* do_stats(const Session& session)
 {
-    const int n_iter = session.stat_iter();
+    const int n_rows = session.stat_nrows();
     const std::vector<std::string> names = session.stat_column_names();
     const int n_cols = static_cast<int>(names.size());
     std::vector<const char*> cnames;
@@ -253,15 +254,15 @@ mxArray* do_stats(const Session& session)
         cnames.push_back(n.c_str());
     }
     auto* s =
-        mxCreateStructMatrix(1, static_cast<mwSize>(n_iter), n_cols,
+        mxCreateStructMatrix(1, static_cast<mwSize>(n_rows), n_cols,
                               cnames.data());
-    if (n_iter > 0)
+    if (n_rows > 0)
     {
         // row-major table: buf[r * n_cols + c] = row r, column c
-        std::vector<double> buf(static_cast<std::size_t>(n_iter) * n_cols,
+        std::vector<double> buf(static_cast<std::size_t>(n_rows) * n_cols,
                                 0.0);
-        session.stat_fill(buf.data(), n_iter, n_cols);
-        for (int r = 0; r < n_iter; ++r)
+        session.stat_fill(buf.data(), n_rows, n_cols);
+        for (int r = 0; r < n_rows; ++r)
         {
             for (int c = 0; c < n_cols; ++c)
             {
@@ -278,7 +279,7 @@ mxArray* do_stats(const Session& session)
 
 mxArray* do_stat_col(const Session& session, const std::string& name)
 {
-    const int n = session.stat_iter();
+    const int n = session.stat_nrows();
     auto* m = mxCreateDoubleMatrix(n, 1, mxREAL);
     if (!session.stat_column(name, mxGetPr(m)))
     {

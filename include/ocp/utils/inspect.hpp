@@ -629,15 +629,15 @@ std::string dump_string(const T& obj)
 //  Statistics tables (named columns)
 // ---------------------------------------------------------------
 //
-// A statistics object exposes `int iter`, a status and
-// `std::vector<Row> rows`; `Row` provides inspect() over its scalar
-// fields. The row-struct field names are the column names (no
-// per-value access, table access only).
+// A statistics object exposes `int iter`, a status, `using Row`, and
+// the accessors `int n_rows() const` and `const Row& row(int) const`
+// (a fixed-capacity FIFO ring, docs/plans/finished/STATS_RING_PLAN.md); `Row`
+// provides inspect() over its scalar fields. The row-struct field names
+// are the column names (no per-value access, table access only).
 
-/// Row type of a statistics object (the element type of `st.rows`).
+/// Row type of a statistics object (the `Row` member alias).
 template <class Stats>
-using row_t = typename std::decay_t<
-    decltype(std::declval<const Stats&>().rows)>::value_type;
+using row_t = typename Stats::Row;
 
 /// Write one row's scalar leaves as consecutive doubles in declaration
 /// order (the same order as leaf_names<Row>()), int/bool coerced to
@@ -684,7 +684,7 @@ std::vector<std::string> stat_column_names(const Stats&)
 }
 
 /// One named column: `out[i]` = rows[i]'s leaf, int/bool coerced to
-/// double. `out` must hold st.rows.size() doubles. False if the column
+/// double. `out` must hold st.n_rows() doubles. False if the column
 /// name is unknown (also detects unknown names on zero-row tables).
 template <class Stats>
 bool stat_column(const Stats& st, std::string_view name, double* out)
@@ -694,26 +694,27 @@ bool stat_column(const Stats& st, std::string_view name, double* out)
     {
         return false;
     }
-    for (std::size_t i = 0; i < st.rows.size(); ++i)
+    const int n = st.n_rows();
+    for (int i = 0; i < n; ++i)
     {
-        get_double(st.rows[i], name, out[i]);
+        get_double(st.row(i), name, out[i]);
     }
     return true;
 }
 
 /// All rows as a row-major double matrix (rows x cols, one column per
 /// row-struct leaf, int/bool coerced to double). `out` must hold
-/// rows*cols doubles with rows = st.rows.size() and cols = the row's
+/// rows*cols doubles with rows = st.n_rows() and cols = the row's
 /// leaf count. Host-side use only.
 template <class Stats>
 bool stat_table(const Stats& st, double* out, int& rows, int& cols)
 {
     const std::size_t ncol = leaf_names<row_t<Stats>>().size();
-    rows = static_cast<int>(st.rows.size());
+    rows = st.n_rows();
     cols = static_cast<int>(ncol);
-    for (std::size_t r = 0; r < st.rows.size(); ++r)
+    for (int r = 0; r < rows; ++r)
     {
-        fill_row(st.rows[r], out + r * ncol);
+        fill_row(st.row(r), out + r * ncol);
     }
     return true;
 }

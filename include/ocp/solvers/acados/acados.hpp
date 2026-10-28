@@ -63,6 +63,7 @@
 #include "qpscaling.hpp"
 #include "regularize.hpp"
 #include "../../utils/inspect.hpp"
+#include "../../utils/ring_buffer.hpp"
 
 namespace ocp
 {
@@ -869,6 +870,7 @@ struct AcadosOptions
 /// the primal step including slacks), and the accepted step size alpha.
 struct SqpIteration
 {
+    int iter = 0;                 // 0-based SQP iteration number of this row
     double res_stat = 0.0, res_eq = 0.0, res_ineq = 0.0, res_comp = 0.0;
     int qp_status = 0, qp_iter = 0;
     double step_norm = 0.0, alpha = 0.0;
@@ -885,6 +887,7 @@ struct SqpIteration
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
     {
+        vis("iter", &SqpIteration::iter);
         vis("res_stat", &SqpIteration::res_stat);
         vis("res_eq", &SqpIteration::res_eq);
         vis("res_ineq", &SqpIteration::res_ineq);
@@ -899,27 +902,43 @@ struct SqpIteration
     }
 };
 
-/// Per-iteration records of a SQP solve.
+/// Per-iteration records of a SQP solve in a fixed-capacity FIFO ring
+/// (docs/plans/finished/STATS_RING_PLAN.md).
 ///
-/// `iter` is the number of recorded iterations.  `status` is the final
-/// exit status, set by the driver before returning.
+/// `iter` is the total number of recorded iterations. Once `NSlots` rows
+/// have been recorded, further records overwrite the oldest ring row
+/// (drop-oldest FIFO); every row carries its own 0-based `iter` number so
+/// the exported table stays self-describing after wrap-around.
+template <int NSlots = 64>
 struct AcadosStatistics
 {
+    using Row = SqpIteration;
     int iter = 0;
     Status status = Status::kUnset;
-    std::vector<SqpIteration> rows;
+    RingBuffer<Row, NSlots> ring_;
 
-    /// Append an iteration record.
-    void record(const SqpIteration& row)
+    /// Number of recorded rows: min(iter, NSlots) after wrap-around.
+    int n_rows() const { return static_cast<int>(ring_.size()); }
+
+    /// The i-th recorded row, oldest first; row i's 0-based iteration
+    /// number is row.iter (authoritative after wrap-around).
+    const Row& row(int i) const { return ring_.at(i); }
+
+    /// Append an iteration record: a fresh ring slot (the oldest row is
+    /// evicted when the ring is full) stamped with the current 0-based
+    /// iteration number. `iter` advances.
+    void record(const Row& in)
     {
-        rows.push_back(row);
+        Row& slot = ring_.next();
+        slot = in;
+        slot.iter = iter;
         ++iter;
     }
 
-    /// Write statistics to `path` as CSV (header + one row per iteration;
-    /// columns mirror the SqpIteration fields, incl. the funnel accept
-    /// type / width and the condense + expand wall clock). No-op if the
-    /// file cannot be opened.
+    /// Write statistics to `path` as CSV (header + one row per recorded
+    /// iteration; columns mirror the SqpIteration fields, incl. the funnel
+    /// accept type / width and the condense + expand wall clock). No-op if
+    /// the file cannot be opened.
     void write_csv(const char* path) const
     {
         std::FILE* f = std::fopen(path, "w");
@@ -928,12 +947,12 @@ struct AcadosStatistics
         std::fprintf(f, "iter,res_stat,res_eq,res_ineq,res_comp,"
                         "qp_status,qp_iter,step_norm,alpha,"
                         "funnel_iter_type,funnel_width,cond_time\n");
-        for (std::size_t i = 0; i < rows.size(); ++i)
+        for (int i = 0; i < n_rows(); ++i)
         {
-            const SqpIteration& r = rows[i];
-            std::fprintf(f, "%zu,%.10e,%.10e,%.10e,%.10e,%d,%d,%.10e,%.10e,"
+            const Row& r = row(i);
+            std::fprintf(f, "%d,%.10e,%.10e,%.10e,%.10e,%d,%d,%.10e,%.10e,"
                             "%d,%.10e,%.10e\n",
-                         i, r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
+                         r.iter, r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
                          r.qp_status, r.qp_iter, r.step_norm, r.alpha,
                          r.funnel_iter_type, r.funnel_width, r.cond_time);
         }
@@ -1176,7 +1195,7 @@ public:
     }
 
     const AcadosOptions& options() const { return opts_; }
-    const AcadosStatistics& statistics() const { return stat_; }
+    const AcadosStatistics<>& statistics() const { return stat_; }
 
     /// inspect children (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 3): the live
     /// driver options, the QP sub-solver and the QP scaler. By-name paths:
@@ -2228,7 +2247,7 @@ public:
     {
         const int N = sol.N;
 
-        stat_ = AcadosStatistics{};
+        stat_ = AcadosStatistics<>{};
         qp_status_ = 0;
         qp_iter_ = 0;
         alpha_ = 0.0;
@@ -2979,7 +2998,7 @@ private:
     // dynamic-horizon (N2 = N / NB is a runtime quantity); with NB == 0
     // these fall back to plain staged types and are never used.
     detail::BlockQpWorkspaces<P, NB> block_qp_;
-    AcadosStatistics stat_;
+    AcadosStatistics<> stat_;
     Qp<P, NH> qp_in_;
     QpSol<P, NH> qp_out_;
     Solution<P, NH> trial_;
