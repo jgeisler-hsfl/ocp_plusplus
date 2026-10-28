@@ -1587,6 +1587,14 @@ constexpr const char* to_string(Status s)
     return "unknown";
 }
 
+/// How to fill the new last stage after a one-stage receding-horizon shift
+/// (see `Solution::shift`).
+enum class ShiftFill
+{
+    kRollover,  // x[N], u[N-1] keep their previous values (warm-start guess)
+    kZero       // new last-stage x[N], u[N-1] are zeroed
+};
+
 /// Solver-independent solution (and warm-start) container.
 ///
 /// The same object is used both as the initial iterate supplied to a
@@ -1733,6 +1741,88 @@ struct Solution
         }
         std::fclose(f);
         return true;
+    }
+
+    /// Advance this solution one stage for the next MPC step (receding
+    /// horizon shift), in place, usable as the warm start of the next
+    /// `solve()`.
+    ///
+    /// Every stage quantity moves one index up (stage k inherits the old
+    /// stage k + 1), the new initial state `x0_new` is written to `x[0]`,
+    /// and the new last stage is filled per `fill`:
+    ///
+    ///   quantity                           rule
+    ///   ---------------------------------  ---------------------------------
+    ///   x[k] (k = 0..N-1)                  x[k] = x[k+1]
+    ///   x[0]                               = x0_new (after the shift)
+    ///   x[N]                               keep (kRollover) / 0 (kZero)
+    ///   u[k] (k = 0..N-2)                  u[k] = u[k+1]
+    ///   u[N-1]                             keep (kRollover) / 0 (kZero)
+    ///   lambda_dyn[k] (k = 0..N-2)         = lambda_dyn[k+1]
+    ///   stage ineq/eq/lin multipliers      = [k+1] for k = 0..N-2,
+    ///                                        zeroed at k = N-1
+    ///   lambda_box_state[k] (k = 0..N-1)   = lambda_box_state[k+1]
+    ///   lambda_box_control[k] (k = 0..N-2) = lambda_box_control[k+1],
+    ///                                        zeroed at k = N-1
+    ///   terminal multipliers               unchanged (the terminal stage
+    ///                                        stays terminal)
+    ///   cost_value, status                 reset (0, kUnset)
+    ///
+    /// `x0_new` is the measured state of the new horizon; when
+    /// `Dims::fixed_initial_state` is true the solver still pins x_0 from
+    /// `Problem::initial_state()`, which the caller must update separately.
+    ///
+    /// @param x0_new  new initial state (written to x[0]).
+    /// @param fill    how to fill the new last stage (default kRollover).
+    void shift(const state_t& x0_new, ShiftFill fill = ShiftFill::kRollover)
+    {
+        assert(N >= 1);
+
+        // states up one index (x[N] is left alone for the fill below)
+        for (int k = 0; k < N; ++k)
+        {
+            x[k] = x[k + 1];
+        }
+        x[0] = x0_new;
+        if (fill == ShiftFill::kZero)
+        {
+            x[N].setZero();
+        }
+
+        // controls up one index (u[N-1] is the new last stage)
+        for (int k = 0; k + 1 < N; ++k)
+        {
+            u[k] = u[k + 1];
+        }
+        if (fill == ShiftFill::kZero)
+        {
+            u[N - 1].setZero();
+        }
+
+        // stage multipliers: up one index, new last stage zeroed
+        for (int k = 0; k + 1 < N; ++k)
+        {
+            lambda_dyn[k] = lambda_dyn[k + 1];
+            lambda_ineq_stage[k] = lambda_ineq_stage[k + 1];
+            lambda_eq_stage[k] = lambda_eq_stage[k + 1];
+            lambda_lin_stage[k] = lambda_lin_stage[k + 1];
+            lambda_box_control[k] = lambda_box_control[k + 1];
+        }
+        lambda_dyn[N - 1].setZero();
+        lambda_ineq_stage[N - 1].setZero();
+        lambda_eq_stage[N - 1].setZero();
+        lambda_lin_stage[N - 1].setZero();
+        lambda_box_control[N - 1].setZero();
+
+        // state box multipliers (N + 1 stages): up one index; the terminal
+        // entry lambda_box_state[N] stays (terminal multipliers unchanged).
+        for (int k = 0; k < N; ++k)
+        {
+            lambda_box_state[k] = lambda_box_state[k + 1];
+        }
+
+        cost_value = 0;
+        status = Status::kUnset;
     }
 };
 

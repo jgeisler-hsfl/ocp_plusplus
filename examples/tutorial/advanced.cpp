@@ -4,8 +4,8 @@
 //    initialized trajectories (no heap allocation, no resize)
 // 2. free initial state (MHE-style): fixed_initial_state = false makes x_0
 //    a decision variable, bounded by the stage-0 state box
-// 3. warm-started re-solve: shifting the solution and re-solving the same
-//    solver object (receding-horizon pattern)
+// 3. warm-started re-solve via the receding-horizon shift helper
+//    (solver.shift: shifts solution + internal slacks), same solver object
 // 4. per-iteration statistics export to CSV
 // 5. NLP-level scaling: the ScaledProblem wrapper rescales the states
 //    and controls before the solver sees the problem; unscale() recovers
@@ -242,25 +242,15 @@ static void fixed_horizon_and_warm_start(const AdvFixed& problem)
                 static_cast<int>(sol.status), solver.statistics().iter,
                 sol.cost_value);
 
-    // warm-started re-solve (receding-horizon pattern): shift the
-    // trajectory AND the multipliers one stage up, re-solve the same
-    // solver object
-    ocp::Solution<AdvFixed, N> warm(sol);  // copy = warm start
-    for (int k = 0; k < N - 1; ++k)
-    {
-        warm.x[k] = sol.x[k + 1];
-        warm.u[k] = sol.u[k + 1];
-        warm.lambda_dyn[k] = sol.lambda_dyn[k + 1];
-        warm.lambda_box_state[k] = sol.lambda_box_state[k + 1];
-    }
-    warm.lambda_dyn[N - 1].setZero();
-    warm.lambda_box_state[N - 1].setZero();
-    warm.x[0] = problem.initial_state();   // new initial state
-    warm.u[N - 1].setZero();               // last control: hold guess
-    solver.solve(problem, warm);
+    // warm-started re-solve (receding-horizon pattern): the driver-level
+    // shift advances the trajectory, the multipliers and the
+    // solver-internal slacks one stage up in a single call; re-solve the
+    // same solver object
+    solver.shift(sol, problem.initial_state());
+    solver.solve(problem, sol);
     std::printf("warm  solve: status=%d iters=%d cost=%.9f\n",
-                static_cast<int>(warm.status), solver.statistics().iter,
-                warm.cost_value);
+                static_cast<int>(sol.status), solver.statistics().iter,
+                sol.cost_value);
 
     // per-iteration statistics to CSV
     solver.statistics().write_csv("tutorial_advanced_stat.csv");

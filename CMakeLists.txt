@@ -294,6 +294,7 @@ add_executable(sqp_unit tests/sqp/sqp_unit.cpp tests/sqp/regularize_2a.cpp
                         tests/sqp/sens_x0_5f.cpp
                         tests/sqp/sens_param_5j.cpp
                         tests/sqp/sens_param_5i.cpp
+                        tests/sqp/rh_shift.cpp
                         ${MC_MODEL_C})
 target_include_directories(sqp_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(sqp_unit PRIVATE ${OCP_WARN_FLAGS})
@@ -309,6 +310,11 @@ target_compile_options(status_unit PRIVATE ${OCP_WARN_FLAGS})
 add_executable(solution_unit tests/problem/solution_unit.cpp)
 target_include_directories(solution_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(solution_unit PRIVATE ${OCP_WARN_FLAGS})
+
+add_executable(solution_shift_unit tests/problem/solution_shift_unit.cpp)
+target_include_directories(
+    solution_shift_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(solution_shift_unit PRIVATE ${OCP_WARN_FLAGS})
 
 add_executable(mex_api_unit tests/mex/mex_api_unit.cpp)
 target_include_directories(mex_api_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})

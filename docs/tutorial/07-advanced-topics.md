@@ -70,8 +70,41 @@ solver pins `x_0` to `initial_state()` with internal pin rows instead.
 
 `ocp::Solution` is both the input and the output of a solve, so warm
 starting is passing the previous solution back in. The receding-horizon
-(MPC) pattern shifts the trajectory *and the multipliers* one stage up and
-re-solves the same solver object:
+(MPC) pattern shifts the trajectory *and the multipliers* one stage up
+and re-solves the same solver object. `ocp::Solution::shift` does this
+in place:
+
+```cpp
+// after the previous MPC step's solve:
+//   x[k] <- x[k+1] (k = 0..N-1),  u[k] <- u[k+1] (k = 0..N-2)
+//   stage multipliers shift one stage up and are zeroed at k = N-1,
+//   terminal multipliers stay,  x[0] := new measurement
+sol.shift(problem.initial_state());     // ShiftFill::kRollover (default)
+solver.solve(problem, sol);
+```
+
+`shift(x0_new, fill)` takes the new initial state as an argument and an
+optional `ocp::ShiftFill` policy for the new terminal stage: `kRollover`
+(default) keeps the old terminal state and last control as the warm
+guess, `kZero` zeroes them. `cost_value` and `status` are reset.
+
+When the same solver object solves consecutive MPC steps, route the
+shift through the driver so the solver-internal slack variables advance
+one stage together with the solution:
+
+```cpp
+solver.shift(sol, problem.initial_state());  // solution + internal slacks
+solver.solve(problem, sol);
+```
+
+The driver-level `shift` applies the same `Solution::shift` mapping and
+additionally advances `SqpSlacks` (only effective when the last solve
+ran at the same horizon). If a shifted warm start turns out unhelpful,
+`solver.reset_warm_start()` zeroes the slacks and the persistent QP
+duals for a one-shot cold start.
+
+For reference, the manual version of the shift (equivalent to
+`kRollover` on a fresh copy):
 
 ```cpp
 ocp::Solution<AdvFixed, N> warm(sol);          // copy = warm start
