@@ -9,7 +9,9 @@
 //
 // Command surface (v2, docs/plans/finished/MEX_IMPROVEMENTS_PLAN.md):
 //   info | init N | options | opt_get name | opt_set name value |
-//   opt_set struct | opt_dump | set field M | get field | solution |
+//   opt_set struct | opt_dump | param_names | param_extent name |
+//   param_get name | param_set name value | param_dump |
+//   set field M | get field | solution |
 //   solve | stats | stat_col name
 //
 // Conventions: column-major stage order (MATLAB column k+1 = stage k),
@@ -22,6 +24,7 @@
 
 #include "mex.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <vector>
@@ -56,6 +59,15 @@ std::string usage()
            "  'opt_set' struct            set options by struct (field "
            "nesting mirrors the dotted names; unknown fields warn)\n"
            "  'opt_dump'                  print a flat option snapshot\n"
+            "  'param_names'               all model parameter names (cell; "
+            "empty if the problem has no parameters)\n"
+            "  'param_extent' name         parameter leaf extent as "
+            "[rows, cols] (scalars: 1 x 1)\n"
+            "  'param_get' name            parameter leaf (rows x cols; "
+            "scalars 1 x 1)\n"
+            "  'param_set' name M          set one parameter leaf (M must "
+            "have the leaf's extent; live: effective on the next solve)\n"
+            "  'param_dump'                print a flat parameter snapshot\n"
            "  'set' field M               warm start: 'x' (nx x (N+1)) or "
            "'u' (nu x N)\n"
            "  'get' field                 solution field (x, u, lambda_*, "
@@ -193,6 +205,18 @@ mxArray* do_info(const Session& session)
 mxArray* do_options(const Session& session)
 {
     const std::vector<std::string> names = session.option_names();
+    auto* c = mxCreateCellMatrix(1, static_cast<mwSize>(names.size()));
+    for (std::size_t i = 0; i < names.size(); ++i)
+    {
+        mxSetCell(c, static_cast<mwIndex>(i),
+                  mxCreateString(names[i].c_str()));
+    }
+    return c;
+}
+
+mxArray* do_param_names(const Session& session)
+{
+    const std::vector<std::string> names = session.param_names();
     auto* c = mxCreateCellMatrix(1, static_cast<mwSize>(names.size()));
     for (std::size_t i = 0; i < names.size(); ++i)
     {
@@ -422,6 +446,87 @@ void mexFunction(int nlhs, mxArray* plhs[], int nrhs, const mxArray* prhs[])
     else if (cmd == "opt_dump")
     {
         mexPrintf("%s", session.option_dump_str().c_str());
+    }
+    else if (cmd == "param_names")
+    {
+        if (nlhs < 1)
+        {
+            die("param_names: assign the output, e.g.  pn = ocp_mex_" +
+                std::string(ocp_mex::kName) + "('param_names')");
+        }
+        plhs[0] = do_param_names(session);
+    }
+    else if (cmd == "param_extent")
+    {
+        const std::string name = arg_str(nrhs, prhs, 1);
+        if (nlhs < 1)
+        {
+            die("param_extent: assign the output, e.g.  e = ocp_mex_" +
+                std::string(ocp_mex::kName) + "('param_extent', name)");
+        }
+        int rows = 0;
+        int cols = 0;
+        if (!session.param_extent(name, rows, cols))
+        {
+            die("unknown parameter: '" + name + "' (see 'param_names')");
+        }
+        auto* m = mxCreateDoubleMatrix(1, 2, mxREAL);
+        double* p = mxGetPr(m);
+        p[0] = static_cast<double>(rows);
+        p[1] = static_cast<double>(cols);
+        plhs[0] = m;
+    }
+    else if (cmd == "param_get")
+    {
+        const std::string name = arg_str(nrhs, prhs, 1);
+        if (nlhs < 1)
+        {
+            die("param_get: assign the output, e.g.  v = ocp_mex_" +
+                std::string(ocp_mex::kName) + "('param_get', name)");
+        }
+        int rows = 0;
+        int cols = 0;
+        if (!session.param_extent(name, rows, cols))
+        {
+            die("unknown parameter: '" + name + "' (see 'param_names')");
+        }
+        auto* m = mxCreateDoubleMatrix(rows, cols, mxREAL);
+        session.param_get(name, mxGetPr(m));  // extent checked; cannot fail
+        plhs[0] = m;
+    }
+    else if (cmd == "param_set")
+    {
+        const std::string name = arg_str(nrhs, prhs, 1);
+        const mxArray* m = arg_matrix(nrhs, prhs, 2);
+        int rows = 0;
+        int cols = 0;
+        if (!session.param_extent(name, rows, cols))
+        {
+            die("unknown parameter: '" + name + "' (see 'param_names')");
+        }
+        const int n = static_cast<int>(mxGetNumberOfElements(m));
+        if (n != rows * cols)
+        {
+            die("param_set: '" + name + "' has " +
+                std::to_string(rows * cols) + " element(s), got " +
+                std::to_string(n) + " (see 'param_extent')");
+        }
+        const auto res = session.param_set(name, mxGetPr(m), n);
+        if (res.status == ocp::inspect::SetResult::Status::kOutOfRange)
+        {
+            mexErrMsgIdAndTxt("ocp_mex:ParamOutOfRange",
+                              "parameter '%s' = %g is outside the allowed "
+                              "range [%g, %g]",
+                              name.c_str(), mxGetPr(m)[0], res.lo, res.hi);
+        }
+        if (nlhs >= 1)
+        {
+            plhs[0] = mxCreateLogicalScalar(1);
+        }
+    }
+    else if (cmd == "param_dump")
+    {
+        mexPrintf("%s", session.param_dump_str().c_str());
     }
     else if (cmd == "set")
     {

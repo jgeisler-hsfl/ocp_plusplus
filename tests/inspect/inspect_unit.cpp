@@ -1,10 +1,13 @@
-// inspect protocol unit tests (docs/plans/finished/OPTION_INSPECT_PLAN.md, P1):
-// typed / double-coerced field access, dotted delegation through a
+// inspect protocol unit tests (docs/plans/finished/OPTION_INSPECT_PLAN.md,
+// P1): typed / double-coerced field access, dotted delegation through a
 // nested inspect(), unknown names, leaf-only path semantics, name
 // discovery (leaf_names), dump format, the has_inspect trait,
 // InspectableLeaf no-op children, private member exposure, the closed-
 // interval bounds enforced by the named writers, and the statistics
-// column / table helpers.
+// column / table helpers. Plus the matrix-leaf extension
+// (docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md, Block 1): extent queries,
+// typed and double-flattened (column-major) get/set, name discovery and
+// dump format for fixed-extent Eigen members.
 
 #include <cmath>
 #include <cstddef>
@@ -13,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include <Eigen/Core>
+
 #include "ocp/utils/inspect.hpp"
 
 namespace
@@ -20,9 +25,14 @@ namespace
 
 using ocp::inspect::get_double;
 using ocp::inspect::get_field;
+using ocp::inspect::get_matrix;
+using ocp::inspect::get_matrix_double;
 using ocp::inspect::leaf_names;
+using ocp::inspect::matrix_extent;
 using ocp::inspect::set_double;
 using ocp::inspect::set_field;
+using ocp::inspect::set_matrix;
+using ocp::inspect::set_matrix_double;
 
 int failures = 0;
 
@@ -156,6 +166,41 @@ struct Bounded
         vis("pick", &Bounded::pick, 0, 3);
         vis("flag", &Bounded::flag);
         vis("child", &Bounded::child);
+    }
+};
+
+// Matrix-leaf fixture (Block 1): a 2x3 matrix, a 1x2 row vector and a
+// 2x1 float vector at the top level, a 3x1 vector nested under a
+// child, a dynamic-extent matrix (not a leaf) and a plain scalar.
+struct MatChild
+{
+    Eigen::Matrix<double, 3, 1> vec;
+    double t = 1.0;
+    template <class V>
+    static constexpr void inspect(V&& vis)
+    {
+        vis("vec", &MatChild::vec);
+        vis("t", &MatChild::t);
+    }
+};
+
+struct MatBox
+{
+    double s = 1.5;
+    Eigen::Matrix<double, 2, 3> M;
+    Eigen::Matrix<double, 1, 2> row;
+    Eigen::Matrix<float, 2, 1> f;
+    Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic> dyn;
+    MatChild child;
+    template <class V>
+    static constexpr void inspect(V&& vis)
+    {
+        vis("s", &MatBox::s);
+        vis("M", &MatBox::M);
+        vis("row", &MatBox::row);
+        vis("f", &MatBox::f);
+        vis("dyn", &MatBox::dyn);
+        vis("child", &MatBox::child);
     }
 };
 
@@ -486,6 +531,111 @@ void test_limits()
           "set_field int in range");
 }
 
+// Block 1: fixed-extent Eigen matrix leaves
+// (docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md).
+void test_matrix_leaves()
+{
+    MatBox b;
+    // Eigen comma-init fills row-major: M = [[1 2 3],[4 5 6]], so its
+    // column-major flattening is 1 4 2 5 3 6.
+    b.M << 1, 2, 3, 4, 5, 6;
+    b.row << 7, 8;
+    b.f << 1.5f, 2.5f;
+    b.child.vec << 9, 10, 11;
+
+    // Extent queries.
+    int rows = 0;
+    int cols = 0;
+    check(matrix_extent(b, "M", rows, cols) && rows == 2 && cols == 3,
+          "extent of a 2x3 leaf");
+    check(matrix_extent(b, "row", rows, cols) && rows == 1 && cols == 2,
+          "extent of a 1x2 row-vector leaf");
+    check(matrix_extent(b, "child.vec", rows, cols) && rows == 3 && cols == 1,
+          "dotted extent of a nested vector leaf");
+    check(!matrix_extent(b, "s", rows, cols), "scalar leaf is not a matrix");
+    check(!matrix_extent(b, "dyn", rows, cols),
+          "dynamic-extent matrix is invisible");
+    check(!matrix_extent(b, "child", rows, cols), "child end is not a matrix");
+    check(!matrix_extent(b, "nope", rows, cols), "unknown matrix name");
+
+    // Name discovery: matrix leaves listed in declaration order, the
+    // dynamic-extent matrix is not.
+    const std::vector<std::string> names = leaf_names<MatBox>();
+    const std::vector<std::string> want = {"s", "M", "row", "f", "child.vec",
+                                           "child.t"};
+    check(names == want, "leaf_names includes matrix leaves");
+
+    // Dump format: one line, column-major flattened, same %.12e as scalars.
+    const std::string ds = ocp::inspect::dump_string(b);
+    check(ds.find("M = 1.000000000000e+00 4.000000000000e+00"
+                  " 2.000000000000e+00 5.000000000000e+00"
+                  " 3.000000000000e+00 6.000000000000e+00\n")
+              != std::string::npos,
+          "matrix dump one line, column-major");
+    check(ds.find("f = 1.500000000000e+00 2.500000000000e+00\n")
+              != std::string::npos,
+          "float matrix dump coerced to double");
+    // %.12e normalizes the mantissa to [1, 10): 10 -> 1.e+01, 11 -> 1.1e+01.
+    check(ds.find("child.vec = 9.000000000000e+00 1.000000000000e+01"
+                  " 1.100000000000e+01\n") != std::string::npos,
+          "dotted matrix dump");
+    check(ds.find("dyn") == std::string::npos, "dynamic matrix not dumped");
+
+    // Typed get / set (same-extent Eigen comparison yields a plain bool).
+    Eigen::Matrix<double, 2, 3> copy;
+    check(get_matrix(b, "M", copy) && copy == b.M, "get_matrix");
+    Eigen::Matrix<double, 3, 1> cv;
+    check(get_matrix(b, "child.vec", cv) && cv == b.child.vec,
+          "get_matrix dotted");
+    Eigen::Matrix<double, 2, 2> wrong;
+    check(!get_matrix(b, "M", wrong), "get with extent mismatch rejected");
+    const Eigen::Matrix<double, 2, 3> in =
+        Eigen::Matrix<double, 2, 3>::Constant(9.0);
+    check(set_matrix(b, "M", in) && b.M == in, "set_matrix");
+    const Eigen::Matrix<double, 3, 3> too_big =
+        Eigen::Matrix<double, 3, 3>::Constant(0.0);
+    check(!set_matrix(b, "M", too_big), "set with extent mismatch rejected");
+    check(b.M == in, "rejected set leaves the leaf untouched");
+    check(!set_matrix(b, "s", in), "set into a scalar leaf rejected");
+
+    // Double-flattened get / set (column-major).
+    std::vector<double> flat(6, 0.0);
+    rows = -1;
+    cols = -1;
+    check(get_matrix_double(b, "M", flat.data(), rows, cols) && rows == 2 &&
+              cols == 3,
+          "get_matrix_double");
+    check(flat == std::vector<double>{9.0, 9.0, 9.0, 9.0, 9.0, 9.0},
+          "double read after typed write");
+    const double in6[6] = {21, 22, 23, 24, 25, 26};
+    check(set_matrix_double(b, "M", in6, 6), "set_matrix_double");
+    Eigen::Matrix<double, 2, 3> after;
+    check(get_matrix(b, "M", after) && after(0, 0) == 21 && after(1, 0) == 22
+              && after(0, 1) == 23 && after(1, 1) == 24 && after(0, 2) == 25
+              && after(1, 2) == 26,
+          "column-major write round trip");
+    check(!set_matrix_double(b, "M", in6, 5), "wrong element count rejected");
+    check(get_matrix(b, "M", after) && after(0, 0) == 21,
+          "rejected write leaves the leaf untouched");
+    std::vector<double> fv(2, 0.0);
+    rows = 0;
+    cols = 0;
+    check(get_matrix_double(b, "child.vec", fv.data(), rows, cols)
+              && rows == 3 && cols == 1 && fv[0] == 9.0 && fv[1] == 10.0,
+          "dotted double read");
+    const double in3[3] = {100, 110, 120};
+    check(set_matrix_double(b, "child.vec", in3, 3), "dotted double write");
+    check(b.child.vec[0] == 100 && b.child.vec[1] == 110
+              && b.child.vec[2] == 120,
+          "dotted double write landed");
+    std::vector<double> fbuf(2, 0.0);
+    check(get_matrix_double(b, "f", fbuf.data(), rows, cols) && rows == 2
+              && cols == 1 && fbuf[0] == 1.5 && fbuf[1] == 2.5,
+          "float leaf read as double");
+    check(!get_matrix_double(b, "s", fbuf.data(), rows, cols),
+          "scalar leaf not a matrix read");
+}
+
 }  // namespace
 
 int main()
@@ -503,6 +653,7 @@ int main()
     test_stat();
     test_copy_semantics();
     test_limits();
+    test_matrix_leaves();
 
     if (failures == 0)
     {

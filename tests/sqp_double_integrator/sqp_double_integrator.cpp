@@ -56,7 +56,7 @@ constexpr int N = 10;
 // over |a| <= 1 is 1.15, so the equality would be infeasible).
 double terminal_eq_feasible_control(const DoubleIntegrator& p)
 {
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * N * (N - 1) / 2.0 + Ts * N;
@@ -197,7 +197,7 @@ void check_residuals(const DoubleIntegrator& p,
             sol.lambda_box_control[k](0) * std::max(0.0, -1.0 - a)));
         comp = std::max(comp, std::fabs(
             sol.lambda_box_control[k](1) * std::max(0.0, a - 1.0)));
-        const double g = sol.x[k](1) - p.v_max_;
+        const double g = sol.x[k](1) - p.params().v_max;
         comp = std::max(comp, std::fabs(
             sol.lambda_ineq_stage[k](0) * std::max(0.0, g)));
         const double v = 0.5 * sol.x[k](0) + sol.x[k](1);
@@ -268,7 +268,7 @@ int main()
         std::sqrt(std::max(0.0, 2.0 * (sol.cost_value - raw) / 100.0));
     for (int k = 0; k < N; ++k)
     {
-        check(static_cast<double>(sol.x[k](1)) <= p.v_max_ + slack_bound + 1e-8,
+        check(static_cast<double>(sol.x[k](1)) <= p.params().v_max + slack_bound + 1e-8,
               "soft row: v_k <= v_max + slack");
     }
 

@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace ocp
@@ -138,6 +139,105 @@ public:
     std::string option_dump_str() const
     {
         return inspect::dump_string(solver_);
+    }
+
+    // ---------------------------------------------------------------
+    //  Parameters (by name, inspect protocol over the problem's
+    //  duck-typed params() object; scalar and matrix leaves)
+    // ---------------------------------------------------------------
+
+    /// All discoverable parameter names (dotted paths into the problem's
+    /// parameter object). Empty when the problem does not declare
+    /// parameters (the base stub returns the leaf-free EmptyParams).
+    std::vector<std::string> param_names() const
+    {
+        using ParamType = std::decay_t<decltype(problem_.params())>;
+        return inspect::leaf_names<ParamType>();
+    }
+
+    /// Extent of the parameter leaf at dotted `name`: a matrix leaf
+    /// reports its rows/cols, a scalar leaf reports 1 x 1. False if the
+    /// name is unknown or the problem has no parameters.
+    bool param_extent(std::string_view name, int& rows, int& cols) const
+    {
+        if (inspect::matrix_extent(problem_.params(), name, rows, cols))
+        {
+            return true;
+        }
+        double v = 0.0;
+        if (inspect::get_double(problem_.params(), name, v))
+        {
+            rows = 1;
+            cols = 1;
+            return true;
+        }
+        rows = 0;
+        cols = 0;
+        return false;
+    }
+
+    /// Read the parameter leaf at dotted `name` double-flattened,
+    /// column-major: `out` must hold rows*cols doubles (rows/cols from
+    /// param_extent). False if the name is unknown.
+    bool param_get(std::string_view name, double* out) const
+    {
+        int rows = 0;
+        int cols = 0;
+        if (inspect::matrix_extent(problem_.params(), name, rows, cols))
+        {
+            return inspect::get_matrix_double(
+                problem_.params(), name, out, rows, cols);
+        }
+        double v = 0.0;
+        if (inspect::get_double(problem_.params(), name, v))
+        {
+            out[0] = v;
+            return true;
+        }
+        return false;
+    }
+
+    /// Write the double-flattened, column-major `in` (n elements) into
+    /// the parameter leaf at dotted `name`: n must equal rows*cols for a
+    /// matrix leaf and 1 for a scalar leaf, where the leaf's declared
+    /// [lo, hi] bounds are enforced. kOk on success; kOutOfRange (bounds
+    /// in lo / hi) for an out-of-range scalar; kUnknownPath for an
+    /// unknown name or a wrong element count (the leaf stays untouched).
+    inspect::SetResult param_set(std::string_view name, const double* in,
+                                 int n)
+    {
+        inspect::SetResult r;
+        int rows = 0;
+        int cols = 0;
+        if (inspect::matrix_extent(problem_.params(), name, rows, cols))
+        {
+            if (n == rows * cols &&
+                inspect::set_matrix_double(problem_.params(), name, in, n))
+            {
+                r.status = inspect::SetResult::Status::kOk;
+            }
+            return r;
+        }
+        if (n != 1)
+        {
+            return r;
+        }
+        return inspect::set_double(problem_.params(), name, in[0]);
+    }
+
+    /// Print a flat "name = value" snapshot of all parameters (matrix
+    /// leaves flattened column-major onto one line).
+    void param_dump(std::FILE* f = stdout) const
+    {
+        inspect::dump(problem_.params(), f);
+    }
+
+    /// Flat "name = value" snapshot of all parameters as a single string
+    /// (same format as param_dump; the MEX glue prints it via mexPrintf).
+    /// Empty when the problem has no parameters.
+    std::string param_dump_str() const
+    {
+        return inspect::dump_string(problem_.params());
     }
 
     // ---------------------------------------------------------------

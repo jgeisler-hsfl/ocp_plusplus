@@ -53,7 +53,7 @@ using SocSolver = AcadosSolver<DI>;
 
 Solution<DI> make_warm_start(const DI& p, int n_stages)
 {
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * n_stages * (n_stages - 1) / 2.0 +

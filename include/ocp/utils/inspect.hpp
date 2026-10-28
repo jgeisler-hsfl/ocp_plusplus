@@ -12,6 +12,8 @@
 // that calls `vis(name, &Self::member[, lo, hi])` once per exposed
 // field, where
 //   - a scalar leaf is a double / int / bool member,
+//   - a matrix leaf is a fixed-extent Eigen::Matrix member (no bounds;
+//     accessed via the matrix_* walkers below, flattened column-major),
 //   - a child is a member that itself provides inspect() (a nested
 //     "registry" node reached via dotted names),
 //   - `lo` / `hi` (optional) are the closed-interval bounds enforced by
@@ -56,6 +58,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include <Eigen/Core>
 
 namespace ocp
 {
@@ -120,6 +124,22 @@ constexpr bool is_scalar =
     std::is_same_v<std::decay_t<T>, double> ||
     std::is_same_v<std::decay_t<T>, int> ||
     std::is_same_v<std::decay_t<T>, bool>;
+
+/// True if `T` is a fixed-extent Eigen dense matrix (compile-time rows and
+/// columns, at least one of each): a "matrix leaf" of the protocol.
+/// Dynamic-extent Eigen matrices and all non-Eigen types are not matrix
+/// leaves (they stay invisible to the walkers, like any other
+/// unrecognized member type).
+template <class T>
+struct is_fixed_matrix : std::false_type
+{
+};
+
+template <class S, int R, int C, int O, int MR, int MC>
+struct is_fixed_matrix<Eigen::Matrix<S, R, C, O, MR, MC>>
+    : std::bool_constant<(R > 0) && (C > 0)>
+{
+};
 
 /// Split `path` at the first `delim`: {head, rest} (rest empty if none).
 inline std::pair<std::string_view, std::string_view> split_first(
@@ -187,6 +207,38 @@ bool walk(T& obj, std::string_view path, const Fn& fn)
     return done;
 }
 
+/// Walk `path` on `obj` and call `fn(m)` exactly once if a *matrix*
+/// leaf (a fixed-extent Eigen matrix member) is reached; false if the
+/// path is unknown or ends at a scalar leaf or a child. Scalar leaves
+/// are ignored; children are recursed into like in walk.
+template <class T, class Fn>
+bool walk_matrix(T& obj, std::string_view path, const Fn& fn)
+{
+    const auto [head, rest] = split_first(path, '.');
+    bool done = false;
+    obj.inspect([&](std::string_view name, auto mem_ptr, auto...) {
+        if (done || name != head)
+        {
+            return;
+        }
+        auto& m = obj.*mem_ptr;
+        using M = std::decay_t<decltype(m)>;
+        if (rest.empty())
+        {
+            if constexpr (is_fixed_matrix<M>::value)
+            {
+                fn(m);
+                done = true;
+            }
+        }
+        else if constexpr (has_inspect<M>::value)
+        {
+            done = walk_matrix(m, rest, fn);
+        }
+    });
+    return done;
+}
+
 /// Collect the dotted leaf names reachable from `T::inspect`, depth
 /// first in declaration order, under `prefix`.
 template <class T>
@@ -195,6 +247,10 @@ void collect_names(std::string_view prefix, std::vector<std::string>& out)
     T::inspect([&](std::string_view name, auto mem_ptr, auto...) {
         using M = std::decay_t<decltype(std::declval<T>().*mem_ptr)>;
         if constexpr (is_scalar<M>)
+        {
+            out.push_back(std::string(prefix) + std::string(name));
+        }
+        else if constexpr (is_fixed_matrix<M>::value)
         {
             out.push_back(std::string(prefix) + std::string(name));
         }
@@ -231,6 +287,23 @@ void dump_rec(const T& obj, const std::string& prefix, std::FILE* f)
                              m ? "true" : "false");
             }
         }
+        else if constexpr (is_fixed_matrix<M>::value)
+        {
+            // one line, column-major flattened
+            std::fprintf(f, "%s%s = ", prefix.c_str(), name.data());
+            for (int c = 0; c < m.cols(); ++c)
+            {
+                for (int r = 0; r < m.rows(); ++r)
+                {
+                    if (r > 0 || c > 0)
+                    {
+                        std::fprintf(f, " ");
+                    }
+                    std::fprintf(f, "%.12e", static_cast<double>(m(r, c)));
+                }
+            }
+            std::fprintf(f, "\n");
+        }
         else if constexpr (has_inspect<M>::value)
         {
             dump_rec(m, prefix + std::string(name) + ".", f);
@@ -266,6 +339,28 @@ void dump_str_rec(const T& obj, const std::string& prefix, std::string& out)
             out += name;
             out += " = ";
             out += buf;
+            out += '\n';
+        }
+        else if constexpr (is_fixed_matrix<M>::value)
+        {
+            // one line, column-major flattened (identical format to dump_rec)
+            char buf[64];
+            out += prefix;
+            out += name;
+            out += " = ";
+            for (int c = 0; c < m.cols(); ++c)
+            {
+                for (int r = 0; r < m.rows(); ++r)
+                {
+                    if (r > 0 || c > 0)
+                    {
+                        out += " ";
+                    }
+                    std::snprintf(buf, sizeof(buf), "%.12e",
+                                  static_cast<double>(m(r, c)));
+                    out += buf;
+                }
+            }
             out += '\n';
         }
         else if constexpr (has_inspect<M>::value)
@@ -378,6 +473,124 @@ SetResult set_double(T& obj, std::string_view path, double value)
 }
 
 // ---------------------------------------------------------------
+//  Matrix leaf access (allocation-free)
+// ---------------------------------------------------------------
+//
+// Matrix leaves are fixed-extent Eigen::Matrix members. They carry no
+// bounds (the host-side guardrail applies to scalar leaves only) and
+// are exchanged flattened column-major on the double path.
+
+/// Report the extent (rows, cols) of the matrix leaf at dotted `path`.
+/// False if the path is unknown or ends at a scalar leaf or a child
+/// (dotted paths recurse into children like walk).
+template <class T>
+bool matrix_extent(const T& obj, std::string_view path, int& rows, int& cols)
+{
+    return detail::walk_matrix(obj, path, [&](const auto& m) {
+        rows = m.rows();
+        cols = m.cols();
+    });
+}
+
+/// Copy the matrix leaf at dotted `path` of `obj` into `out`. `out`
+/// must have the leaf's extent (checked at runtime); on a mismatch it
+/// is left untouched and false is returned. False also if the path is
+/// unknown or ends at a scalar leaf or a child.
+template <class T, class Mat>
+bool get_matrix(const T& obj, std::string_view path, Mat& out)
+{
+    bool ok = false;
+    detail::walk_matrix(obj, path, [&](const auto& m) {
+        if (m.rows() == out.rows() && m.cols() == out.cols())
+        {
+            // element-wise: must compile for *any* Mat, also when the
+            // extents differ statically (the runtime check above
+            // decides) and when the scalar types differ.
+            for (int c = 0; c < m.cols(); ++c)
+            {
+                for (int r = 0; r < m.rows(); ++r)
+                {
+                    out(r, c) = m(r, c);
+                }
+            }
+            ok = true;
+        }
+    });
+    return ok;
+}
+
+/// Write `in` into the matrix leaf at dotted `path` of `obj`. `in`
+/// must have the leaf's extent (checked at runtime); on a mismatch the
+/// leaf is left untouched and false is returned. False also if the
+/// path is unknown or ends at a scalar leaf or a child.
+template <class T, class Mat>
+bool set_matrix(T& obj, std::string_view path, const Mat& in)
+{
+    bool ok = false;
+    detail::walk_matrix(obj, path, [&](auto& m) {
+        if (m.rows() == in.rows() && m.cols() == in.cols())
+        {
+            // element-wise (see get_matrix for the rationale)
+            for (int c = 0; c < m.cols(); ++c)
+            {
+                for (int r = 0; r < m.rows(); ++r)
+                {
+                    m(r, c) = in(r, c);
+                }
+            }
+            ok = true;
+        }
+    });
+    return ok;
+}
+
+/// Double-flattened, column-major read of the matrix leaf at dotted
+/// `path`: `out` must hold m.rows() * m.cols() doubles; rows / cols
+/// report the leaf's extent. False if the path is unknown or ends at
+/// a scalar leaf or a child.
+template <class T>
+bool get_matrix_double(const T& obj, std::string_view path, double* out,
+                       int& rows, int& cols)
+{
+    return detail::walk_matrix(obj, path, [&](const auto& m) {
+        rows = m.rows();
+        cols = m.cols();
+        for (int c = 0; c < m.cols(); ++c)
+        {
+            for (int r = 0; r < m.rows(); ++r)
+            {
+                out[c * m.rows() + r] = static_cast<double>(m(r, c));
+            }
+        }
+    });
+}
+
+/// Double-flattened, column-major write into the matrix leaf at dotted
+/// `path`: `n` must equal the leaf's rows * cols, otherwise the leaf
+/// is left untouched and false is returned. False also if the path is
+/// unknown or ends at a scalar leaf or a child.
+template <class T>
+bool set_matrix_double(T& obj, std::string_view path, const double* in, int n)
+{
+    bool ok = false;
+    detail::walk_matrix(obj, path, [&](auto& m) {
+        if (n != m.rows() * m.cols())
+        {
+            return;
+        }
+        for (int c = 0; c < m.cols(); ++c)
+        {
+            for (int r = 0; r < m.rows(); ++r)
+            {
+                m(r, c) = in[c * m.rows() + r];
+            }
+        }
+        ok = true;
+    });
+    return ok;
+}
+
+// ---------------------------------------------------------------
 //  Discovery (host-side; the allocating APIs)
 // ---------------------------------------------------------------
 
@@ -392,8 +605,9 @@ std::vector<std::string> leaf_names()
     return out;
 }
 
-/// Print flat dotted "name = value" lines for every scalar leaf of
-/// `obj` (host/discovery use only).
+/// Print flat dotted "name = value" lines for every leaf of `obj`
+/// (scalars and matrix leaves; matrix leaves are printed on one line,
+/// column-major flattened) (host/discovery use only).
 template <class T>
 void dump(const T& obj, std::FILE* f = stdout)
 {
@@ -428,6 +642,8 @@ using row_t = typename std::decay_t<
 /// Write one row's scalar leaves as consecutive doubles in declaration
 /// order (the same order as leaf_names<Row>()), int/bool coerced to
 /// double. `out` must hold leaf_names<Row>().size() doubles.
+/// A matrix leaf in a stat row is a contract violation and is skipped
+/// (the statistics protocol is scalar-only).
 /// Allocation-free; host-side use (the stat table fills).
 template <class Row>
 void fill_row(const Row& row, double* out)

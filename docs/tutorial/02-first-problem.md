@@ -190,7 +190,72 @@ solver also never calls `dynamics_value_jac_hess`, and the QP Hessian is
 assembled from your cost Hessian plus the linearized dynamics — for this
 linear problem both Hessian models coincide.
 
-## 2.4 Step 3: verify your derivatives
+## 2.4 Shared model parameters (optional)
+
+Model parameters are not part of the interface: the minimal example keeps
+them as plain members (`Ts_`, `wq_`, ...) and the model functions read
+them directly. When the same values must be shared between several model
+pieces — most importantly once dynamics, cost and constraints are spread
+over classes (chapter 6) — a dedicated parameter object is cleaner: a
+plain struct (scalars and fixed-size Eigen matrices alike) that you own
+and that every model function reads from.
+
+If you additionally override the optional `params()` hook,
+
+```cpp
+DiParams& params() { return params_; }
+const DiParams& params() const { return params_; }
+```
+
+and give the struct the inspect protocol (a `static constexpr
+inspect(Visitor)` listing its leaves, see `include/ocp/utils/inspect.hpp`),
+the parameters become discoverable and settable *by name* from host code
+and tooling — the MATLAB MEX wrapper exposes them through the `param_*`
+commands (chapter 8) — while the model functions read the same live
+object:
+
+```cpp
+struct DiParams
+{
+    double Ts = 0.1;                        // time step (dynamics)
+    double v_max = 2.0;                      // velocity cap (constraint)
+    Eigen::Matrix<double, 3, 1> w_stage;     // stage cost weights
+    double wf = 10.0;                        // terminal cost weight
+
+    DiParams() { w_stage << 1.0, 0.1, 0.01; }
+
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("Ts", &DiParams::Ts, ocp::inspect::kMinPositive, std::nullopt);
+        vis("v_max", &DiParams::v_max);
+        vis("w_stage", &DiParams::w_stage);
+        vis("wf", &DiParams::wf);
+    }
+};
+
+class DoubleIntegrator : public ocp::Problem<DoubleIntegratorDims>
+{
+public:
+    DiParams params_;   // the single live object, read by all model calls
+    // ...
+};
+```
+
+The struct is duck-typed: no base class or framework type is required.
+Problems that do not override `params()` get the base-class stub
+(`ocp::EmptyParams`) for free — it exposes no leaves, so by-name access
+degrades to "unknown"; `ocp::detail::has_params<P>` tells the two cases
+apart at compile time.
+
+`params()` is independent of the `np` / `*_sens_p` sensitivity interface
+(chapter 7): the latter models parameter *derivatives* w.r.t. a
+parameter vector `p`, while `params()` holds the parameter *values* the
+model reads. A complete example is
+`examples/double_integrator/double_integrator.hpp` (test:
+`tests/params/params_unit.cpp`).
+
+## 2.5 Step 3: verify your derivatives
 
 Before trusting a solver, check the hand-written derivatives against
 central finite differences — the same pattern the bundled examples use:
@@ -206,7 +271,7 @@ const double fd = (fp(i) - fm(i)) / (2.0 * h);
 check_close("dyn df/dx", A(i, j), fd, 1e-4);
 ```
 
-## 2.5 Compile and run
+## 2.6 Compile and run
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release

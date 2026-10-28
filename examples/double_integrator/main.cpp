@@ -119,7 +119,7 @@ int main()
     DoubleIntegrator::term_grad_t gt;
     double tval = 0.0;
     problem.terminal_cost_value_grad(x, tval, gt);
-    check_close("term grad q", gt(0), 2.0 * problem.wf_ * x(0), 1e-10);
+    check_close("term grad q", gt(0), 2.0 * problem.params().wf * x(0), 1e-10);
 
     // ---- dynamics Jacobian vs finite differences ----------------------
     {
@@ -135,18 +135,18 @@ int main()
         xf(1) -= 2.0 * h;
         DoubleIntegrator::state_t f_m = problem.dynamics_next_state(k, xf, u);
         check_close("dyn A(0,1) fd", A(0, 1), (f_p(0) - f_m(0)) / (2.0 * h), 1e-5);
-        check_close("dyn A(0,1)", A(0, 1), problem.Ts_, 1e-12);
+        check_close("dyn A(0,1)", A(0, 1), problem.params().Ts, 1e-12);
         check_close("dyn A(0,0)", A(0, 0), 1.0, 1e-12);
         check_close("dyn A(1,1)", A(1, 1), 1.0, 1e-12);
         check_close("dyn A(1,0)", A(1, 0), 0.0, 1e-12);
         check_close("dyn B(0,0)", B(0, 0), 0.0, 1e-12);
-        check_close("dyn B(1,0)", B(1, 0), problem.Ts_, 1e-12);
+        check_close("dyn B(1,0)", B(1, 0), problem.params().Ts, 1e-12);
     }
 
     // ---- constraint evaluations ---------------------------------------
     {
         auto g_ineq = problem.stage_inequality_value(k, x, u);
-        check_close("ineq value", g_ineq(0), x(1) - problem.v_max_);
+        check_close("ineq value", g_ineq(0), x(1) - problem.params().v_max);
 
         DoubleIntegrator::ineq_dg_dx_t Gx;
         DoubleIntegrator::ineq_dg_du_t Gu;

@@ -147,7 +147,7 @@ make_warm_start(const DoubleIntegrator& p, int n_stages, double a = 0.0)
 // preserved through every SQP iteration.
 double terminal_eq_feasible_control(const DoubleIntegrator& p, int n_stages)
 {
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * n_stages * (n_stages - 1) / 2.0 + Ts * n_stages;

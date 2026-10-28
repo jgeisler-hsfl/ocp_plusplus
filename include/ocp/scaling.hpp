@@ -21,6 +21,8 @@
 
 #include "ocp/problem.hpp"
 
+#include <utility>
+
 #include <Eigen/Dense>
 
 namespace ocp {
@@ -1100,6 +1102,28 @@ public:
             }
         }
         return x0p;
+    }
+
+    // ===============================================================
+    //  shared parameters (forwarded to the wrapped problem)
+    // ===============================================================
+
+    /// Shared model parameters: the wrapper exposes exactly the
+    /// parameter object of the wrapped problem, so host-side writes
+    /// through the wrapper reach the same live object the wrapped
+    /// model reads.
+    auto params() -> decltype(base_.params())
+    {
+        return base_.params();
+    }
+
+    /// Const view of the wrapped problem's parameters (the trailing
+    /// return type names the wrapped problem's *const* overload, since
+    /// the reference member `base_` is unaffected by `this` constness).
+    auto params() const
+        -> decltype(std::declval<const Base&>().params())
+    {
+        return base_.params();
     }
 };
 

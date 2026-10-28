@@ -351,7 +351,7 @@ double solve_discrete_reference()
 
     Solution<DoubleIntegrator> sol(N);
     // Warm start: constant control that satisfies terminal equality
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * N * (N - 1) / 2.0 + Ts * N;
