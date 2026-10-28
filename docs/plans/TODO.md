@@ -6,7 +6,7 @@ Commit hashes and dates refer to `master`.
 
 ### B. Problem interface / design ergonomics
 
-- [x] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator? (done — the integrators re-expose their `Dims` and model type as `dims_t` / `model_t`; `ContinuousProblem` is now spelled `ContinuousProblem<Integ>` (plus optional `Derived` / `NH`), with all hand-written call sites, the generator, and regenerated examples updated; plan in `docs/plans/finished/CP_FROM_INTEG_PLAN.md`) (2026-10-28, branch `feature/cp-from-integ`, `410f8ec`…`c7de1c5`)
+- [x] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator? (done — the integrators re-expose their `Dims` and model type as `dims_t` / `model_t`; `ContinuousProblem` is now spelled `ContinuousProblem<Integ>` (plus optional `Derived` / `NH`), with all hand-written call sites, the generator, and regenerated examples updated; plan in `docs/plans/finished/CP_FROM_INTEG_PLAN.md`) (2026-10-28, branch `feature/cp-from-integ`, merged `883f241`)
 - [ ] add a linear and a nonlinear least sqquares tracking problem crtp class with gauss newton approximation option
 
 ### C. Tooling / generator
