@@ -12,7 +12,9 @@
 //  x_next = Phi(x, u, t_k)  via a fixed implicit RK scheme
 // (ButcherTableau<Dims, Tag>, Radau IIA or Gauss-Legendre).
 //
-// Stage equations (sub-step size h_ss = h / NumSteps, Butcher A, b, c):
+// Stage equations (sub-step size h_ss = h / NumSteps, Butcher A, b, c, with
+// h a per-call argument of every entry point — the caller owns the time
+// grid and may vary h per OCP stage):
 //
 //     x_s = x + h_ss * sum_j A[s][j] K_j,        s = 0..NS-1
 //     F(x_s, K_s, u, t_s) = 0,   t_s = t_k + h_ss (ss + c[s])
@@ -54,7 +56,7 @@
 // sub-steps warm-start from the previous sub-step's converged K.
 //
 // Forward cache: the v-independent forward state is keyed on
-// (x, u, t_k).  NumSteps == 1: the converged Newton state (K, stage
+// (x, u, t_k, h).  NumSteps == 1: the converged Newton state (K, stage
 // Jacobians, factored G) is reused by a second value / jacobian / value_jac /
 // hess_prod call with the same key, and the first-order sensitivity
 // sens = G^{-1} Q is computed once per key.  NumSteps > 1: the whole
@@ -172,10 +174,11 @@ struct IrkWorkspace
     std::array<Eigen::Matrix<scalar_t, NK, nIn>, NumSteps> sens_traj{};
 
     // --- forward cache: the v-independent forward state above is valid for
-    //     the (x, u, t_k) recorded here.
+    //     the (x, u, t_k, h) recorded here.
     state_t   last_x{};
     control_t last_u{};
     double    last_t = 0.0;
+    double    last_h = 0.0;
     bool fwd_valid  = false;  // NumSteps==1: Newton state matches the key
     bool sens_valid = false;  // NumSteps==1: sens = G^{-1} Q valid for the key
     bool traj_valid = false;  // NumSteps>1: traj arrays + R/S valid for the key
@@ -188,22 +191,24 @@ struct IrkWorkspace
 ///
 /// `Tag` selects the Butcher scheme (RadauIia2Tag..RadauIia4Tag,
 /// GaussLegendre2Tag..GaussLegendre4Tag); the number of RK stages `NS` is
-/// derived from the tag (`Tag::ns`).  `h` is the fixed
-/// step size for the full OCP interval; `NumSteps` is the number
-/// of sub-intervals one OCP step of size `h` is divided into (h/NumSteps per
+/// derived from the tag (`Tag::ns`).  `h` is a per-call argument of every
+/// entry point (the integrator holds no step-size state; the caller owns
+/// the time grid and may vary h per OCP stage); `NumSteps` is the number of
+/// sub-intervals one OCP step of size h is divided into (h/NumSteps per
 /// sub-step), the default of 1 being the plain single-step scheme.  The DAE
 /// model must provide `F` and `F_jac` (dae_model.hpp); a nonlinear DAE
 /// must also provide `F_hess_prod` (used by the nonlinear HVP path).
 ///
 /// Time-varying: each method receives `t_k` (the physical time at
-/// the start of the OCP interval); the per-stage time
+/// the start of the OCP interval) together with `h`; the per-stage time
 ///   t_s = t_k + h_ss * (ss + c[s])
 /// is forwarded to every DAE evaluation (F, F_jac, F_hess_prod).
 ///
 /// No dual-scalar stage solve: the stage equations are Newton-solved at
 /// scalar_t, so the fused HVP entry is not available
 /// (`supports_value_jac_hess_prod == false`); the forward cache is the
-/// efficiency mechanism for repeated HVP calls with the same (x, u, t_k).
+/// efficiency mechanism for repeated HVP calls with the same (x, u, t_k,
+/// h).
 template <class Dims, class Dae, class Tag, int NumSteps = 1>
 class ImplicitRkIntegrator
 {
@@ -237,15 +242,15 @@ public:
 
     /// @param dae        DAE model (stored by value; safe with temporary
     ///                   OdeToDae wrappers).
-    /// @param h          fixed step size for the full OCP interval
-    ///                   (h/NumSteps per sub-step).
     /// @param newton_max max Newton iterations per sub-step (default 3).
     /// @param newton_tol early-termination residual tolerance; 0 disables
     ///                   early termination (fixed-iteration count, default).
-    explicit ImplicitRkIntegrator(const Dae& dae, double h, int newton_max = 3,
+    ///
+    /// The step size `h` is a per-call argument of every entry point; the
+    /// integrator holds no step-size state.
+    explicit ImplicitRkIntegrator(const Dae& dae, int newton_max = 3,
                                   double newton_tol = 0.0)
-        : dae_(dae), h_(h), h_ss_(h / (double)NumSteps),
-          newton_max_(newton_max), newton_tol_(newton_tol)
+        : dae_(dae), newton_max_(newton_max), newton_tol_(newton_tol)
     {
     }
 
@@ -255,23 +260,24 @@ public:
     /// @param  x  state at the interval start (nx)
     /// @param  u  control (nu)
     /// @param  t_k physical time at the start of the OCP interval
+    /// @param  h  width of the OCP interval (h/NumSteps per sub-step)
     /// @param[out] x_next state at the interval end (nx)
-    void value(const state_t& x, const control_t& u, double t_k,
+    void value(const state_t& x, const control_t& u, double t_k, double h,
                state_t& x_next) const
     {
         if constexpr (NumSteps == 1)
         {
-            if (!fwd_hit(x, u, t_k))
+            if (!fwd_hit(x, u, t_k, h))
             {
-                newton_single(x, u, t_k);
-                set_fwd_cache(x, u, t_k);
+                newton_single(x, u, t_k, h);
+                set_fwd_cache(x, u, t_k, h);
             }
-            x_next_from_cached_K(x, x_next);
+            x_next_from_cached_K(x, h, x_next);
         }
         else
         {
             ws_.traj_valid = false;
-            multi_step_sweep(x, u, t_k, x_next, nullptr, nullptr);
+            multi_step_sweep(x, u, t_k, h, x_next, nullptr, nullptr);
         }
     }
 
@@ -281,21 +287,21 @@ public:
     /// @param[out] x_next state at the interval end (nx)
     /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
     /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
-    void value_jac(const state_t& x, const control_t& u, double t_k,
+    void value_jac(const state_t& x, const control_t& u, double t_k, double h,
                    state_t& x_next, df_dx_t& df_dx, df_du_t& df_du) const
     {
         if constexpr (NumSteps == 1)
         {
-            if (!fwd_hit(x, u, t_k))
+            if (!fwd_hit(x, u, t_k, h))
             {
-                newton_single(x, u, t_k);
-                set_fwd_cache(x, u, t_k);
+                newton_single(x, u, t_k, h);
+                set_fwd_cache(x, u, t_k, h);
             }
             state_t x_cur = x;
             df_dx_t Sx = df_dx_t::Identity();
             df_du_t Su;
             Su.setZero();
-            substep_jac(0, x_cur, Sx, Su);
+            substep_jac(0, x_cur, Sx, Su, h);
             x_next = x_cur;
             df_dx  = Sx;
             df_du  = Su;
@@ -303,7 +309,7 @@ public:
         else
         {
             ws_.traj_valid = false;
-            multi_step_sweep(x, u, t_k, x_next, &df_dx, &df_du);
+            multi_step_sweep(x, u, t_k, h, x_next, &df_dx, &df_du);
         }
     }
 
@@ -314,11 +320,11 @@ public:
     /// (Same single sweep as value_jac; x_next is discarded.)
     /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
     /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
-    void jacobian(const state_t& x, const control_t& u, double t_k,
+    void jacobian(const state_t& x, const control_t& u, double t_k, double h,
                   df_dx_t& df_dx, df_du_t& df_du) const
     {
         state_t x_next;
-        value_jac(x, u, t_k, x_next, df_dx, df_du);
+        value_jac(x, u, t_k, h, x_next, df_dx, df_du);
     }
 
     /// x_next + Jacobian + HVP, as a composite of value_jac + hess_prod (no
@@ -330,13 +336,13 @@ public:
     /// @param[out] x_next (nx), df_dx (nx x nx), df_du (nx x nu)
     /// @param[out] hv_x, hv_u  HVP of the composed Hessian along v
     void value_jac_hess_prod(const state_t& x, const control_t& u, double t_k,
-                             state_t& x_next, df_dx_t& df_dx, df_du_t& df_du,
-                             const state_t& w, const state_t& v_x,
-                             const control_t& v_u, state_t& hv_x,
-                             control_t& hv_u) const
+                             double h, state_t& x_next, df_dx_t& df_dx,
+                             df_du_t& df_du, const state_t& w,
+                             const state_t& v_x, const control_t& v_u,
+                             state_t& hv_x, control_t& hv_u) const
     {
-        value_jac(x, u, t_k, x_next, df_dx, df_du);
-        hess_prod(x, u, t_k, w, v_x, v_u, hv_x, hv_u);
+        value_jac(x, u, t_k, h, x_next, df_dx, df_du);
+        hess_prod(x, u, t_k, h, w, v_x, v_u, hv_x, hv_u);
     }
 
     /// Bilinear Hessian-vector product of the composed map,
@@ -359,7 +365,7 @@ public:
     ///
     /// A DAE without `F_hess_prod` (in particular the generated adapters)
     /// has a zero composed Hessian and returns zeros.
-    void hess_prod(const state_t& x, const control_t& u, double t_k,
+    void hess_prod(const state_t& x, const control_t& u, double t_k, double h,
                    const state_t& w, const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
@@ -367,10 +373,10 @@ public:
         {
             if constexpr (NumSteps == 1)
             {
-                if (!fwd_hit(x, u, t_k))
+                if (!fwd_hit(x, u, t_k, h))
                 {
-                    newton_single(x, u, t_k);
-                    set_fwd_cache(x, u, t_k);
+                    newton_single(x, u, t_k, h);
+                    set_fwd_cache(x, u, t_k, h);
                 }
                 if (!ws_.sens_valid)
                 {
@@ -378,16 +384,16 @@ public:
                     ws_.sens = ws_.lu_.solve(ws_.hess_rhs);
                     ws_.sens_valid = true;
                 }
-                hess_prod_substep(u, t_k, 0, w, v_x, v_u, hv_x, hv_u);
+                hess_prod_substep(u, t_k, 0, h, w, v_x, v_u, hv_x, hv_u);
             }
             else
             {
-                if (!traj_hit(x, u, t_k))
+                if (!traj_hit(x, u, t_k, h))
                 {
-                    forward_traj(x, u, t_k);
+                    forward_traj(x, u, t_k, h);
                 }
-                thread_jvp_traj(v_x, v_u);
-                backward_traj(w, v_u, hv_x, hv_u);
+                thread_jvp_traj(v_x, v_u, h);
+                backward_traj(w, v_u, h, hv_x, hv_u);
             }
         }
         else
@@ -413,54 +419,61 @@ private:
     // ---- forward cache ----------------------------------------------------
 
     /// True when the cached forward state was produced for exactly this
-    /// (x, u, t_k) (bit-identical inputs).
-    bool key_match(const state_t& x, const control_t& u, double t_k) const
+    /// (x, u, t_k, h) (bit-identical inputs).
+    bool key_match(const state_t& x, const control_t& u, double t_k,
+                   double h) const
     {
         return ws_.last_t == t_k
+            && ws_.last_h == h
             && (x - ws_.last_x).squaredNorm() == 0.0
             && (u - ws_.last_u).squaredNorm() == 0.0;
     }
 
-    bool fwd_hit(const state_t& x, const control_t& u, double t_k) const
+    bool fwd_hit(const state_t& x, const control_t& u, double t_k,
+                 double h) const
     {
-        return ws_.fwd_valid && key_match(x, u, t_k);
+        return ws_.fwd_valid && key_match(x, u, t_k, h);
     }
 
-    bool traj_hit(const state_t& x, const control_t& u, double t_k) const
+    bool traj_hit(const state_t& x, const control_t& u, double t_k,
+                  double h) const
     {
-        return ws_.traj_valid && key_match(x, u, t_k);
+        return ws_.traj_valid && key_match(x, u, t_k, h);
     }
 
-    void set_fwd_cache(const state_t& x, const control_t& u, double t_k) const
+    void set_fwd_cache(const state_t& x, const control_t& u, double t_k,
+                       double h) const
     {
         ws_.last_x = x;
         ws_.last_u = u;
         ws_.last_t = t_k;
+        ws_.last_h = h;
         ws_.fwd_valid  = true;
         ws_.sens_valid = false;
     }
 
-    // x_next = x + h_ss * sum_s b_s K_s from the cached converged K
+    // x_next = x + h * sum_s b_s K_s from the cached converged K
     // (NumSteps == 1, where h_ss == h and ws_.K is the only sub-step).
-    void x_next_from_cached_K(const state_t& x, state_t& x_next) const
+    void x_next_from_cached_K(const state_t& x, double h, state_t& x_next) const
     {
         x_next = x;
         for (int s = 0; s < NS; ++s)
         {
             if (Tab::b[s] != 0.0)
             {
-                x_next += h_ss_ * Tab::b[s] * ws_.K[s];
+                x_next += h * Tab::b[s] * ws_.K[s];
             }
         }
     }
 
     // Single-sub-step Newton sweep (NumSteps == 1): warm-start the K init,
     // solve; leaves ws_.K / dFdx / dFxdot / dFdu / lu_ converged at (x, u).
-    void newton_single(const state_t& x, const control_t& u, double t_k) const
+    void newton_single(const state_t& x, const control_t& u, double t_k,
+                       double h) const
     {
         Kvec K_init;
-        warm_start(0, x, u, t_k, K_init);
-        solve_newton(x, u, K_init, t_k, 0);
+        warm_start(0, x, u, t_k, h, K_init);
+        solve_newton(x, u, K_init, t_k, 0, h);
     }
 
     // Warm-start the K init of sub-step ss: the per-stage linear solve
@@ -468,14 +481,15 @@ private:
     // (an ODE residual reduces this to K0_s = f(x, u, t_s)), the previous
     // sub-step's converged K otherwise.
     void warm_start(int ss, const state_t& x_cur, const control_t& u,
-                    double t_k, Kvec& K_init) const
+                    double t_k, double h, Kvec& K_init) const
     {
+        const double h_ss = h / (double)NumSteps;
         if (ss == 0)
         {
             const state_t zero_xdot = state_t::Zero();
             for (int s = 0; s < NS; ++s)
             {
-                const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+                const double t_s = t_k + (ss + Tab::c[s]) * h_ss;
                 const state_t F0 = dae_.F(x_cur, zero_xdot, u, t_s);
                 df_dx_t dFdx0, dFxdot0;
                 df_du_t dFdu0;
@@ -512,8 +526,10 @@ private:
     // Sx/Su thread update.  Requires the current sub-step's Newton state
     // (ws_.dFdx / dFdu / lu_ / K) to be set up (converged, from the cache or
     // the live sweep).
-    void substep_jac(int ss, state_t& x_cur, df_dx_t& Sx, df_du_t& Su) const
+    void substep_jac(int ss, state_t& x_cur, df_dx_t& Sx, df_du_t& Su,
+                     double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         fill_first_order_rhs();
         const auto dK_dx = ws_.lu_.solve(ws_.rhs_x);  // NK x nx
         const auto dK_du = ws_.lu_.solve(ws_.rhs_u);  // NK x nu
@@ -524,9 +540,9 @@ private:
         {
             if (Tab::b[s] != 0.0)
             {
-                Jx_ss += h_ss_ * Tab::b[s] * dK_dx.block(s * nx, 0, nx, nx);
-                Ju_ss += h_ss_ * Tab::b[s] * dK_du.block(s * nx, 0, nx, nu);
-                x_cur += h_ss_ * Tab::b[s] * ws_.K[s];
+                Jx_ss += h_ss * Tab::b[s] * dK_dx.block(s * nx, 0, nx, nx);
+                Ju_ss += h_ss * Tab::b[s] * dK_du.block(s * nx, 0, nx, nu);
+                x_cur += h_ss * Tab::b[s] * ws_.K[s];
             }
         }
         Sx = Jx_ss * Sx;
@@ -538,8 +554,10 @@ private:
     // non-null, the per-sub-step Jacobian body runs as well (value_jac);
     // otherwise only the state advances (value).
     void multi_step_sweep(const state_t& x, const control_t& u, double t_k,
-                          state_t& x_next, df_dx_t* df_dx, df_du_t* df_du) const
+                          double h, state_t& x_next, df_dx_t* df_dx,
+                          df_du_t* df_du) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t x_cur = x;
         df_dx_t Sx = df_dx_t::Identity();
         df_du_t Su;
@@ -547,11 +565,11 @@ private:
         Kvec K_init;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            warm_start(ss, x_cur, u, t_k, K_init);
-            solve_newton(x_cur, u, K_init, t_k, ss);
+            warm_start(ss, x_cur, u, t_k, h, K_init);
+            solve_newton(x_cur, u, K_init, t_k, ss, h);
             if (df_dx != nullptr)
             {
-                substep_jac(ss, x_cur, Sx, Su);
+                substep_jac(ss, x_cur, Sx, Su, h);
             }
             else
             {
@@ -559,7 +577,7 @@ private:
                 {
                     if (Tab::b[s] != 0.0)
                     {
-                        x_cur += h_ss_ * Tab::b[s] * ws_.K[s];
+                        x_cur += h_ss * Tab::b[s] * ws_.K[s];
                     }
                 }
             }
@@ -577,16 +595,18 @@ private:
     // v-independent multi-step forward: Newton-solve each sub-step, store the
     // per-sub-step Newton state, per-sub-step Jacobians, R/S threading and
     // per-sub-step sens = G^{-1} Q; fills the trajectory cache.
-    void forward_traj(const state_t& x, const control_t& u, double t_k) const
+    void forward_traj(const state_t& x, const control_t& u, double t_k,
+                      double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t x_cur = x;
         ws_.R_traj[0] = df_dx_t::Identity();
         ws_.S_traj[0].setZero();
         Kvec K_init;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            warm_start(ss, x_cur, u, t_k, K_init);
-            solve_newton(x_cur, u, K_init, t_k, ss);
+            warm_start(ss, x_cur, u, t_k, h, K_init);
+            solve_newton(x_cur, u, K_init, t_k, ss, h);
 
             // Store per-sub-step Newton state.
             for (int s = 0; s < NS; ++s)
@@ -614,12 +634,12 @@ private:
                 if (Tab::b[s] != 0.0)
                 {
                     ws_.A_traj[ss] +=
-                        h_ss_ * Tab::b[s] *
+                        h_ss * Tab::b[s] *
                         dK_dx.block(s * nx, 0, nx, nx);
                     ws_.B_traj[ss] +=
-                        h_ss_ * Tab::b[s] *
+                        h_ss * Tab::b[s] *
                         dK_du.block(s * nx, 0, nx, nu);
-                    x_cur += h_ss_ * Tab::b[s] * ws_.K[s];
+                    x_cur += h_ss * Tab::b[s] * ws_.K[s];
                 }
             }
 
@@ -645,14 +665,17 @@ private:
         ws_.last_x = x;
         ws_.last_u = u;
         ws_.last_t = t_k;
+        ws_.last_h = h;
         ws_.traj_valid = true;
     }
 
     // v-dependent JVP threading along the cached trajectory:
     // dx_{ss+1} = dx_ss + h_ss * sum_s b_s dK_s with dK = G^{-1}(-dR/dz .
     // (dx, v_u)).  Requires forward_traj for the same key.
-    void thread_jvp_traj(const state_t& v_x, const control_t& v_u) const
+    void thread_jvp_traj(const state_t& v_x, const control_t& v_u,
+                         double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t dx_cur = v_x;
         ws_.dx_traj[0] = v_x;
         for (int ss = 0; ss < NumSteps; ++ss)
@@ -677,7 +700,7 @@ private:
             {
                 if (Tab::b[s] != 0.0)
                 {
-                    dx_next += h_ss_ * Tab::b[s] *
+                    dx_next += h_ss * Tab::b[s] *
                         dK_jvp.segment(s * nx, nx);
                 }
             }
@@ -689,7 +712,7 @@ private:
     // Backward sweep over the cached trajectory: thread the co-state, compute
     // the local per-sub-step HVPs with the stored Newton state and sens,
     // accumulate.  Requires thread_jvp_traj for the same key and direction.
-    void backward_traj(const state_t& w, const control_t& v_u,
+    void backward_traj(const state_t& w, const control_t& v_u, double h,
                        state_t& hv_x, control_t& hv_u) const
     {
         hv_x.setZero();
@@ -710,10 +733,11 @@ private:
             ws_.sens = ws_.sens_traj[ss];
 
             // Local HVP: lam^T D2Phi_ss (dx_traj[ss], v_u).  The cached key
-            // (last_u, last_t) is the (u, t_k) the trajectory was built for.
+            // (last_u, last_t, h) is the (u, t_k, h) the trajectory was
+            // built for (traj_hit), so h is the sub-step grid of the cache.
             state_t local_hv_x;
             control_t local_hv_u;
-            hess_prod_substep(ws_.last_u, ws_.last_t, ss, lam,
+            hess_prod_substep(ws_.last_u, ws_.last_t, ss, h, lam,
                               ws_.dx_traj[ss], v_u, local_hv_x, local_hv_u);
 
             // Accumulate: x-part threaded via R_ss; u-part gets the
@@ -728,8 +752,9 @@ private:
     }
 
     // Stage states from the current K:  x_s = x + h_ss * sum_j A[s][j] K_j.
-    void eval_stage_states(const state_t& x) const
+    void eval_stage_states(const state_t& x, double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         for (int s = 0; s < NS; ++s)
         {
             state_t xs = x;
@@ -737,7 +762,7 @@ private:
             {
                 if (Tab::A[s][j] != 0.0)
                 {
-                    xs += h_ss_ * Tab::A[s][j] * ws_.K[j];
+                    xs += h_ss * Tab::A[s][j] * ws_.K[j];
                 }
             }
             ws_.x_stage[s] = xs;
@@ -745,22 +770,25 @@ private:
     }
 
     // DAE Jacobian blocks at each stage point (x_s, K_s).
-    void eval_jacobians(const control_t& u, double t_k, int ss) const
+    void eval_jacobians(const control_t& u, double t_k, int ss,
+                        double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         for (int s = 0; s < NS; ++s)
         {
-            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss;
             dae_.F_jac(ws_.x_stage[s], ws_.K[s], u, t_s, ws_.dFdx[s],
                        ws_.dFxdot[s], ws_.dFdu[s]);
         }
     }
 
     // Newton residual R_s = F(x_s, K_s, u, t_s).
-    void eval_residual(const control_t& u, double t_k, int ss) const
+    void eval_residual(const control_t& u, double t_k, int ss, double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         for (int s = 0; s < NS; ++s)
         {
-            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss;
             ws_.res.segment(s * nx, nx) =
                 dae_.F(ws_.x_stage[s], ws_.K[s], u, t_s);
         }
@@ -768,8 +796,9 @@ private:
 
     // Block Newton Jacobian: G[s][j] = delta_{s,j} F_xdot_s + h_ss A[s][j]
     // F_x_s.
-    void eval_block_jacobian() const
+    void eval_block_jacobian(double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         ws_.G.setZero();
         for (int s = 0; s < NS; ++s)
         {
@@ -780,7 +809,7 @@ private:
                     continue;
                 }
                 df_dx_t blk =
-                    h_ss_ * Tab::A[s][j] * ws_.dFdx[s];
+                    h_ss * Tab::A[s][j] * ws_.dFdx[s];
                 if (s == j)
                 {
                     blk += ws_.dFxdot[s];
@@ -797,7 +826,7 @@ private:
     // at the converged point, ready for value(), jacobian(), or the
     // hess_prod forward sweep.
     void solve_newton(const state_t& x, const control_t& u,
-                      const Kvec& K_init, double t_k, int ss) const
+                      const Kvec& K_init, double t_k, int ss, double h) const
     {
         for (int s = 0; s < NS; ++s)
         {
@@ -805,10 +834,10 @@ private:
         }
         for (int it = 0; it < newton_max_; ++it)
         {
-            eval_stage_states(x);
-            eval_jacobians(u, t_k, ss);
-            eval_residual(u, t_k, ss);
-            eval_block_jacobian();
+            eval_stage_states(x, h);
+            eval_jacobians(u, t_k, ss, h);
+            eval_residual(u, t_k, ss, h);
+            eval_block_jacobian(h);
             ws_.lu_.compute(ws_.G);
             Kvec dK = ws_.lu_.solve(-ws_.res);
             for (int s = 0; s < NS; ++s)
@@ -823,11 +852,11 @@ private:
         }
         // Refresh the factorization and residual at the converged K so the
         // sensitivity solves and the diagnostic are consistent.
-        eval_stage_states(x);
-        eval_jacobians(u, t_k, ss);
-        eval_residual(u, t_k, ss);
+        eval_stage_states(x, h);
+        eval_jacobians(u, t_k, ss, h);
+        eval_residual(u, t_k, ss, h);
         ws_.last_residual_ = ws_.res.cwiseAbs().maxCoeff();
-        eval_block_jacobian();
+        eval_block_jacobian(h);
         ws_.lu_.compute(ws_.G);
     }
 
@@ -847,11 +876,12 @@ private:
     // For an ODE residual (F = xdot - f) this reduces to the 4-term
     // expression Hv + h HAm + h (Hv_x) Ja + h^2 (HAm_x) Ja (up to the sign
     // of G, which is identical in both forms).
-    void hess_prod_substep(const control_t& u, double t_k, int ss,
+    void hess_prod_substep(const control_t& u, double t_k, int ss, double h,
                            const state_t& w, const state_t& v_x,
                            const control_t& v_u, state_t& hv_x,
                            control_t& hv_u) const
     {
+        const double h_ss = h / (double)NumSteps;
         using nIn_vec = Eigen::Matrix<scalar_t, nIn, 1>;
 
         const nIn_vec v = [this](const state_t& vx, const control_t& vu) {
@@ -878,12 +908,12 @@ private:
             // Chain-rule stage direction at stage s.
             const state_t v_K_s =
                 ws_.sens.block(s * nx, 0, nx, nIn) * v;
-            const state_t dx_s = v_x + h_ss_ * (ws_.jac_am * v);
+            const state_t dx_s = v_x + h_ss * (ws_.jac_am * v);
 
             // Mixed Hessian at stage s via unit output weights:
             // hvp_v.row(i)  = [ (Mx_s)_irow | (Mu_s)_irow ]
             // hvp_am.row(i) = (Mxdot_s)_irow (leftCols(nx))
-            const double t_s = t_k + (ss + Tab::c[s]) * h_ss_;
+            const double t_s = t_k + (ss + Tab::c[s]) * h_ss;
             for (int i = 0; i < nx; ++i)
             {
                 const state_t e_i = state_t::Unit(i);
@@ -906,7 +936,7 @@ private:
             {
                 if (Tab::A[s][j] != 0.0)
                 {
-                    b_s -= h_ss_ * Tab::A[s][j] *
+                    b_s -= h_ss * Tab::A[s][j] *
                         Mx * ws_.sens.block(j * nx, 0, nx, nIn);
                 }
             }
@@ -925,14 +955,12 @@ private:
             }
             const auto wms = w.transpose() *
                 ws_.hess_sol.block(s * nx, 0, nx, nIn);
-            hv_x += h_ss_ * Tab::b[s] * wms.head(nx);
-            hv_u += h_ss_ * Tab::b[s] * wms.tail(nu);
+            hv_x += h_ss * Tab::b[s] * wms.head(nx);
+            hv_u += h_ss * Tab::b[s] * wms.tail(nu);
         }
     }
 
     Dae dae_;
-    double h_;
-    double h_ss_;
     int newton_max_;
     double newton_tol_;
     mutable detail::IrkWorkspace<P, NS, NumSteps> ws_;

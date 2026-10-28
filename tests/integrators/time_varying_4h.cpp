@@ -114,7 +114,7 @@ state_t rk4_step(const Ode& ode, const state_t& x, const control_t& u,
 void check_value_time_varying()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinXPlusU, ocp::K4Tag>;
-    const Integ integ(OdeSinXPlusU{}, 0.1);
+    const Integ integ(OdeSinXPlusU{});
     state_t cur;
     cur << 0.3, -0.7;
     const control_t u(0.4);
@@ -122,7 +122,7 @@ void check_value_time_varying()
     for (int k = 0; k < 10; ++k)
     {
         state_t next;
-        integ.value(cur, u, k * 0.1, next);
+        integ.value(cur, u, k * 0.1, 0.1, next);
         cur = next;
     }
 
@@ -148,13 +148,13 @@ void check_value_time_varying()
 void check_value_regression()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, ocp::K4Tag>;
-    const Integ integ(OdeNegX{}, 0.05);
+    const Integ integ(OdeNegX{});
     state_t cur;
     cur << 1.0, 1.0;
     const control_t u(0.0);
     for (int step = 0; step < 20; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.05, cur);
     }
     const double expected = std::exp(-1.0);
     check(std::abs(cur(0) - expected) < 1e-4, "value regression xdot=-x c0");
@@ -169,14 +169,14 @@ void check_value_regression()
 void check_jacobian_time_varying()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, ocp::K4Tag>;
-    const Integ integ(OdeSinCosXU{}, 0.1);
+    const Integ integ(OdeSinCosXU{});
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     const double t_k = 0.3;
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, t_k, Jx, Ju);
+    integ.jacobian(x, u, t_k, 0.1, Jx, Ju);
 
     const double d = 1e-6;
     double max_err = 0.0;
@@ -191,8 +191,8 @@ void check_jacobian_time_varying()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, t_k, fdp);
-        integ.value(xm, u, t_k, fdm);
+        integ.value(xp, u, t_k, 0.1, fdp);
+        integ.value(xm, u, t_k, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -210,8 +210,8 @@ void check_jacobian_time_varying()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, t_k, fdp);
-        integ.value(x, um, t_k, fdm);
+        integ.value(x, up, t_k, 0.1, fdp);
+        integ.value(x, um, t_k, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -231,7 +231,7 @@ void check_hess_prod_time_varying()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeSinCosXU, ocp::K2Tag>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
-    const Integ integ(OdeSinCosXU{}, 0.1);
+    const Integ integ(OdeSinCosXU{});
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     const double t_k = 0.5;
@@ -266,7 +266,7 @@ void check_hess_prod_time_varying()
             control_t uu;
             uu(0) = z(2);
             state_t xn;
-            integ.value(xx, uu, t_k, xn);
+            integ.value(xx, uu, t_k, 0.1, xn);
             return w[p].dot(xn);
         };
 
@@ -306,7 +306,7 @@ void check_hess_prod_time_varying()
 
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, t_k, w[p], vx[p], vu[p], hvx, hvu);
+        integ.hess_prod(x, u, t_k, 0.1, w[p], vx[p], vu[p], hvx, hvu);
 
         zvec_t v;
         v(0) = vx[p](0);

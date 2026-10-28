@@ -11,6 +11,16 @@
 // index to a physical time t_k = k * h and forwards it to the integrator
 // (the ODE itself is time-invariant if it simply ignores the t argument).
 //
+// Per-stage step size: the interval width h_k and start time t_k of each
+// stage come from the CRTP hook get_step_size(k) (returns a StepSpec). The
+// default (Derived = ConstantStepSize) falls back to the uniform grid
+// t_k = k * h with a constant h. To use a non-uniform grid, a problem names
+// its own type as the Derived template argument and defines
+// `StepSpec get_step_size(int k) const`, typically reading a per-stage
+// schedule from the duck-typed params() object. The hook is consumed once
+// per stage (never per sub-step); the integrator's sub-step layout is
+// internal. See "Per-stage step size" in the tutorial (ch. 06).
+//
 // The ODE model is stored by value; the integrator holds a const Ode&
 // pointing into this object. The integrator's mutable workspace makes its
 // methods const, so the dynamics_* methods are const as required by the
@@ -33,13 +43,33 @@
 
 #pragma once
 
+#include <type_traits>
+
 #include "ocp/integrators/rk_explicit.hpp"
 #include "ocp/problem.hpp"
 
 namespace ocp
 {
 
-template <class Dims, class Ode, class Integ, int NH = Eigen::Dynamic>
+/// Per-stage integration step: the OCP-interval width `h` and the physical
+/// start time `t` of a stage. Supplied by the problem when a non-uniform
+/// time grid is used; ContinuousProblem falls back to the uniform grid
+/// `t = k * h` (constant `h` from its constructor) otherwise.
+struct StepSpec
+{
+    double h;
+    double t;
+};
+
+/// Sentinel default for the `Derived` template argument of
+/// ContinuousProblem: the problem does not override the step-size hook, so
+/// the constant-`h` fallback grid is used.
+struct ConstantStepSize
+{
+};
+
+template <class Dims, class Ode, class Integ, class Derived = ConstantStepSize,
+          int NH = Eigen::Dynamic>
 class ContinuousProblem : public Problem<Dims>
 {
 public:
@@ -50,17 +80,54 @@ public:
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     /// @param ode  ODE model (stored by value).
-    /// @param h    step size of the OCP interval.
+    /// @param h    constant step size of the OCP interval (fallback grid,
+    ///             used unless `Derived` overrides get_step_size).
     /// @param args forwarded to the integrator constructor (e.g. the
     ///             Newton options of the implicit integrator).
     template <class... Args>
     explicit ContinuousProblem(const Ode& ode, double h, Args&&... args)
-        : ode_(ode), h_(h), integ_(ode_, h, std::forward<Args>(args)...)
+        : ode_(ode), h_(h), integ_(ode_, std::forward<Args>(args)...)
     {
     }
 
     // ---------------------------------------------------------------
-    //  dynamics: delegate to the integrator, forwarding t_k = k * h_
+    //  step-size hook (CRTP, opt-in via the Derived template argument)
+    // ---------------------------------------------------------------
+
+    /// Per-stage step-size hook. Returns the OCP-interval width `h` and the
+    /// physical start time `t` of stage `k`.
+    ///
+    /// Default (Derived = ConstantStepSize): the uniform grid
+    /// {h, k * h} from the constructor's `h`.
+    ///
+    /// Opt-in: a problem names its own type as `Derived` and defines
+    /// `StepSpec get_step_size(int k) const` (typically reading a per-stage
+    /// schedule from its duck-typed params() object). The base then
+    /// dispatches to the override; forgetting to define the hook is caught
+    /// by a static_assert below (it would otherwise recurse into this
+    /// method). The hook is called once per stage, never per sub-step.
+    StepSpec get_step_size(int k) const
+    {
+        if constexpr (std::is_same_v<Derived, ConstantStepSize>)
+        {
+            return StepSpec{h_, (double)k * h_};
+        }
+        else
+        {
+            static_assert(
+                std::is_same_v<decltype(&Derived::get_step_size),
+                               StepSpec (Derived::*)(int) const>,
+                "ContinuousProblem: when the problem names itself as the "
+                "Derived template argument, it must define "
+                "'StepSpec get_step_size(int k) const' (currently the "
+                "inherited constant-step hook would be called instead).");
+            return static_cast<const Derived*>(this)->get_step_size(k);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    //  dynamics: delegate to the integrator, forwarding the per-stage
+    //  (t_k, h_k) from get_step_size(k)
     // ---------------------------------------------------------------
 
     /// One integration step of the composed map  x_{k+1} = Phi(x, u, t_k)
@@ -73,8 +140,9 @@ public:
     state_t dynamics_next_state(int k, const state_t& x,
                                 const control_t& u) const
     {
+        const StepSpec spec = get_step_size(k);
         state_t x_next;
-        integ_.value(x, u, k * h_, x_next);
+        integ_.value(x, u, spec.t, spec.h, x_next);
         return x_next;
     }
 
@@ -91,7 +159,8 @@ public:
                             state_t& x_next, dyn_df_dx_t& df_dx,
                             dyn_df_du_t& df_du) const
     {
-        integ_.value_jac(x, u, k * h_, x_next, df_dx, df_du);
+        const StepSpec spec = get_step_size(k);
+        integ_.value_jac(x, u, spec.t, spec.h, x_next, df_dx, df_du);
     }
 
     /// x_{k+1}, the Jacobian blocks, and the contracted (multiplier-
@@ -112,6 +181,7 @@ public:
                                  dyn_df_dx_t& df_dx, dyn_df_du_t& df_du,
                                  typename P::dyn_hess_t& hess) const
     {
+        const StepSpec spec = get_step_size(k);
         // Contracted Hessian (w^T D2 Phi): nIn unit-vector HVP columns in
         // [x; u]-layout.
         if constexpr (Integ::supports_value_jac_hess_prod)
@@ -133,17 +203,18 @@ public:
                 }
                 state_t hv_x;
                 control_t hv_u;
-                integ_.value_jac_hess_prod(x, u, k * h_, x_next, df_dx,
-                                           df_du, w, v_x, v_u, hv_x, hv_u);
+                integ_.value_jac_hess_prod(x, u, spec.t, spec.h, x_next,
+                                           df_dx, df_du, w, v_x, v_u, hv_x,
+                                           hv_u);
                 hess.col(j).head(P::nx) = hv_x;
                 hess.col(j).tail(P::nu) = hv_u;
             }
         }
         else
         {
-            // value_jac populates the integrator's (x, u, t_k)-keyed forward
-            // cache; the per-column hess_prod calls below hit it.
-            integ_.value_jac(x, u, k * h_, x_next, df_dx, df_du);
+            // value_jac populates the integrator's (x, u, t_k, h)-keyed
+            // forward cache; the per-column hess_prod calls below hit it.
+            integ_.value_jac(x, u, spec.t, spec.h, x_next, df_dx, df_du);
             for (int j = 0; j < P::nx + P::nu; ++j)
             {
                 state_t v_x = state_t::Zero();
@@ -158,7 +229,8 @@ public:
                 }
                 state_t hv_x;
                 control_t hv_u;
-                integ_.hess_prod(x, u, k * h_, w, v_x, v_u, hv_x, hv_u);
+                integ_.hess_prod(x, u, spec.t, spec.h, w, v_x, v_u, hv_x,
+                                 hv_u);
                 hess.col(j).head(P::nx) = hv_x;
                 hess.col(j).tail(P::nu) = hv_u;
             }

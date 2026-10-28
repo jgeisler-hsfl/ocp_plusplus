@@ -149,12 +149,12 @@ void check_value_stiff()
     using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
     OdeLin ode;
     ode.lambda = 30.0;
-    const Integ integ(ode, 0.1);
+    const Integ integ(ode);
     state_t cur(1.0, 1.0);
     control_t u(0.0);
     for (int step = 0; step < 10; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.1, cur);
     }
     // z = h*lambda = -3: the Radau IIA 2 stability function satisfies R(-3) = 0,
     // so the exact collocation map drives x to 0 in one step; A-stability then
@@ -171,12 +171,12 @@ void check_value_accuracy()
     using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
     OdeLin ode;
     ode.lambda = 1.0;
-    const Integ integ(ode, 0.05);
+    const Integ integ(ode);
     state_t cur(1.0, 1.0);
     control_t u(0.0);
     for (int step = 0; step < 20; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.05, cur);
     }
     const double expected = std::exp(-1.0);  // t = 20 * 0.05 = 1.0
     check(std::abs(cur(0) - expected) < 1e-4, "value accuracy xdot=-x");
@@ -190,12 +190,12 @@ void check_value_exact_linear()
 {
     using Integ =
         ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, ocp::RadauIia2Tag>;
-    const Integ integ(OdeDoubleInt{}, 0.2);
+    const Integ integ(OdeDoubleInt{});
     state_t cur(0.3, -0.5);
     control_t u(0.7);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.2, cur);
     }
     const double t = 5 * 0.2;  // = 1.0
     const double q = 0.3 + (-0.5) * t + 0.5 * 0.7 * t * t;  // = 0.15
@@ -211,12 +211,12 @@ void check_value_xsq()
 {
     using Integ =
         ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsq, Dims>, ocp::RadauIia2Tag>;
-    const Integ integ(OdeXsq{}, 0.2, 5);
+    const Integ integ(OdeXsq{}, 5);
     state_t cur(0.5, 0.5);
     control_t u(0.0);
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.2, cur);
     }
     const double expected = 0.5 / (1.0 - 0.5 * 1.0);  // t = 1, x0 = 0.5 -> 1.0
     check(std::abs(cur(0) - expected) < 1e-2, "value xdot=x^2 c0");
@@ -235,13 +235,13 @@ void check_newton_convergence()
     const state_t x(0.5, 0.5);
     const control_t u(0.0);
 
-    const Integ few(OdeXsq{}, 0.2, 1);
+    const Integ few(OdeXsq{}, 1);
     state_t x_out;
-    few.value(x, u, 0.0, x_out);
+    few.value(x, u, 0.0, 0.2, x_out);
     const double r_few = few.newton_residual_inf();
 
-    const Integ many(OdeXsq{}, 0.2, 5);
-    many.value(x, u, 0.0, x_out);
+    const Integ many(OdeXsq{}, 5);
+    many.value(x, u, 0.0, 0.2, x_out);
     const double r_many = many.newton_residual_inf();
 
     check(r_many < r_few, "newton residual decreases with more iterations");
@@ -258,13 +258,13 @@ template <class Tag>
 void check_jacobian_fd()
 {
     using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, Tag>;
-    const Integ integ(OdeXsqU{}, 0.1, 5);
+    const Integ integ(OdeXsqU{}, 5);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, 0.0, Jx, Ju);
+    integ.jacobian(x, u, 0.0, 0.1, Jx, Ju);
 
     const double d = 1e-6;
     for (int j = 0; j < nx; ++j)
@@ -278,8 +278,8 @@ void check_jacobian_fd()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, 0.0, fdp);
-        integ.value(xm, u, 0.0, fdm);
+        integ.value(xp, u, 0.0, 0.1, fdp);
+        integ.value(xm, u, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -299,8 +299,8 @@ void check_jacobian_fd()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, 0.0, fdp);
-        integ.value(x, um, 0.0, fdm);
+        integ.value(x, up, 0.0, 0.1, fdp);
+        integ.value(x, um, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -318,12 +318,12 @@ void check_jacobian_exact_linear()
 {
     using Integ =
         ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeDoubleInt, Dims>, ocp::RadauIia2Tag>;
-    const Integ integ(OdeDoubleInt{}, 0.2);
+    const Integ integ(OdeDoubleInt{});
     const state_t x(0.3, -0.5);
     const control_t u(0.7);
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, 0.0, Jx, Ju);
+    integ.jacobian(x, u, 0.0, 0.2, Jx, Ju);
 
     const double h = 0.2;
     const double exp_qq = 1.0;
@@ -347,7 +347,7 @@ void check_hess_prod_linear()
 {
     using Integ =
         ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeLin, Dims>, ocp::RadauIia2Tag>;
-    const Integ integ(OdeLin{}, 0.1);
+    const Integ integ(OdeLin{});
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     const state_t w(0.7, -0.3);
@@ -355,7 +355,7 @@ void check_hess_prod_linear()
     const control_t v_u(-0.5);
     state_t hv_x;
     control_t hv_u;
-    integ.hess_prod(x, u, 0.0, w, v_x, v_u, hv_x, hv_u);
+    integ.hess_prod(x, u, 0.0, 0.1, w, v_x, v_u, hv_x, hv_u);
     check(hv_x.isZero() && hv_u.isZero(), "hess_prod linear ODE == 0");
     std::printf("  hess_prod linear   OK  (zero, as expected)\n");
 }
@@ -373,7 +373,7 @@ void check_hess_prod_fd()
     using Integ = ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqU, Dims>, Tag>;
     using z_t = Eigen::Matrix<double, nIn, 1>;
     using hess_t = Eigen::Matrix<double, nIn, nIn>;
-    const Integ integ(OdeXsqU{}, 0.1, 8);
+    const Integ integ(OdeXsqU{}, 8);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     const double d = 1e-4;
@@ -387,7 +387,7 @@ void check_hess_prod_fd()
 
     const auto phi = [&integ](const z_t& z) {
         state_t out;
-        integ.value(z.head(nx), z.tail(nu), 0.0, out);
+        integ.value(z.head(nx), z.tail(nu), 0.0, 0.1, out);
         return out;
     };
     const auto g = [&](const state_t& w, const z_t& z) {
@@ -448,7 +448,7 @@ void check_hess_prod_fd()
         v.tail(nu) = c.v_u;
         state_t hv_x;
         control_t hv_u;
-        integ.hess_prod(x, u, 0.0, c.w, c.v_x, c.v_u, hv_x, hv_u);
+        integ.hess_prod(x, u, 0.0, 0.1, c.w, c.v_x, c.v_u, hv_x, hv_u);
         z_t actual;
         actual.head(nx) = hv_x;
         actual.tail(nu) = hv_u;

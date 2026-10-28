@@ -19,11 +19,14 @@ initial state. The class template parameters:
 - `Dims` — the same tag struct as in chapter 2,
 - `Ode` (or `Dae`) — your continuous-time model,
 - `Integ` — the integrator (section 6.3),
+- `Derived` — the step-size hook (section 6.10); leave it at the
+  default (`ocp::ConstantStepSize`) for the uniform grid,
 - `NH` — optional compile-time horizon (chapter 7).
 
-The stage map is `t_k = k * h`, where `h` is the integrator step size
+By default the stage map is `t_k = k * h`, where `h` is the step size
 passed to the constructor; a time-varying ODE receives `t_k` in every
-evaluation, a time-invariant one simply ignores it.
+evaluation, a time-invariant one simply ignores it. Problems that need
+a non-uniform grid override the `get_step_size` hook (section 6.10).
 
 ## 6.2 The ODE contract
 
@@ -64,6 +67,13 @@ all transcribed from the acados reference:
 | `RadauIia2Tag` / `3` / `4` | Radau IIA collocation | implicit, L-stable |
 | `GaussLegendre2Tag` / `3` / `4` | Gauss-Legendre collocation | implicit; GL4 is the acados IRK default, no L-stability |
 
+The OCP interval width `h` is a **per-call argument** of every entry
+point (`value(x, u, t_k, h, ...)`, `value_jac`, `jacobian`,
+`hess_prod`, ...): the integrators are pure functions of
+`(x, u, t_k, h)` and hold no state that depends on `h`; the caller
+owns the time grid (the `ContinuousProblem` adapter supplies it from
+`get_step_size`, section 6.10).
+
 **Explicit integrator** (`ocp::ExplicitRkIntegrator<Dims, Ode, Tag,
 NumSteps = 1>`): `Tag` selects the scheme (K1Tag..K4Tag); the number of
 RK stages is derived from the tag (`Tag::ns`). `NumSteps` subdivides each
@@ -96,7 +106,7 @@ contract (it also maps `hess_prod` to `F_hess_prod` when present), and
 on the vendored multidual header.
 
 Both integrators are allocation-free (fixed-size scratch, methods
-`const`) and cache their forward state keyed on `(x, u, t_k)`, so the
+`const`) and cache their forward state keyed on `(x, u, t_k, h)`, so the
 per-column Hessian evaluations of `ContinuousProblem` reuse the forward
 pass.
 
@@ -320,6 +330,63 @@ object alive for the lifetime of the problem. If the problem class also
 holds a reference to the same object and overrides `params()` to return
 it, host-side and MEX `param_*` writes (chapter 8) reach the one live
 object that dynamics, cost and constraints all read from.
+
+## 6.10 Per-stage step size
+
+By default every OCP stage spans the interval `[k * h, (k + 1) * h]` with
+the constant `h` passed to the `ContinuousProblem` constructor. For
+problems whose discretization should vary per stage — e.g. fine steps
+around a transient and coarse steps elsewhere — the per-stage grid is
+supplied by the problem through the CRTP hook `get_step_size`:
+
+```cpp
+struct MyProb : ocp::ContinuousProblem<Dims, Ode, Erk, MyProb>
+{
+    using Base = ocp::ContinuousProblem<Dims, Ode, Erk, MyProb>;
+    MyParams params_;              // duck-typed params() SSOT (section 6.9)
+
+    MyProb() : Base(Ode{}, 0.1) {} // constructor h = fallback grid only
+
+    MyParams& params() { return params_; }
+    const MyParams& params() const { return params_; }
+
+    /// OCP-interval width h_k and physical start time t_k of stage k.
+    ocp::StepSpec get_step_size(int k) const
+    {
+        return ocp::StepSpec{params_.h_grid(k), params_.t_grid(k)};
+    }
+};
+```
+
+Naming the problem's own type as the `Derived` template argument (4th
+position, before `NH`) switches the base hook from the constant-`h`
+fallback to this override; leaving `Derived` at its default
+(`ocp::ConstantStepSize`) keeps the uniform grid. The hook is consumed
+once per stage, never per sub-step (`NumSteps` subdivision stays
+integrator-internal), and both `h` and `t` are supplied by the user —
+the framework keeps no time-grid bookkeeping. The integrator entry
+points receive `(t_k, h_k)` as plain arguments (section 6.3), so direct
+use of an integrator outside `ContinuousProblem` works unchanged.
+
+Two rules of thumb:
+
+- **Store the schedule in `params()`.** The grid is problem-level
+  discretization data, so it belongs in the duck-typed params struct as
+  inspect leaves (section 6.9); `get_step_size` then reads `params_` as
+  a thin accessor, exactly like the model bodies. The leaves are
+  settable by name on the host side and through the MEX `param_*`
+  commands, so the grid can be changed between solves without touching
+  the solver.
+- **Naming your class as `Derived` requires the hook.** A
+  `static_assert` fires if the named `Derived` does not define
+  `StepSpec get_step_size(int k) const` (the inherited base hook would
+  otherwise be called and recurse). Omitting the override *without*
+  naming your class is the intended uniform-grid case.
+
+`tests/integrators/step_grid_4m.cpp` verifies a non-uniform grid with
+`t0 != 0` end to end (values vs. high-resolution RK4, Jacobian and
+Hessian vs. finite differences, fallback regression, and live mutation
+of the grid leaves via `inspect::set_*`).
 
 ## What's next
 

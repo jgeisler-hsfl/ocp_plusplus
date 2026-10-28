@@ -316,7 +316,7 @@ void check_value()
 {
     using Integ = ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag>;
     CstrOde ode;
-    const Integ integ(ode, 0.1);
+    const Integ integ(ode);
 
     state_t x0;
     x0 << 0.5, 340.0, 0.6;
@@ -324,7 +324,7 @@ void check_value()
     u << 305.0, 0.12;
 
     state_t x_erk;
-    integ.value(x0, u, 0.0, x_erk);
+    integ.value(x0, u, 0.0, 0.1, x_erk);
 
     // high-resolution reference: 10000 RK4 steps of size 0.1/10000
     state_t x_ref = x0;
@@ -356,7 +356,7 @@ void check_jacobian_fd_impl(const Integ& integ, const char* label)
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, 0.0, Jx, Ju);
+    integ.jacobian(x, u, 0.0, 0.1, Jx, Ju);
 
     const double d = 1e-6;
     double max_err = 0.0;
@@ -371,8 +371,8 @@ void check_jacobian_fd_impl(const Integ& integ, const char* label)
         xp += e;
         xm -= e;
         state_t fdp, fdm;
-        integ.value(xp, u, 0.0, fdp);
-        integ.value(xm, u, 0.0, fdm);
+        integ.value(xp, u, 0.0, 0.1, fdp);
+        integ.value(xm, u, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -389,8 +389,8 @@ void check_jacobian_fd_impl(const Integ& integ, const char* label)
         up += e;
         um -= e;
         state_t fdp, fdm;
-        integ.value(x, up, 0.0, fdp);
-        integ.value(x, um, 0.0, fdm);
+        integ.value(x, up, 0.0, 0.1, fdp);
+        integ.value(x, um, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -441,7 +441,7 @@ void check_hess_prod_fd(const Integ& integ, const char* label)
             state_t xx = z.head(nx);
             control_t uu = z.tail(nu);
             state_t out;
-            integ.value(xx, uu, 0.0, out);
+            integ.value(xx, uu, 0.0, 0.1, out);
             return c.w.dot(out);
         };
 
@@ -470,7 +470,7 @@ void check_hess_prod_fd(const Integ& integ, const char* label)
 
         state_t hv_x;
         control_t hv_u;
-        integ.hess_prod(x, u, 0.0, c.w, c.v_x, c.v_u, hv_x, hv_u);
+        integ.hess_prod(x, u, 0.0, 0.1, c.w, c.v_x, c.v_u, hv_x, hv_u);
 
         z_t v;
         v.head(nx) = c.v_x;
@@ -712,25 +712,25 @@ int run_cstr_4i_tests()
     check_ode_hess_prod_direct();
     check_value();
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K2Tag> k2(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K2Tag> k2(ode);
         check_jacobian_fd_impl(k2, "K2");
     }
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode);
         check_jacobian_fd_impl(k4, "K4");
     }
     {
         ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, ocp::RadauIia2Tag> rk(
-            ode, 0.1, 10);
+            ode, 10);
         check_jacobian_fd_impl(rk, "Radau2");
     }
     {
-        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode, 0.1);
+        ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag> k4(ode);
         check_hess_prod_fd(k4, "K4");
     }
     {
         ocp::ImplicitRkIntegrator<CstrDims, ocp::OdeToDae<CstrOde, CstrDims>, ocp::RadauIia2Tag> rk(
-            ode, 0.1, 12);
+            ode, 12);
         check_hess_prod_fd(rk, "Radau2");
     }
     check_end_to_end();

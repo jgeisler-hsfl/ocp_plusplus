@@ -11,7 +11,6 @@ Commit hashes and dates refer to `master`.
 ### B. Problem interface / design ergonomics
 
 - [ ] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
-- [ ] make it possible to set the integrator step size per stage from the problem
 - [ ] add a linear and a nonlinear least sqquares tracking problem crtp class with gauss newton approximation option
 
 ### C. Tooling / generator
@@ -57,6 +56,7 @@ Commit hashes and dates refer to `master`.
 - [x] to be examined: how to share parameters between ODE/DAE and cost and constraints (done — duck-typed `params()` hook: a user-defined parameter struct read by the model bodies, optional override on `Problem` with an `EmptyParams` base stub, inspect/MEX by-name access; plan in `docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md`, pattern in tutorial ch. 02/06, MEX `param_*` commands in ch. 08) (2026-10-28, branch `feature/duck-typed-params`, merged `03c7280`)
 - [x] add receding horizon shifting to Solution, what about the solver-internal slacks? (done — `ocp::Solution::shift(x0_new, ShiftFill)` in `problem.hpp` plus `AcadosSolver::shift` / `reset_warm_start` / `slacks()` in `acados.hpp`; the driver shifts the internal slacks one stage (first <- stage-1 path, path up one, new last path stage zeroed, terminal unchanged) while the persistent QP duals stay in place as a second-order warm start; tutorial 07 §7.3 updated, `tests/problem/solution_shift_unit.cpp` + `tests/sqp/rh_shift.cpp`) (2026-10-28, branch `feature/receding-horizon-shift`, merged `57c13ef`)
 - [x] do we really need the NS number of stage in the integrators, is that not already encoded in the tags? (yes, redundant — dropped: tags now carry `ns`, `ButcherTableau<Dims, Tag>`, `ExplicitRkIntegrator<Dims, Ode, Tag, NumSteps>`, `ImplicitRkIntegrator<Dims, Dae, Tag, NumSteps>`; see docs/plans/finished/DROP_NS_PLAN.md) (2026-10-28, branch `feature/drop-integrator-ns`, `ebd95ef`)
+- [x] make it possible to set the integrator step size per stage from the problem (done: `h` moved from the integrator constructor to every entry point as a per-call argument; `ocp::ContinuousProblem` gained the CRTP hook `StepSpec get_step_size(int k) const` with the `ConstantStepSize` fallback so all existing problems keep compiling; the grid schedule idiomatically lives in the duck-typed `params()` struct, see tutorial ch. 06 §6.10; `tests/integrators/step_grid_4m.cpp`, plan in `docs/plans/finished/PER_STAGE_STEP_SIZE_PLAN.md`) (2026-10-28, branch `feature/per-stage-step-size`, `7d549bf`)
 
 ### C. Tooling / generator
 

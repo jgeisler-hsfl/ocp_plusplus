@@ -3,7 +3,7 @@
 1. **Ask for clarification** when requirements are ambiguous or simply incomplete.
 2. **Task Breakdown:** Before executing any significant chunk of work, make a plan to break the task down into distinct execution blocks. Write the plan to a file in `docs/plans`.
 3. Once you **Start working on planned tasks** (a) link the plan in AGENTS.md, item "4. Plan currently being executed"; (b) update the planning file with completed sub-tasks and important findings if any; (c) once finished and given permission to commit, move the plan to `docs/plans/finished` and unlink the plan in AGENTS.md. This shall help to track the work and stay focussed even when interrupted or crashed.
-4. Plan currently being executed: (none)
+4. Plan currently being executed: none
 
 ## Project
 C++17 framework for numerical optimal control problems (OCP). Strict separation of:

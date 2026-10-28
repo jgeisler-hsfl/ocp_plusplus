@@ -11,15 +11,17 @@
 // ContinuousProblem into an ocp::Problem. Nothing downstream of the problem
 // interface (QP, SQP, ...) changes.
 //
-// Multi-step: the OCP interval of size h is subdivided into NumSteps
-// sub-intervals of size h_ss = h/NumSteps. `value` chains the single-step
-// RK sweep over the sub-steps; `jacobian` threads the first-order
-// sensitivity forward across sub-steps; `hess_prod` (non-AD path) runs one
-// continuous backward adjoint sweep across all sub-steps. NumSteps = 1 (the
-// default) is the plain single-step integrator.
+// Step size: the OCP interval of size h is subdivided into NumSteps
+// sub-intervals of size h_ss = h/NumSteps, where h is a per-call argument
+// of every entry point (the caller owns the time grid and may vary h per
+// OCP stage). `value` chains the single-step RK sweep over the sub-steps;
+// `jacobian` threads the first-order sensitivity forward across sub-steps;
+// `hess_prod` (non-AD path) runs one continuous backward adjoint sweep
+// across all sub-steps. NumSteps = 1 (the default) is the plain
+// single-step integrator.
 //
 // Time-varying: each method receives `t_k` (the start of the OCP
-// interval). The per-stage physical time is
+// interval) together with `h`. The per-stage physical time is
 //     t_s = t_k + h_ss * (ss + c[s])
 // and is forwarded to every ODE evaluation (f, jacobian, hess_prod).
 //
@@ -59,7 +61,7 @@
 //
 // Forward cache: the v-independent forward state of the hand-written-ODE
 // paths (stage states, stage derivatives K, raw stage Jacobians in the
-// workspace) is keyed on (x, u, t_k). A second call with the same key
+// workspace) is keyed on (x, u, t_k, h). A second call with the same key
 // (e.g. the nx+nu unit-vector HVPs of
 // ContinuousProblem::dynamics_value_jac_hess) reuses it instead of
 // re-running the forward. The cache is per-integrator-instance
@@ -116,11 +118,12 @@ struct ErkWorkspace
     control_t du{};           // dual on the control u
 
     // Forward cache for the hand-written-ODE paths: the v-independent
-    // forward state above (x_stage, K, JX, JU) is valid for the (x, u, t_k)
-    // recorded here.
+    // forward state above (x_stage, K, JX, JU) is valid for the (x, u, t_k,
+    // h) recorded here.
     state_t   last_x{};
     control_t last_u{};
     double    last_t = 0.0;
+    double    last_h = 0.0;
     bool      fwd_valid = false;
 };
 
@@ -131,10 +134,12 @@ struct ErkWorkspace
 /// `Tag` selects the Butcher scheme (K1Tag..K4Tag); the number of RK
 /// stages `NS` is derived from the tag (`Tag::ns`). `NumSteps` is the
 /// number of sub-intervals one OCP step of size `h` is divided into; the
-/// default of 1 is the plain single-step scheme. The ODE model must provide
-/// `f` and (unless it is AD-capable, i.e. `f` is a template method in the
-/// scalar type) `jacobian`; a nonlinear ODE must additionally provide
-/// `hess_prod` for the non-AD `hess_prod` path and is enforced by
+/// default of 1 is the plain single-step scheme. `h` is a per-call argument
+/// of every entry point (the integrator holds no step-size state); the
+/// caller owns the time grid and may vary `h` per OCP stage. The ODE model
+/// must provide `f` and (unless it is AD-capable, i.e. `f` is a template
+/// method in the scalar type) `jacobian`; a nonlinear ODE must additionally
+/// provide `hess_prod` for the non-AD `hess_prod` path and is enforced by
 /// `ode_supports_hess_prod` at the `hess_prod` call site.
 template <class Dims, class Ode, class Tag, int NumSteps = 1>
 class ExplicitRkIntegrator
@@ -170,10 +175,9 @@ public:
         ode_ad_hess_prod_enabled<Ode>;
 
     /// @param ode the ODE model (held by const reference; must outlive this).
-    /// @param h fixed step size for the full OCP interval (h/NumSteps per
-    ///          sub-step).
-    explicit ExplicitRkIntegrator(const Ode& ode, double h)
-        : ode_(ode), h_(h), h_ss_(h / (double)NumSteps)
+    /// The step size `h` is a per-call argument of every entry point; the
+    /// integrator holds no step-size state.
+    explicit ExplicitRkIntegrator(const Ode& ode) : ode_(ode)
     {
     }
 
@@ -182,15 +186,17 @@ public:
     /// @param  x  state at the interval start (nx)
     /// @param  u  control (nu)
     /// @param  t_k physical time at the start of the OCP interval
+    /// @param  h  width of the OCP interval (h/NumSteps per sub-step)
     /// @param[out] x_next state at the interval end (nx)
-    void value(const state_t& x, const control_t& u, double t_k,
+    void value(const state_t& x, const control_t& u, double t_k, double h,
                state_t& x_next) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t x_cur = x;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            const double t_0 = t_k + ss * h_ss_;
-            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss_ * Tab::c[0]);
+            const double t_0 = t_k + ss * h_ss;
+            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 state_t xs = x_cur;
@@ -198,16 +204,16 @@ public:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        xs += h_ss_ * Tab::A[s][j] * ws_.K[ss][j];
+                        xs += h_ss * Tab::A[s][j] * ws_.K[ss][j];
                     }
                 }
-                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss_ * Tab::c[s]);
+                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss * Tab::c[s]);
             }
             for (int s = 0; s < NS; ++s)
             {
                 if (Tab::b[s] != 0.0)
                 {
-                    x_cur += h_ss_ * Tab::b[s] * ws_.K[ss][s];
+                    x_cur += h_ss * Tab::b[s] * ws_.K[ss][s];
                 }
             }
         }
@@ -224,7 +230,7 @@ public:
     /// dual<scalar_t, nIn> (the value and all nIn partials come out of the
     /// same pass); for a hand-written ODE it is the threaded-Jacobian
     /// forward, which additionally populates the hess_prod forward cache.
-    void value_jac(const state_t& x, const control_t& u, double t_k,
+    void value_jac(const state_t& x, const control_t& u, double t_k, double h,
                    state_t& x_next, df_dx_t& df_dx, df_du_t& df_du) const
     {
         if constexpr (ode_f_evaluable_at<Ode, Dims, Dual1>)
@@ -233,12 +239,12 @@ public:
             Eigen::Matrix<Dual1, nu, 1> ud;
             seedDual1(x, u, xd, ud);
             Eigen::Matrix<Dual1, nx, 1> out;
-            ad_forward(xd, ud, t_k, out);
+            ad_forward(xd, ud, t_k, h, out);
             extract_jac(out, x_next, df_dx, df_du);
         }
         else
         {
-            forward_jac(x, u, t_k, df_dx, df_du, x_next);
+            forward_jac(x, u, t_k, h, df_dx, df_du, x_next);
         }
     }
 
@@ -249,11 +255,11 @@ public:
     /// (Same path as `value_jac`; x_next is discarded.)
     /// @param[out] df_dx composed-map Jacobian w.r.t. x (nx x nx)
     /// @param[out] df_du composed-map Jacobian w.r.t. u (nx x nu)
-    void jacobian(const state_t& x, const control_t& u, double t_k,
+    void jacobian(const state_t& x, const control_t& u, double t_k, double h,
                   df_dx_t& df_dx, df_du_t& df_du) const
     {
         state_t x_next;
-        value_jac(x, u, t_k, x_next, df_dx, df_du);
+        value_jac(x, u, t_k, h, x_next, df_dx, df_du);
     }
 
     /// x_next, the Jacobian (df_dx, df_du) and the multiplier-contracted
@@ -267,10 +273,10 @@ public:
     /// come out of the same pass, with `w` contracted only at extraction);
     /// otherwise it is value_jac + hess_prod.
     void value_jac_hess_prod(const state_t& x, const control_t& u, double t_k,
-                             state_t& x_next, df_dx_t& df_dx, df_du_t& df_du,
-                             const state_t& w, const state_t& v_x,
-                             const control_t& v_u, state_t& hv_x,
-                             control_t& hv_u) const
+                             double h, state_t& x_next, df_dx_t& df_dx,
+                             df_du_t& df_du, const state_t& w,
+                             const state_t& v_x, const control_t& v_u,
+                             state_t& hv_x, control_t& hv_u) const
     {
         if constexpr (ode_f_evaluable_at<Ode, Dims, Dual2>
                       && ode_ad_hess_prod_enabled<Ode>)
@@ -279,13 +285,13 @@ public:
             Eigen::Matrix<Dual2, nu, 1> ud;
             seedDual2(x, u, v_x, v_u, xd, ud);
             Eigen::Matrix<Dual2, nx, 1> out;
-            ad_forward(xd, ud, t_k, out);
+            ad_forward(xd, ud, t_k, h, out);
             extract_hvp(out, w, x_next, df_dx, df_du, hv_x, hv_u);
         }
         else
         {
-            value_jac(x, u, t_k, x_next, df_dx, df_du);
-            hess_prod(x, u, t_k, w, v_x, v_u, hv_x, hv_u);
+            value_jac(x, u, t_k, h, x_next, df_dx, df_du);
+            hess_prod(x, u, t_k, h, w, v_x, v_u, hv_x, hv_u);
         }
     }
 
@@ -309,7 +315,7 @@ public:
     /// Only valid for a nonlinear ODE (the ODE must provide `hess_prod`,
     /// unless the ODE is AD-capable, in which case this path is taken
     /// instead).
-    void hess_prod(const state_t& x, const control_t& u, double t_k,
+    void hess_prod(const state_t& x, const control_t& u, double t_k, double h,
                    const state_t& w, const state_t& v_x, const control_t& v_u,
                    state_t& hv_x, control_t& hv_u) const
     {
@@ -323,22 +329,22 @@ public:
             Eigen::Matrix<Dual2, nu, 1> ud;
             seedDual2(x, u, v_x, v_u, xd, ud);
             Eigen::Matrix<Dual2, nx, 1> out;
-            ad_forward(xd, ud, t_k, out);
+            ad_forward(xd, ud, t_k, h, out);
             extract_hvp(out, w, x_next, df_dx, df_du, hv_x, hv_u);
         }
         else if constexpr (ode_supports_hess_prod<Ode, Dims>)
         {
             // v-independent forward (stage states, K, raw stage Jacobians),
-            // reused when a prior call used the same (x, u, t_k).
+            // reused when a prior call used the same (x, u, t_k, h).
             state_t x_next;
             df_dx_t df_dx;
             df_du_t df_du;
-            if (!fwd_hit(x, u, t_k))
+            if (!fwd_hit(x, u, t_k, h))
             {
-                forward_jac(x, u, t_k, df_dx, df_du, x_next);
+                forward_jac(x, u, t_k, h, df_dx, df_du, x_next);
             }
-            thread_jvp(v_x, v_u);
-            backward_sweep(t_k, u, w, v_u, hv_x, hv_u);
+            thread_jvp(v_x, v_u, h);
+            backward_sweep(t_k, h, u, w, v_u, hv_x, hv_u);
         }
         else
         {
@@ -362,11 +368,13 @@ private:
     // ---- forward cache (hand-written-ODE paths only) ----
 
     /// True when the cached v-independent forward state was produced for
-    /// exactly this (x, u, t_k) (bit-identical inputs).
-    bool fwd_hit(const state_t& x, const control_t& u, double t_k) const
+    /// exactly this (x, u, t_k, h) (bit-identical inputs).
+    bool fwd_hit(const state_t& x, const control_t& u, double t_k,
+                 double h) const
     {
         return ws_.fwd_valid
             && ws_.last_t == t_k
+            && ws_.last_h == h
             && (x - ws_.last_x).squaredNorm() == 0.0
             && (u - ws_.last_u).squaredNorm() == 0.0;
     }
@@ -377,18 +385,19 @@ private:
     /// the composed-map Jacobian (df_dx, df_du) via local per-sub-step
     /// composition and x_next. Sets the forward cache.
     void forward_jac(const state_t& x, const control_t& u, double t_k,
-                     df_dx_t& df_dx, df_du_t& df_du,
+                     double h, df_dx_t& df_dx, df_du_t& df_du,
                      state_t& x_next) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t x_cur = x;
         df_dx_t Sx = df_dx_t::Identity();
         df_du_t Su;
         Su.setZero();
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            const double t_0 = t_k + ss * h_ss_;
+            const double t_0 = t_k + ss * h_ss;
             ws_.x_stage[ss][0] = x_cur;
-            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss_ * Tab::c[0]);
+            ws_.K[ss][0] = ode_.f(x_cur, u, t_0 + h_ss * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 state_t xs = x_cur;
@@ -396,16 +405,16 @@ private:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        xs += h_ss_ * Tab::A[s][j] * ws_.K[ss][j];
+                        xs += h_ss * Tab::A[s][j] * ws_.K[ss][j];
                     }
                 }
                 ws_.x_stage[ss][s] = xs;
-                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss_ * Tab::c[s]);
+                ws_.K[ss][s] = ode_.f(xs, u, t_0 + h_ss * Tab::c[s]);
             }
             // Raw stage Jacobians (for JVP threading / backward sweep) ...
             for (int s = 0; s < NS; ++s)
             {
-                ode_.jacobian(ws_.x_stage[ss][s], u, t_0 + h_ss_ * Tab::c[s],
+                ode_.jacobian(ws_.x_stage[ss][s], u, t_0 + h_ss * Tab::c[s],
                               ws_.JX[ss][s], ws_.JU[ss][s]);
             }
             // ... composed locally into the per-sub-step Jacobian. The stage
@@ -425,17 +434,17 @@ private:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        Dxs += h_ss_ * Tab::A[s][j] * Jc[j];
-                        Dus += h_ss_ * Tab::A[s][j] * Uc[j];
+                        Dxs += h_ss * Tab::A[s][j] * Jc[j];
+                        Dus += h_ss * Tab::A[s][j] * Uc[j];
                     }
                 }
                 Jc[s] = ws_.JX[ss][s] * Dxs;
                 Uc[s] = ws_.JX[ss][s] * Dus + ws_.JU[ss][s];
                 if (Tab::b[s] != 0.0)
                 {
-                    Jx_ss += h_ss_ * Tab::b[s] * Jc[s];
-                    Ju_ss += h_ss_ * Tab::b[s] * Uc[s];
-                    x_cur += h_ss_ * Tab::b[s] * ws_.K[ss][s];
+                    Jx_ss += h_ss * Tab::b[s] * Jc[s];
+                    Ju_ss += h_ss * Tab::b[s] * Uc[s];
+                    x_cur += h_ss * Tab::b[s] * ws_.K[ss][s];
                 }
             }
             Sx = Jx_ss * Sx;
@@ -447,13 +456,16 @@ private:
         ws_.last_x = x;
         ws_.last_u = u;
         ws_.last_t = t_k;
+        ws_.last_h = h;
         ws_.fwd_valid = true;
     }
 
     /// Threads the first-order JVP along v = (v_x, v_u) through the cached
     /// forward state (raw stage Jacobians in the workspace), filling dx/dK.
-    void thread_jvp(const state_t& v_x, const control_t& v_u) const
+    void thread_jvp(const state_t& v_x, const control_t& v_u,
+                    double h) const
     {
+        const double h_ss = h / (double)NumSteps;
         state_t v_ss = v_x;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
@@ -466,7 +478,7 @@ private:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        dxs += h_ss_ * Tab::A[s][j] * ws_.dK[ss][j];
+                        dxs += h_ss * Tab::A[s][j] * ws_.dK[ss][j];
                     }
                 }
                 ws_.dx[ss][s] = dxs;
@@ -476,7 +488,7 @@ private:
             {
                 if (Tab::b[s] != 0.0)
                 {
-                    v_ss += h_ss_ * Tab::b[s] * ws_.dK[ss][s];
+                    v_ss += h_ss * Tab::b[s] * ws_.dK[ss][s];
                 }
             }
         }
@@ -492,10 +504,11 @@ private:
     ///
     /// Seed:  dual[v_NumSteps] = w;  all other duals = 0.
     /// Answer: hv_x = dual[x_0] = dx_ss[0],  hv_u = du.
-    void backward_sweep(double t_k, const control_t& u, const state_t& w,
-                        const control_t& v_u, state_t& hv_x,
-                        control_t& hv_u) const
+    void backward_sweep(double t_k, double h, const control_t& u,
+                        const state_t& w, const control_t& v_u,
+                        state_t& hv_x, control_t& hv_u) const
     {
+        const double h_ss = h / (double)NumSteps;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
             for (int s = 0; s < NS; ++s)
@@ -512,7 +525,7 @@ private:
 
         for (int ss = NumSteps - 1; ss >= 0; --ss)
         {
-            const double t_0 = t_k + ss * h_ss_;
+            const double t_0 = t_k + ss * h_ss;
             const state_t& dv_next = ws_.dv_ss[ss + 1];
             const state_t& dx_next = ws_.dx_ss[ss + 1];
 
@@ -524,8 +537,8 @@ private:
             {
                 if (Tab::b[s] != 0.0)
                 {
-                    ws_.ddK_dual[ss][s] += (h_ss_ * Tab::b[s]) * dv_next;
-                    ws_.dKval_dual[ss][s] += (h_ss_ * Tab::b[s]) * dx_next;
+                    ws_.ddK_dual[ss][s] += (h_ss * Tab::b[s]) * dv_next;
+                    ws_.dKval_dual[ss][s] += (h_ss * Tab::b[s]) * dx_next;
                 }
             }
 
@@ -539,7 +552,7 @@ private:
                 state_t hx;
                 control_t hu;
                 ode_hess_prod<Ode, Dims>(ode_, ws_.x_stage[ss][s], u,
-                                         t_0 + h_ss_ * Tab::c[s],
+                                         t_0 + h_ss * Tab::c[s],
                                          ws_.ddK_dual[ss][s], ws_.dx[ss][s],
                                          v_u, hx, hu);
                 dx_stage_local += hx;
@@ -555,7 +568,7 @@ private:
                     if (Tab::A[s][j] != 0.0)
                     {
                         ws_.dKval_dual[ss][j] +=
-                            h_ss_ * Tab::A[s][j] * dx_stage_local;
+                            h_ss * Tab::A[s][j] * dx_stage_local;
                     }
                 }
 
@@ -571,7 +584,7 @@ private:
                     if (Tab::A[s][j] != 0.0)
                     {
                         ws_.ddK_dual[ss][j] +=
-                            h_ss_ * Tab::A[s][j] * ddx_local;
+                            h_ss * Tab::A[s][j] * ddx_local;
                     }
                 }
             }
@@ -621,14 +634,15 @@ private:
     template <class D>
     void ad_forward(const Eigen::Matrix<D, nx, 1>& x0,
                     const Eigen::Matrix<D, nu, 1>& u_d, double t_k,
-                    Eigen::Matrix<D, nx, 1>& x_next) const
+                    double h, Eigen::Matrix<D, nx, 1>& x_next) const
     {
+        const double h_ss = h / (double)NumSteps;
         Eigen::Matrix<D, nx, 1> x_cur = x0;
         for (int ss = 0; ss < NumSteps; ++ss)
         {
-            const double t_0 = t_k + ss * h_ss_;
+            const double t_0 = t_k + ss * h_ss;
             Eigen::Matrix<D, nx, 1> K[NS];
-            K[0] = ode_.f(x_cur, u_d, t_0 + h_ss_ * Tab::c[0]);
+            K[0] = ode_.f(x_cur, u_d, t_0 + h_ss * Tab::c[0]);
             for (int s = 1; s < NS; ++s)
             {
                 Eigen::Matrix<D, nx, 1> xs = x_cur;
@@ -636,16 +650,16 @@ private:
                 {
                     if (Tab::A[s][j] != 0.0)
                     {
-                        xs += h_ss_ * Tab::A[s][j] * K[j];
+                        xs += h_ss * Tab::A[s][j] * K[j];
                     }
                 }
-                K[s] = ode_.f(xs, u_d, t_0 + h_ss_ * Tab::c[s]);
+                K[s] = ode_.f(xs, u_d, t_0 + h_ss * Tab::c[s]);
             }
             for (int s = 0; s < NS; ++s)
             {
                 if (Tab::b[s] != 0.0)
                 {
-                    x_cur += h_ss_ * Tab::b[s] * K[s];
+                    x_cur += h_ss * Tab::b[s] * K[s];
                 }
             }
         }
@@ -713,8 +727,6 @@ private:
     }
 
     const Ode& ode_;
-    double h_;
-    double h_ss_;
     mutable detail::ErkWorkspace<P, NS, NumSteps> ws_;
 };
 

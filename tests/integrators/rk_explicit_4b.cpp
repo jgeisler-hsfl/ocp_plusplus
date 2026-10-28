@@ -122,13 +122,13 @@ template <class Tag>
 void check_value_neg_x()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegX, Tag>;
-    const Integ integ(OdeNegX{}, 0.1);
+    const Integ integ(OdeNegX{});
     state_t cur(1.0, 1.0);
     control_t u(0.0);
 
     for (int step = 0; step < 10; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.1, cur);
     }
 
     const double expected = std::exp(-1.0);  // t = 10 * 0.1
@@ -141,13 +141,13 @@ template <class Tag>
 void check_value_xsq()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeXsq, Tag>;
-    const Integ integ(OdeXsq{}, 0.2);
+    const Integ integ(OdeXsq{});
     state_t cur(0.5, 0.5);
     control_t u(0.0);
 
     for (int step = 0; step < 5; ++step)
     {
-        integ.value(cur, u, 0.0, cur);
+        integ.value(cur, u, 0.0, 0.2, cur);
     }
 
     // xdot = x^2  ->  x(t) = x0 / (1 - x0 t);  t = 5 * 0.2 = 1, x0 = 0.5.
@@ -165,13 +165,13 @@ template <class Tag>
 void check_jacobian()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, Tag>;
-    const Integ integ(OdeNegXU{}, 0.1);
+    const Integ integ(OdeNegXU{});
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
 
     df_dx_t Jx;
     df_du_t Ju;
-    integ.jacobian(x, u, 0.0, Jx, Ju);
+    integ.jacobian(x, u, 0.0, 0.1, Jx, Ju);
 
     const double d = 1e-6;
     for (int j = 0; j < nx; ++j)
@@ -185,8 +185,8 @@ void check_jacobian()
         xm -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(xp, u, 0.0, fdp);
-        integ.value(xm, u, 0.0, fdm);
+        integ.value(xp, u, 0.0, 0.1, fdp);
+        integ.value(xm, u, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -206,8 +206,8 @@ void check_jacobian()
         um -= e;
         state_t fdp;
         state_t fdm;
-        integ.value(x, up, 0.0, fdp);
-        integ.value(x, um, 0.0, fdm);
+        integ.value(x, up, 0.0, 0.1, fdp);
+        integ.value(x, um, 0.0, 0.1, fdm);
         for (int i = 0; i < nx; ++i)
         {
             const double fd = (fdp(i) - fdm(i)) / (2.0 * d);
@@ -228,7 +228,7 @@ void check_hess_prod()
 {
     using Integ = ocp::ExplicitRkIntegrator<Dims, OdeNegXU, Tag>;
     using zvec_t = Eigen::Matrix<double, nx + nu, 1>;
-    const Integ integ(OdeNegXU{}, 0.1);
+    const Integ integ(OdeNegXU{});
 
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -265,7 +265,7 @@ void check_hess_prod()
             xx(1) = z(1);
             uu(0) = z(2);
             state_t xn;
-            integ.value(xx, uu, 0.0, xn);
+            integ.value(xx, uu, 0.0, 0.1, xn);
             return w[p].dot(xn);
         };
 
@@ -304,7 +304,7 @@ void check_hess_prod()
 
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, 0.0, w[p], vx[p], vu[p], hvx, hvu);
+        integ.hess_prod(x, u, 0.0, 0.1, w[p], vx[p], vu[p], hvx, hvu);
 
         zvec_t v;
         v(0) = vx[p](0);

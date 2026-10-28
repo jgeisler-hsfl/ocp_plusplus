@@ -62,7 +62,7 @@ using Dim = PendulumGenDims;
 void check_integrator_map()
 {
     Ode ode;
-    PendulumGenInteg integ(ode, PENDULUM_DT);
+    PendulumGenInteg integ(ode);
     Eigen::Matrix<double, Dim::nx, 1> x, x_next;
     Eigen::Matrix<double, Dim::nu, 1> u;
     double max_gap = 0.0;
@@ -72,7 +72,7 @@ void check_integrator_map()
             x(i) = ref_x_pendulum[k][i];
         for (int i = 0; i < Dim::nu; ++i)
             u(i) = ref_u_pendulum[k][i];
-        integ.value(x, u, k * PENDULUM_DT, x_next);
+        integ.value(x, u, k * PENDULUM_DT, PENDULUM_DT, x_next);
         for (int i = 0; i < Dim::nx; ++i)
             max_gap = std::max(max_gap,
                                std::fabs(x_next(i) - ref_x_pendulum[k + 1][i]));
