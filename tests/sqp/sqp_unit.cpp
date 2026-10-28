@@ -33,6 +33,7 @@ int run_stats_5d_tests();
 int run_sens_x0_5f_tests();
 int run_sens_param_5j_tests();
 int run_sens_param_5i_tests();
+int run_rh_shift_tests();
 
 int main()
 {
@@ -61,6 +62,7 @@ int main()
     failures += run_sens_x0_5f_tests();
     failures += run_sens_param_5j_tests();
     failures += run_sens_param_5i_tests();
+    failures += run_rh_shift_tests();
 
     if (failures == 0)
     {

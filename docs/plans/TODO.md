@@ -33,7 +33,7 @@
 - [ ] make it possible to set the integrator step size per stage from the problem
 - [x] add a ProblemScaling class for scaling states and inputs (done: `ocp::ScaledProblem<Base>` composition wrapper in `include/ocp/scaling.hpp`; unscaled values are recovered via `scaled.unscale(sol)`; plan in `docs/plans/finished/SCALED_PROBLEM_PLAN.md`)
 - [ ] add a linear and a nonlinear least sqquares tracking problem crtp class with gauss newton approximation option
-- [ ] add receding horizon shifting to Solution, what about the solver-internal slacks?
+- [x] add receding horizon shifting to Solution, what about the solver-internal slacks? (done — `ocp::Solution::shift(x0_new, ShiftFill)` in `problem.hpp` plus `AcadosSolver::shift` / `reset_warm_start` / `slacks()` in `acados.hpp`; the driver shifts the internal slacks one stage (first <- stage-1 path, path up one, new last path stage zeroed, terminal unchanged) while the persistent QP duals stay in place as a second-order warm start; tutorial 07 §7.3 updated, `tests/problem/solution_shift_unit.cpp` + `tests/sqp/rh_shift.cpp`)
 
 ### C. Tooling / generator
 

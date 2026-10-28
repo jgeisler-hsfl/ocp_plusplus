@@ -1200,6 +1200,99 @@ public:
     /// here, before `solve()`.
     Globalizer& globalizer() { return glob_; }
 
+    /// Read-only access to the driver's slack storage (solver-internal,
+    /// see `SqpSlacks`); useful for diagnostics and tests.
+    const SqpSlacks<P, NH>& slacks() const { return slacks_; }
+
+    /// Receding-horizon shift for MPC: advance the solver's internal slack
+    /// state one stage in tandem with `sol.shift(x0_new, fill)`.
+    ///
+    /// Call this *instead of* `sol.shift(...)` when warm-starting the next
+    /// MPC step on the same solver object: it applies the solution shift
+    /// (see `Solution::shift`) and additionally shifts `slacks_` one stage
+    /// so the NLP slacks stay consistent with the shifted trajectory. The
+    /// persistent QP duals (`qp_out_` / `dense_qp_out_` / `block_qp_.out`)
+    /// are left in place; they remain a valid second-order warm start in
+    /// the QP's scaled step-space (governed by `HpipmOptions::warm_start`).
+    ///
+    /// The slack shift is a no-op (apart from the solution shift) unless
+    /// the last solve ran at this horizon (`slack_N_ == sol.N`); a
+    /// horizon change therefore falls back to the usual zeroed-slack
+    /// behaviour in `solve()`.
+    ///
+    /// @param[out] sol      solution to shift in place.
+    /// @param  x0_new       new initial state (written to sol.x[0]).
+    /// @param  fill         how to fill the new last stage (default
+    ///                      kRollover).
+    void shift(Solution<P, NH>& sol, const typename P::state_t& x0_new,
+               ShiftFill fill = ShiftFill::kRollover)
+    {
+        sol.shift(x0_new, fill);
+        if (slack_N_ == sol.N && sol.N >= 2)
+        {
+            // first <- old stage-1 slacks; the first-stage slack vector
+            // matches the path-stage one, except that when x_0 is fixed
+            // the state-box block is absent (pin rows), so drop the
+            // leading 2 * nbx_soft path entries.
+            const int bx_off =
+                P::fixed_initial_state ? 2 * P::nbx_soft : 0;
+            slacks_.first =
+                slacks_.path[0].segment(bx_off, D::nslack_first);
+            for (int k = 0; k + 1 < sol.N - 1; ++k)
+            {
+                slacks_.path[k] = slacks_.path[k + 1];
+            }
+            // the new last path stage (index N-2) is zeroed because the
+            // old terminal slack vector has a different extent
+            slacks_.path[sol.N - 2].setZero();
+            // slacks_.term: the terminal stage stays terminal, unchanged.
+        }
+    }
+
+    /// One-shot cold start: zero the slack storage and the persistent QP
+    /// duals (staged, dense and block QP) so the next `solve()` starts
+    /// from scratch. Call e.g. after `shift()` when the shifted warm
+    /// start is expected to be unhelpful. The globalizer / adaptive-LM
+    /// state is reset at the start of every `solve()` and needs no
+    /// handling here.
+    void reset_warm_start()
+    {
+        slacks_.setZero();
+        slack_N_ = 0;
+        for (int k = 0; k < qp_out_.N; ++k)
+        {
+            qp_out_.pi[k].setZero();
+        }
+        qp_out_.lam_first.setZero();
+        for (int k = 1; k < qp_out_.N; ++k)
+        {
+            qp_out_.lam_path[k - 1].setZero();
+            qp_out_.t_path[k - 1].setZero();
+        }
+        qp_out_.lam_term.setZero();
+        qp_out_.t_first.setZero();
+        qp_out_.t_term.setZero();
+        dense_qp_out_.lam.setZero();
+        dense_qp_out_.t.setZero();
+        if constexpr (NB > 0)
+        {
+            auto& out = block_qp_.out;
+            for (int k = 0; k < out.N; ++k)
+            {
+                out.pi[k].setZero();
+            }
+            out.lam_first.setZero();
+            for (int k = 1; k < out.N; ++k)
+            {
+                out.lam_path[k - 1].setZero();
+                out.t_path[k - 1].setZero();
+            }
+            out.lam_term.setZero();
+            out.t_first.setZero();
+            out.t_term.setZero();
+        }
+    }
+
     /// First-order sensitivity of the OCP solution w.r.t. the fixed
     /// initial state (HPIPM QP sensitivities, docs/ARCHITECTURE.md sec. 8).
     ///
