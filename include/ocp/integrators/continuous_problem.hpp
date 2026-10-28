@@ -59,6 +59,19 @@ public:
     {
     }
 
+    /// The ODE/DAE model stored by this adapter (by value). Exposed so
+    /// user-defined problems can forward model state (e.g. a shared
+    /// `params()` object) through their own interface.
+    Ode& ode()
+    {
+        return ode_;
+    }
+
+    const Ode& ode() const
+    {
+        return ode_;
+    }
+
     // ---------------------------------------------------------------
     //  dynamics: delegate to the integrator, forwarding t_k = k * h_
     // ---------------------------------------------------------------
