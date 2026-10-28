@@ -483,11 +483,11 @@ void check_integ_value_jac(Integ& integ, const char* name)
     state_t x_next;
     df_dx_t Jx;
     df_du_t Ju;
-    integ.value_jac(x, u, t_k, x_next, Jx, Ju);
+    integ.value_jac(x, u, t_k, 0.1, x_next, Jx, Ju);
 
     // The fused value must match the plain value pass.
     state_t x_val;
-    integ.value(x, u, t_k, x_val);
+    integ.value(x, u, t_k, 0.1, x_val);
     check((x_next - x_val).cwiseAbs().maxCoeff() < 1e-12,
           (std::string(name) + " value_jac value == value").c_str());
 
@@ -497,8 +497,8 @@ void check_integ_value_jac(Integ& integ, const char* name)
         state_t e = state_t::Zero();
         e(j) = d;
         state_t fp, fm;
-        integ.value(x + e, u, t_k, fp);
-        integ.value(x - e, u, t_k, fm);
+        integ.value(x + e, u, t_k, 0.1, fp);
+        integ.value(x - e, u, t_k, 0.1, fm);
         for (int i = 0; i < nx; ++i)
             check(std::abs(Jx(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
                   (std::string(name) + " value_jac df/dx vs FD").c_str());
@@ -508,8 +508,8 @@ void check_integ_value_jac(Integ& integ, const char* name)
         control_t e = control_t::Zero();
         e(j) = d;
         state_t fp, fm;
-        integ.value(x, u + e, t_k, fp);
-        integ.value(x, u - e, t_k, fm);
+        integ.value(x, u + e, t_k, 0.1, fp);
+        integ.value(x, u - e, t_k, 0.1, fm);
         for (int i = 0; i < nx; ++i)
             check(std::abs(Ju(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
                   (std::string(name) + " value_jac df/du vs FD").c_str());
@@ -526,13 +526,13 @@ void check_integ_hess(Integ& integ, const char* name)
     {
         state_t hvx;
         control_t hvu;
-        integ.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx, hvu);
+        integ.hess_prod(x, u, t_k, 0.1, c.w, c.v_x, c.v_u, hvx, hvu);
         const z_t fd = fd_hvp(
             x, u, c.w, c.v_x, c.v_u,
             [&](const state_t& xx, const control_t& uu)
             {
                 state_t out;
-                integ.value(xx, uu, t_k, out);
+                integ.value(xx, uu, t_k, 0.1, out);
                 return out;
             });
         z_t actual;
@@ -551,7 +551,7 @@ void check_integ_value_jac_hess_prod(Integ& integ, const char* name)
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     state_t x_val;
-    integ.value(x, u, t_k, x_val);
+    integ.value(x, u, t_k, 0.1, x_val);
     for (const auto& c : cases)
     {
         state_t x_next;
@@ -559,7 +559,8 @@ void check_integ_value_jac_hess_prod(Integ& integ, const char* name)
         df_du_t Ju;
         state_t hvx;
         control_t hvu;
-        integ.value_jac_hess_prod(x, u, t_k, x_next, Jx, Ju, c.w, c.v_x, c.v_u,
+        integ.value_jac_hess_prod(x, u, t_k, 0.1, x_next, Jx, Ju, c.w, c.v_x,
+                                  c.v_u,
                                   hvx, hvu);
         check((x_next - x_val).cwiseAbs().maxCoeff() < 1e-12,
               (std::string(name) + " value_jac_hess_prod value == value")
@@ -569,7 +570,7 @@ void check_integ_value_jac_hess_prod(Integ& integ, const char* name)
             [&](const state_t& xx, const control_t& uu)
             {
                 state_t out;
-                integ.value(xx, uu, t_k, out);
+                integ.value(xx, uu, t_k, 0.1, out);
                 return out;
             });
         z_t actual;
@@ -589,7 +590,7 @@ void check_gn_switch()
 {
     DaeXsqUGn dae_gn;
     ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, ocp::RadauIia2Tag> irk_gn(
-        dae_gn, 0.1, 8);
+        dae_gn, 8);
 
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
@@ -599,14 +600,14 @@ void check_gn_switch()
     state_t x_next;
     df_dx_t Jx;
     df_du_t Ju;
-    irk_gn.value_jac(x, u, t_k, x_next, Jx, Ju);
+    irk_gn.value_jac(x, u, t_k, 0.1, x_next, Jx, Ju);
     for (int j = 0; j < nx; ++j)
     {
         state_t e = state_t::Zero();
         e(j) = d;
         state_t fp, fm;
-        irk_gn.value(x + e, u, t_k, fp);
-        irk_gn.value(x - e, u, t_k, fm);
+        irk_gn.value(x + e, u, t_k, 0.1, fp);
+        irk_gn.value(x - e, u, t_k, 0.1, fm);
         for (int i = 0; i < nx; ++i)
             check(std::abs(Jx(i, j) - (fp(i) - fm(i)) / (2.0 * d)) < 1e-6,
                   "GN switch value_jac df/dx vs FD");
@@ -617,7 +618,7 @@ void check_gn_switch()
     {
         state_t hvx;
         control_t hvu;
-        irk_gn.hess_prod(x, u, t_k, c.w, c.v_x, c.v_u, hvx, hvu);
+        irk_gn.hess_prod(x, u, t_k, 0.1, c.w, c.v_x, c.v_u, hvx, hvu);
         check(hvx.cwiseAbs().maxCoeff() == 0.0 && hvu.cwiseAbs().maxCoeff() == 0.0,
               "GN switch: hess_prod returns zeros");
     }
@@ -644,21 +645,21 @@ void check_cache(Integ& integ, const char* name)
     control_t cold_u;
     state_t warm_x;
     control_t warm_u;
-    integ.hess_prod(x, u, t_k, w, v1, vu1, cold_x, cold_u);
-    integ.hess_prod(x, u, t_k, w, v1, vu1, warm_x, warm_u);
+    integ.hess_prod(x, u, t_k, 0.1, w, v1, vu1, cold_x, cold_u);
+    integ.hess_prod(x, u, t_k, 0.1, w, v1, vu1, warm_x, warm_u);
     check((cold_x - warm_x).cwiseAbs().maxCoeff() == 0.0 &&
               (cold_u - warm_u).cwiseAbs().maxCoeff() == 0.0,
           (std::string(name) + " hess_prod cold == warm (same key)").c_str());
 
     // A different direction must still be correct (re-threaded JVP on the
     // cached forward).
-    integ.hess_prod(x, u, t_k, w, v2, vu2, warm_x, warm_u);
+    integ.hess_prod(x, u, t_k, 0.1, w, v2, vu2, warm_x, warm_u);
     const z_t fd2 = fd_hvp(
         x, u, w, v2, vu2,
         [&](const state_t& xx, const control_t& uu)
         {
             state_t out;
-            integ.value(xx, uu, t_k, out);
+            integ.value(xx, uu, t_k, 0.1, out);
             return out;
         });
     z_t actual;
@@ -672,8 +673,9 @@ void check_cache(Integ& integ, const char* name)
     state_t x_next;
     df_dx_t Jx;
     df_du_t Ju;
-    integ.value_jac(x + state_t(0.01, -0.02), u, t_k, x_next, Jx, Ju);
-    integ.hess_prod(x + state_t(0.01, -0.02), u, t_k, w, v1, vu1, warm_x,
+    integ.value_jac(x + state_t(0.01, -0.02), u, t_k, 0.1, x_next, Jx, Ju);
+    integ.hess_prod(x + state_t(0.01, -0.02), u, t_k, 0.1, w, v1, vu1,
+                    warm_x,
                     warm_u);
     const state_t xn2 = x + state_t(0.01, -0.02);
     const z_t fd3 = fd_hvp(
@@ -681,7 +683,7 @@ void check_cache(Integ& integ, const char* name)
         [&](const state_t& xx, const control_t& uu)
         {
             state_t out;
-            integ.value(xx, uu, t_k, out);
+            integ.value(xx, uu, t_k, 0.1, out);
             return out;
         });
     actual.head(nx) = warm_x;
@@ -707,8 +709,8 @@ void check_cross_backend(IntegAd& ig_ad, IntegRef& ig_ref, const char* name)
     df_du_t Ju_ad;
     df_dx_t Jx_ref;
     df_du_t Ju_ref;
-    ig_ad.value_jac(x, u, t_k, xn_ad, Jx_ad, Ju_ad);
-    ig_ref.value_jac(x, u, t_k, xn_ref, Jx_ref, Ju_ref);
+    ig_ad.value_jac(x, u, t_k, 0.1, xn_ad, Jx_ad, Ju_ad);
+    ig_ref.value_jac(x, u, t_k, 0.1, xn_ref, Jx_ref, Ju_ref);
     check((xn_ad - xn_ref).cwiseAbs().maxCoeff() < 1e-12,
           (std::string(name) + " cross-backend value").c_str());
     check((Jx_ad - Jx_ref).cwiseAbs().maxCoeff() < 1e-12,
@@ -723,8 +725,8 @@ void check_cross_backend(IntegAd& ig_ad, IntegRef& ig_ref, const char* name)
     control_t hvu_ad;
     state_t hvx_ref;
     control_t hvu_ref;
-    ig_ad.hess_prod(x, u, t_k, w, v_x, v_u, hvx_ad, hvu_ad);
-    ig_ref.hess_prod(x, u, t_k, w, v_x, v_u, hvx_ref, hvu_ref);
+    ig_ad.hess_prod(x, u, t_k, 0.1, w, v_x, v_u, hvx_ad, hvu_ad);
+    ig_ref.hess_prod(x, u, t_k, 0.1, w, v_x, v_u, hvx_ref, hvu_ref);
     check((hvx_ad - hvx_ref).cwiseAbs().maxCoeff() < 1e-12,
           (std::string(name) + " cross-backend hv_x").c_str());
     check((hvu_ad - hvu_ref).cwiseAbs().maxCoeff() < 1e-12,
@@ -741,7 +743,7 @@ void check_ad_hess_opt_out()
 {
     // The Dual1 value_jac path is unaffected by the opt-out.
     ocp::ExplicitRkIntegrator<Dims, OdeXsqUAdNoHess, ocp::K4Tag> erk_no(
-        OdeXsqUAdNoHess{}, 0.1);
+        OdeXsqUAdNoHess{});
     check_integ_value_jac(erk_no, "K4-AD-NoHess");
 
     // The consistent pair (opt-out + has_dynamics_hess = false) goes through
@@ -763,8 +765,8 @@ void check_ad_hess_opt_out()
     df_dx_t Jx_ad;
     df_du_t Ju_ad;
     OdeXsqUAd ad;
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk_ad(ad, 0.1);
-    erk_ad.value_jac(x, u, 0.0, x_next_ad, Jx_ad, Ju_ad);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk_ad(ad);
+    erk_ad.value_jac(x, u, 0.0, 0.1, x_next_ad, Jx_ad, Ju_ad);
     check((x_next - x_next_ad).cwiseAbs().maxCoeff() < 1e-12,
           "ad opt-out: dynamics value == enabled ODE");
     check((Jx - Jx_ad).cwiseAbs().maxCoeff() < 1e-12,
@@ -850,16 +852,16 @@ int run_autodiff_4j_tests()
     DaeXsqUAd dae;
     DaeXsqUGn dae_gn;
 
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk(ad, 0.1);
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag, 2> erk2(ad, 0.1);
-    ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, ocp::K4Tag> erk_ref(ref, 0.1);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag> erk(ad);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqUAd, ocp::K4Tag, 2> erk2(ad);
+    ocp::ExplicitRkIntegrator<Dims, OdeXsqURef, ocp::K4Tag> erk_ref(ref);
     ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd, ocp::RadauIia2Tag> irk(
-        dae, 0.1, 8);
+        dae, 8);
     ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn, ocp::RadauIia2Tag> irk_gn(
-        dae_gn, 0.1, 8);
+        dae_gn, 8);
     ocp::ImplicitRkIntegrator<Dims, ocp::OdeToDae<OdeXsqURef, Dims>,
                               ocp::RadauIia2Tag>
-        irk_ref(ref, 0.1, 8);
+        irk_ref(ref, 8);
 
     check_integ_value_jac(erk, "K4-AD");
     check_integ_value_jac(erk2, "K4x2-AD");

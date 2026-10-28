@@ -14,6 +14,7 @@ int run_cstr_4i_tests();
 int run_autodiff_4j_tests();
 int run_dae_4k_tests();
 int run_problem_autodiff_4l_tests();
+int run_step_grid_4m_tests();
 
 int main()
 {
@@ -28,6 +29,7 @@ int main()
     failures += run_autodiff_4j_tests();
     failures += run_dae_4k_tests();
     failures += run_problem_autodiff_4l_tests();
+    failures += run_step_grid_4m_tests();
 
     if (failures == 0)
     {

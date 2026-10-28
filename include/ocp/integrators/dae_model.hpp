@@ -175,7 +175,7 @@ struct OdeToDae
 
     /// Implicit conversion from the wrapped ODE model, so integrator
     /// construction wraps at the call site:
-    ///   ImplicitRkIntegrator<Dims, OdeToDae<Ode, Dims>, ...> integ(ode, h);
+    ///   ImplicitRkIntegrator<Dims, OdeToDae<Ode, Dims>, ...> integ(ode);
     OdeToDae(const Ode& ode)
         : detail::OdeToDaeBase<Ode, Dims, ode_supports_hess_prod<Ode, Dims>>(
               ode)

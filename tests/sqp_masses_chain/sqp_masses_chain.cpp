@@ -250,7 +250,7 @@ void check_qp_gn()
 void check_integrator_map()
 {
     Dae dae;
-    MassesChainInteg integ(dae, 0.2);
+    MassesChainInteg integ(dae);
     Eigen::Matrix<double, Dim::nx, 1> x, x_next;
     Eigen::Matrix<double, Dim::nu, 1> u;
     double max_gap = 0.0;
@@ -260,7 +260,7 @@ void check_integrator_map()
             x(i) = ref_x_masses_chain[k][i];
         for (int i = 0; i < Dim::nu; ++i)
             u(i) = ref_u_masses_chain[k][i];
-        integ.value(x, u, k * 0.2, x_next);
+        integ.value(x, u, k * 0.2, 0.2, x_next);
         for (int i = 0; i < Dim::nx; ++i)
             max_gap = std::max(max_gap,
                                std::fabs(x_next(i) - ref_x_masses_chain[k + 1][i]));

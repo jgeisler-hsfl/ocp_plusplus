@@ -58,7 +58,7 @@ using Dim = UnicycleGenDims;
 void check_integrator_map()
 {
     Ode ode;
-    UnicycleGenInteg integ(ode, UNICYCLE_DT);
+    UnicycleGenInteg integ(ode);
     Eigen::Matrix<double, Dim::nx, 1> x, x_next;
     Eigen::Matrix<double, Dim::nu, 1> u;
     double max_gap = 0.0;
@@ -68,7 +68,7 @@ void check_integrator_map()
             x(i) = ref_x_unicycle[k][i];
         for (int i = 0; i < Dim::nu; ++i)
             u(i) = ref_u_unicycle[k][i];
-        integ.value(x, u, k * UNICYCLE_DT, x_next);
+        integ.value(x, u, k * UNICYCLE_DT, UNICYCLE_DT, x_next);
         for (int i = 0; i < Dim::nx; ++i)
             max_gap = std::max(max_gap,
                                std::fabs(x_next(i) - ref_x_unicycle[k + 1][i]));
