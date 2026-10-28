@@ -222,6 +222,13 @@ class ImplicitRkIntegrator
     using scalar_t = typename P::scalar_t;
 
 public:
+    /// The problem-dimension tag this integrator was instantiated with
+    /// (re-exposed so adapters, e.g. ContinuousProblem, can derive their
+    /// own template arguments from the integrator type).
+    using dims_t  = Dims;
+    /// The DAE model type this integrator was instantiated with.
+    using model_t = Dae;
+
     /// Number of RK stages, derived from the scheme tag.
     static constexpr int NS = Tag::ns;
     static constexpr int NK = NS * nx;

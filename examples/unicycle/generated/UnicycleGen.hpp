@@ -102,10 +102,9 @@ using UnicycleGenInteg =
                               ocp::GaussLegendre4Tag, 1>;
 
 class UnicycleGen
-    : public ocp::ContinuousProblem<UnicycleGenDims, UnicycleGenDae, UnicycleGenInteg>
+    : public ocp::ContinuousProblem<UnicycleGenInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<UnicycleGenDims, UnicycleGenDae, UnicycleGenInteg>;
+    using Base = ocp::ContinuousProblem<UnicycleGenInteg>;
 
 public:
     UnicycleGen() : Base(UnicycleGenDae{}, 0.04)

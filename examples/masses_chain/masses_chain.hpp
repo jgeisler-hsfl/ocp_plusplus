@@ -170,11 +170,9 @@ using MassesChainInteg =
                               ocp::GaussLegendre4Tag, 2>;
 
 class MassesChain
-    : public ocp::ContinuousProblem<MassesChainDims, MassesChainDae,
-                                    MassesChainInteg>
+    : public ocp::ContinuousProblem<MassesChainInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<MassesChainDims, MassesChainDae, MassesChainInteg>;
+    using Base = ocp::ContinuousProblem<MassesChainInteg>;
 
 public:
     MassesChain() : Base(MassesChainDae{}, /*h=*/0.2)

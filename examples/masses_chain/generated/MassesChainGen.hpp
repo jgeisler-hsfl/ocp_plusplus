@@ -137,10 +137,9 @@ using MassesChainGenInteg =
                               ocp::GaussLegendre4Tag, 2>;
 
 class MassesChainGen
-    : public ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenDae, MassesChainGenInteg>
+    : public ocp::ContinuousProblem<MassesChainGenInteg>
 {
-    using Base =
-        ocp::ContinuousProblem<MassesChainGenDims, MassesChainGenDae, MassesChainGenInteg>;
+    using Base = ocp::ContinuousProblem<MassesChainGenInteg>;
 
 public:
     MassesChainGen() : Base(MassesChainGenDae{}, 0.2)

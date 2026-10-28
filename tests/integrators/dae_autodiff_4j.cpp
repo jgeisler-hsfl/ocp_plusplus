@@ -752,8 +752,7 @@ void check_ad_hess_opt_out()
     static_assert(!GnDims::has_dynamics_hess, "GN dims variant");
     using ErkNoHess =
         ocp::ExplicitRkIntegrator<GnDims, OdeXsqUAdNoHess, ocp::K4Tag>;
-    ocp::ContinuousProblem<GnDims, OdeXsqUAdNoHess, ErkNoHess> prob(
-        OdeXsqUAdNoHess{}, 0.1);
+    ocp::ContinuousProblem<ErkNoHess> prob(OdeXsqUAdNoHess{}, 0.1);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     state_t x_next;
@@ -785,7 +784,7 @@ void check_problem_hess()
     DaeXsqUAd dae;
     using Irk = ocp::ImplicitRkIntegrator<Dims, DaeXsqUAd,
                                           ocp::RadauIia2Tag>;
-    ocp::ContinuousProblem<Dims, DaeXsqUAd, Irk> prob(dae, 0.1, 8);
+    ocp::ContinuousProblem<Irk> prob(dae, 0.1, 8);
     const state_t x(0.3, -0.7);
     const control_t u(0.4);
     const auto& c = cases[0];
@@ -824,7 +823,7 @@ void check_problem_hess()
     DaeXsqUGn dae_gn;
     using IrkGn = ocp::ImplicitRkIntegrator<Dims, DaeXsqUGn,
                                             ocp::RadauIia2Tag>;
-    ocp::ContinuousProblem<Dims, DaeXsqUGn, IrkGn> prob_gn(dae_gn, 0.1, 8);
+    ocp::ContinuousProblem<IrkGn> prob_gn(dae_gn, 0.1, 8);
     state_t xn_gn;
     df_dx_t Jx_gn;
     df_du_t Ju_gn;

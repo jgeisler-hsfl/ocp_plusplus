@@ -170,10 +170,9 @@ using Erk = ocp::ExplicitRkIntegrator<SGDims, OdeTvar, ocp::K4Tag, 2>;
 
 /// Problem whose per-stage grid comes from params() (CRTP hook, non-uniform
 /// grid, t0 != 0):  t_k = t0 + sum_{i < k} h_i.
-struct GridProblem : ocp::ContinuousProblem<SGDims, OdeTvar, Erk,
-                                            GridProblem>
+struct GridProblem : ocp::ContinuousProblem<Erk, GridProblem>
 {
-    using Base = ocp::ContinuousProblem<SGDims, OdeTvar, Erk, GridProblem>;
+    using Base = ocp::ContinuousProblem<Erk, GridProblem>;
 
     GridParams params_;
 
@@ -194,15 +193,14 @@ struct GridProblem : ocp::ContinuousProblem<SGDims, OdeTvar, Erk,
 };
 
 /// Default Derived (ConstantStepSize): the uniform grid {h, k * h}.
-using FallbackProblem = ocp::ContinuousProblem<SGDims, OdeTvar, Erk>;
+using FallbackProblem = ocp::ContinuousProblem<Erk>;
 
 /// Named Derived whose hook returns the same uniform grid as the fallback;
 /// must stay bit-identical to it.
 struct ConstHookProblem
-    : ocp::ContinuousProblem<SGDims, OdeTvar, Erk, ConstHookProblem>
+    : ocp::ContinuousProblem<Erk, ConstHookProblem>
 {
-    using Base = ocp::ContinuousProblem<SGDims, OdeTvar, Erk,
-                                        ConstHookProblem>;
+    using Base = ocp::ContinuousProblem<Erk, ConstHookProblem>;
 
     static constexpr double h0 = 0.1;
 

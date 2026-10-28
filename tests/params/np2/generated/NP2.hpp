@@ -137,10 +137,9 @@ using NP2Integ =
                               ocp::K4Tag, 1>;
 
 class NP2
-    : public ocp::ContinuousProblem<NP2Dims, NP2Ode, NP2Integ>
+    : public ocp::ContinuousProblem<NP2Integ>
 {
-    using Base =
-        ocp::ContinuousProblem<NP2Dims, NP2Ode, NP2Integ>;
+    using Base = ocp::ContinuousProblem<NP2Integ>;
 
 public:
     NP2() : Base(NP2Ode{}, 0.1)

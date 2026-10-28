@@ -499,7 +499,7 @@ void check_hess_prod_fd(const Integ& integ, const char* label)
 
 using ErkInteg =
     ocp::ExplicitRkIntegrator<CstrDims, CstrOde, ocp::K4Tag>;
-using ErkBase  = ocp::ContinuousProblem<CstrDims, CstrOde, ErkInteg>;
+using ErkBase  = ocp::ContinuousProblem<ErkInteg>;
 
 struct CstrOcp : ErkBase
 {

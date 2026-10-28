@@ -156,6 +156,13 @@ class ExplicitRkIntegrator
     using Dual2    = duals::dual<Dual1, 1>;
 
 public:
+    /// The problem-dimension tag this integrator was instantiated with
+    /// (re-exposed so adapters, e.g. ContinuousProblem, can derive their
+    /// own template arguments from the integrator type).
+    using dims_t  = Dims;
+    /// The ODE model type this integrator was instantiated with.
+    using model_t = Ode;
+
     /// Number of RK stages, derived from the scheme tag.
     static constexpr int NS = Tag::ns;
 

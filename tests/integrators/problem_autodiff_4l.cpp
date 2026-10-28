@@ -881,11 +881,11 @@ struct SqpOde
 using SqpInteg = ExplicitRkIntegrator<SqpDims, SqpOde, K4Tag>;
 
 /// AD variant: value functions templated, all derivatives from the mix-in.
-struct SqpAd : ContinuousProblem<SqpDims, SqpOde, SqpInteg>,
+struct SqpAd : ContinuousProblem<SqpInteg>,
                AutoDiffProblem<SqpAd, SqpDims>
 {
     SqpAd(double h)
-        : ContinuousProblem<SqpDims, SqpOde, SqpInteg>(SqpOde{}, h)
+        : ContinuousProblem<SqpInteg>(SqpOde{}, h)
     {
     }
 
@@ -990,10 +990,10 @@ struct SqpAd : ContinuousProblem<SqpDims, SqpOde, SqpInteg>,
 };
 
 /// Hand-written variant: concrete value functions + analytic derivatives.
-struct SqpHand : ContinuousProblem<SqpDims, SqpOde, SqpInteg>
+struct SqpHand : ContinuousProblem<SqpInteg>
 {
     SqpHand(double h)
-        : ContinuousProblem<SqpDims, SqpOde, SqpInteg>(SqpOde{}, h)
+        : ContinuousProblem<SqpInteg>(SqpOde{}, h)
     {
     }
 

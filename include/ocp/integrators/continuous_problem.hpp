@@ -3,6 +3,12 @@
 // ContinuousProblem: adapter that turns a continuous-time ODE + a RK
 // integrator into a discrete-time ocp::Problem.
 //
+// The problem dimensions and the ODE/DAE model type are not separate
+// template arguments: the integrator is itself templated on both and
+// re-exposes them as dims_t / model_t, so the adapter is spelled as
+// ContinuousProblem<Integ> (e.g. ContinuousProblem<
+// ExplicitRkIntegrator<Dims, Ode, K4Tag>>).
+//
 // The user defines a concrete problem by inheriting from
 // ContinuousProblem and implementing the cost / constraint / initial-state
 // methods. The fused dynamics entries (dynamics_next_state,
@@ -68,11 +74,13 @@ struct ConstantStepSize
 {
 };
 
-template <class Dims, class Ode, class Integ, class Derived = ConstantStepSize,
+template <class Integ, class Derived = ConstantStepSize,
           int NH = Eigen::Dynamic>
-class ContinuousProblem : public Problem<Dims>
+class ContinuousProblem : public Problem<typename Integ::dims_t>
 {
 public:
+    using Dims = typename Integ::dims_t;
+    using Ode  = typename Integ::model_t;
     using P = Problem<Dims>;
     using state_t = typename P::state_t;
     using control_t = typename P::control_t;
