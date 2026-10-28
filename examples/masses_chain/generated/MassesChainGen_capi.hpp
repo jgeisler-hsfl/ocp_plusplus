@@ -4,7 +4,8 @@
 //
 // extern-C ABI + CasADi workspaces for the generated value functions.
 // Argument slots follow the casadi ABI comment in each .c file; the
-// canonical order is (x, [xdot], u, z, p, t) with nz = 0, np <= 1.
+// canonical order is (x, [xdot], u, z, p, t) with nz = 0; the p slot is
+// an np-element parameter vector (nullptr when np = 0).
 
 #pragma once
 
@@ -85,10 +86,10 @@ struct MassesChainGenDyn
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)t;
-        const double* arg[5] = { x, xdot, u, nullptr, (const double*)&p };
+        const double* arg[5] = { x, xdot, u, nullptr, p };
         double* res[1] = { out };
         (void)masses_chain_impl_dae_fun(arg, res,
                     iw_.empty() ? nullptr : iw_.data(),
@@ -129,10 +130,10 @@ struct MassesChainGenDynJac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)t;
-        const double* arg[5] = { x, xdot, u, nullptr, (const double*)&p };
+        const double* arg[5] = { x, xdot, u, nullptr, p };
         double* res[4] = { F_,
                             raw_dFdx_.data(),
                             raw_dFxdot_.data(),

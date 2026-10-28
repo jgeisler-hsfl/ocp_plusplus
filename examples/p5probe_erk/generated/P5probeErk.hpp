@@ -33,8 +33,7 @@ struct P5probeErkDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
-    // (the casadi model parameter p_ below is a user-managed scalar; it is
-    //  NOT part of the problem-interface sensitivity parameter vector)
+    // (the problem has no casadi model parameters)
 
     static constexpr bool fixed_initial_state = false;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -68,13 +67,12 @@ struct P5probeErkOde
 
     detail::P5probeErkDyn dyn_;
     detail::P5probeErkOdeJac dyn_vde_;
-    double p_ = 0.0;
 
     // xdot = f_expl(x, u, t) directly from the explicit ODE function.
     state_t f(const state_t& x, const control_t& u, double t) const
     {
         state_t r;
-        dyn_.eval(x.data(), u.data(), nullptr, p_, t, r.data());
+        dyn_.eval(x.data(), u.data(), nullptr, nullptr, t, r.data());
         return r;
     }
 
@@ -83,7 +81,7 @@ struct P5probeErkOde
     void jacobian(const state_t& x, const control_t& u, double t,
                   dyn_df_dx_t& df_dx, dyn_df_du_t& df_du) const
     {
-        dyn_vde_.eval(x.data(), u.data(), p_, t);
+        dyn_vde_.eval(x.data(), u.data(), nullptr, t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
                 df_dx(i, j) = dyn_vde_.Sx_[j * P::nx + i];
@@ -383,7 +381,7 @@ private:
                                               double t) const
     {
         Eigen::Matrix<double, 2, 1> y;
-        ws_cp_.eval(x.data(), u.data(), nullptr, 0.0, t,
+        ws_cp_.eval(x.data(), u.data(), nullptr, nullptr, t,
                           y.data());
         return y;
     }
@@ -392,7 +390,7 @@ private:
                                                         const control_t& u,
                                                         double t) const
     {
-        ws_cp_jy_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_cp_jy_.eval(x.data(), u.data(), nullptr, nullptr, t);
         // o1 is dy/d[u;x] ((nx+nu) x ny), column-major; rows 0..nu-1 = Ju^T,
         // rows nu.. = Jx^T.  Assemble J = [Jx | Ju] (ny x (nx+nu)).
         const auto Jt = Eigen::Map<
@@ -407,14 +405,14 @@ private:
                                               double t) const
     {
         Eigen::Matrix<double, 2, 1> y;
-        ws_ct_.eval(x.data(), nullptr, nullptr, 0.0, t, y.data());
+        ws_ct_.eval(x.data(), nullptr, nullptr, nullptr, t, y.data());
         return y;
     }
 
     Eigen::Matrix<double, 2, 2> ct_jy(const state_t& x,
                                                   double t) const
     {
-        ws_ct_jy_.eval(x.data(), nullptr, nullptr, 0.0, t);
+        ws_ct_jy_.eval(x.data(), nullptr, nullptr, nullptr, t);
         // o1 is dy/dx (nx x ny), column-major; J = o1^T (ny x nx).
         const auto Jt = Eigen::Map<const Eigen::Matrix<double, 2, 2>>(
             ws_ct_jy_.Jt_);
@@ -425,14 +423,14 @@ private:
                                          double t) const
     {
         Eigen::Matrix<double, 2, 1> h;
-        ws_h_.eval(x.data(), u.data(), nullptr, 0.0, t, h.data());
+        ws_h_.eval(x.data(), u.data(), nullptr, nullptr, t, h.data());
         return h;
     }
 
     Eigen::Matrix<double, 1, 4> hjac(
         const state_t& x, const control_t& u, double t) const
     {
-        ws_h_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_h_jac_.eval(x.data(), u.data(), nullptr, nullptr, t);
         // o1 is dh/d[u;x] ((nx+nu) x nh_raw), column-major; rows 0..nu-1
         // = (dh/du)^T, rows nu.. = (dh/dx)^T.  Jh = [dh/dx | dh/du].
         const auto Jt = Eigen::Map<
@@ -446,7 +444,7 @@ private:
     Eigen::Matrix<double, 2, 1> htval(const state_t& x) const
     {
         Eigen::Matrix<double, 2, 1> h;
-        ws_he_.eval(x.data(), nullptr, nullptr, 0.0, 0.3,
+        ws_he_.eval(x.data(), nullptr, nullptr, nullptr, 0.3,
                     h.data());
         return h;
     }
@@ -454,7 +452,7 @@ private:
     Eigen::Matrix<double, 1, 2> htjac(
         const state_t& x) const
     {
-        ws_he_jac_.eval(x.data(), nullptr, nullptr, 0.0, 0.3);
+        ws_he_jac_.eval(x.data(), nullptr, nullptr, nullptr, 0.3);
         // o1 is dh/dx flattened (nx x nh_raw_t, column-major); Jh = o1^T.
         const auto Jt = Eigen::Map<
             const Eigen::Matrix<double, 2, 1>>(

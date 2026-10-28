@@ -4,7 +4,8 @@
 //
 // extern-C ABI + CasADi workspaces for the generated value functions.
 // Argument slots follow the casadi ABI comment in each .c file; the
-// canonical order is (x, [xdot], u, z, p, t) with nz = 0, np <= 1.
+// canonical order is (x, [xdot], u, z, p, t) with nz = 0; the p slot is
+// an np-element parameter vector (nullptr when np = 0).
 
 #pragma once
 
@@ -118,7 +119,7 @@ struct P5probeIrkDyn
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)p; (void)t;
         const double* arg[6] = { x, xdot, u, nullptr, nullptr, nullptr };
@@ -162,7 +163,7 @@ struct P5probeIrkDynJac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)p; (void)t;
         const double* arg[6] = { x, xdot, u, nullptr, nullptr, nullptr };
@@ -194,7 +195,7 @@ struct P5probeIrkCost
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -220,7 +221,7 @@ struct P5probeIrkCost0
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -246,7 +247,7 @@ struct P5probeIrkCostE
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)u; (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, nullptr, nullptr, nullptr };
@@ -276,7 +277,7 @@ struct P5probeIrkCostJac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -312,7 +313,7 @@ struct P5probeIrkCostJacHess
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -347,7 +348,7 @@ struct P5probeIrkCost0Jac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -383,7 +384,7 @@ struct P5probeIrkCost0JacHess
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, u, nullptr, nullptr };
@@ -418,7 +419,7 @@ struct P5probeIrkCostEJac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)u; (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, nullptr, nullptr, nullptr };
@@ -454,7 +455,7 @@ struct P5probeIrkCostEJacHess
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)u; (void)xdot; (void)p; (void)t;
         const double* arg[4] = { x, nullptr, nullptr, nullptr };

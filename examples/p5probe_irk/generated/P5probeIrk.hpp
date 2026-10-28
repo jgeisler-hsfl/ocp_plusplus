@@ -33,8 +33,7 @@ struct P5probeIrkDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
-    // (the casadi model parameter p_ below is a user-managed scalar; it is
-    //  NOT part of the problem-interface sensitivity parameter vector)
+    // (the problem has no casadi model parameters)
 
     static constexpr bool fixed_initial_state = true;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -68,7 +67,6 @@ struct P5probeIrkDae
 
     detail::P5probeIrkDyn dyn_;
     detail::P5probeIrkDynJac dyn_j_;
-    double p_ = 0.0;
 
     // DAE residual F(x, xdot, u, t) = 0, directly from the generated
     // CasADi residual code (no pseudo-ODE, no coefficient calibration).
@@ -76,7 +74,7 @@ struct P5probeIrkDae
               double t) const
     {
         state_t r;
-        dyn_.eval(x.data(), u.data(), xdot.data(), p_, t, r.data());
+        dyn_.eval(x.data(), u.data(), xdot.data(), nullptr, t, r.data());
         return r;
     }
 
@@ -86,7 +84,7 @@ struct P5probeIrkDae
                double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
                dyn_df_du_t& dFdu) const
     {
-        dyn_j_.eval(x.data(), u.data(), xdot.data(), p_, t);
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), nullptr, t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
                 dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
@@ -198,7 +196,7 @@ public:
                           double t) const
     {
         double c = 0.0;
-        ws_cp_.eval(x.data(), u.data(), nullptr, 0.0, t, &c);
+        ws_cp_.eval(x.data(), u.data(), nullptr, nullptr, t, &c);
         return c;
     }
 
@@ -207,7 +205,7 @@ public:
     stage_grad_t cp_grad(const state_t& x, const control_t& u,
                                double t) const
     {
-        ws_cp_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_cp_jac_.eval(x.data(), u.data(), nullptr, nullptr, t);
         stage_grad_t g;
         for (int i = 0; i < 2; ++i)
             g(i) = ws_cp_jac_.grad_[1 + i];
@@ -219,7 +217,7 @@ public:
     stage_hess_t cp_hess(const state_t& x, const control_t& u,
                                double t) const
     {
-        ws_cp_hess_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_cp_hess_.eval(x.data(), u.data(), nullptr, nullptr, t);
         stage_hess_t H;
         const int N = 3;
         for (int i = 0; i < N; ++i)
@@ -239,7 +237,7 @@ public:
                           double t) const
     {
         double c = 0.0;
-        ws_c0_.eval(x.data(), u.data(), nullptr, 0.0, t, &c);
+        ws_c0_.eval(x.data(), u.data(), nullptr, nullptr, t, &c);
         return c;
     }
 
@@ -248,7 +246,7 @@ public:
     stage_grad_t c0_grad(const state_t& x, const control_t& u,
                                double t) const
     {
-        ws_c0_jac_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_c0_jac_.eval(x.data(), u.data(), nullptr, nullptr, t);
         stage_grad_t g;
         for (int i = 0; i < 2; ++i)
             g(i) = ws_c0_jac_.grad_[1 + i];
@@ -260,7 +258,7 @@ public:
     stage_hess_t c0_hess(const state_t& x, const control_t& u,
                                double t) const
     {
-        ws_c0_hess_.eval(x.data(), u.data(), nullptr, 0.0, t);
+        ws_c0_hess_.eval(x.data(), u.data(), nullptr, nullptr, t);
         stage_hess_t H;
         const int N = 3;
         for (int i = 0; i < N; ++i)
@@ -279,13 +277,13 @@ public:
     double ct_value(const state_t& x, double t) const
     {
         double c = 0.0;
-        ws_ct_.eval(x.data(), nullptr, nullptr, 0.0, t, &c);
+        ws_ct_.eval(x.data(), nullptr, nullptr, nullptr, t, &c);
         return c;
     }
 
     term_grad_t ct_grad(const state_t& x, double t) const
     {
-        ws_ct_jac_.eval(x.data(), nullptr, nullptr, 0.0, t);
+        ws_ct_jac_.eval(x.data(), nullptr, nullptr, nullptr, t);
         term_grad_t g;
         for (int j = 0; j < 2; ++j)
             g(j) = ws_ct_jac_.grad_[j];
@@ -294,7 +292,7 @@ public:
 
     term_hess_t ct_hess(const state_t& x, double t) const
     {
-        ws_ct_hess_.eval(x.data(), nullptr, nullptr, 0.0, t);
+        ws_ct_hess_.eval(x.data(), nullptr, nullptr, nullptr, t);
         // The casadi Hessian is lower-triangular; mirror to a symmetric
         // matrix.
         term_hess_t H;

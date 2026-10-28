@@ -33,8 +33,9 @@ struct MassesChainGenDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
-    // (the casadi model parameter p_ below is a user-managed scalar; it is
-    //  NOT part of the problem-interface sensitivity parameter vector)
+    // (the 1-element casadi model parameter vector is the user-managed
+    //  MassesChainGenParams object below; it is NOT part of the problem-interface
+    //  sensitivity parameter vector)
 
     static constexpr bool fixed_initial_state = true;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -58,6 +59,28 @@ struct MassesChainGenDims
     static constexpr std::array<int, 0> terminal_state_box_soft_idx = {  };
 };
 
+/// Shared model parameters: the 1-element casadi parameter vector p
+/// (initial values from the acados JSON).  The JSON carries no
+/// parameter names, so p is a single fixed-size Eigen matrix leaf,
+/// shared by the dynamics model and the cost / constraint code, and
+/// exposed through the problem's params() hook (settable by name "p"
+/// via the inspect protocol).
+struct MassesChainGenParams
+{
+    Eigen::Matrix<double, 1, 1> p;
+
+    MassesChainGenParams()
+    {
+        p << 0.0;
+    }
+
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("p", &MassesChainGenParams::p);
+    }
+};
+
 struct MassesChainGenDae
 {
     using P = ocp::Problem<MassesChainGenDims>;
@@ -68,7 +91,17 @@ struct MassesChainGenDae
 
     detail::MassesChainGenDyn dyn_;
     detail::MassesChainGenDynJac dyn_j_;
-    double p_ = 0.0;
+    MassesChainGenParams params_;
+
+    MassesChainGenParams& params()
+    {
+        return params_;
+    }
+
+    const MassesChainGenParams& params() const
+    {
+        return params_;
+    }
 
     // DAE residual F(x, xdot, u, t) = 0, directly from the generated
     // CasADi residual code (no pseudo-ODE, no coefficient calibration).
@@ -76,7 +109,7 @@ struct MassesChainGenDae
               double t) const
     {
         state_t r;
-        dyn_.eval(x.data(), u.data(), xdot.data(), p_, t, r.data());
+        dyn_.eval(x.data(), u.data(), xdot.data(), params_.p.data(), t, r.data());
         return r;
     }
 
@@ -86,7 +119,7 @@ struct MassesChainGenDae
                double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
                dyn_df_du_t& dFdu) const
     {
-        dyn_j_.eval(x.data(), u.data(), xdot.data(), p_, t);
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), params_.p.data(), t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
                 dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
@@ -124,6 +157,20 @@ public:
         ctVx_ = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(ctVx_data);
         ctW_ = Eigen::Map<const Eigen::Matrix<double, 24, 24>>(ctW_data);
         ctyref_ << 0.2437127723791751, -1.409181451725978e-26, -0.4707556301562673, 8.972942462046923e-25, -2.163905079219699e-25, 3.292267272369513e-25, 0.5, -1.410956232210388e-26, -0.6357704467945128, -2.920455663099157e-25, -1.758315336880841e-25, -8.472484239971351e-35, 0.7562872276208249, -6.803009248592233e-27, -0.4707556301562673, 3.279968073204223e-34, 1.288199144367247e-35, 1.43582818270713e-35, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0;
+    }
+
+    /// Shared model parameters (the 1-element casadi parameter
+    /// vector), owned by the dynamics model; forwarded so host-side / MEX
+    /// writes through params() reach the live object the dynamics and the
+    /// cost / constraint code read.
+    MassesChainGenParams& params()
+    {
+        return Base::ode().params();
+    }
+
+    const MassesChainGenParams& params() const
+    {
+        return Base::ode().params();
     }
 
     state_t initial_state() const
@@ -828,7 +875,6 @@ private:
 
 
 
-    double p_ = 0.0;
     state_t x0_{};
     Eigen::Matrix<double, 27, 24> cpVx_{};
     Eigen::Matrix<double, 27, 27> cpW_{};

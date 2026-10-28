@@ -57,7 +57,9 @@ the first (reference) solver implementations.
   `Dims::np`), available in all three QP modes.
 - `tools/acados2ocp_pp.py` — generator that ports an acados OCP (from its
   CasADi-generated `acados_ocp_nlp.json` + C model files) into an ocp++
-  problem class.
+  problem class. Model parameters (`dims.np >= 1`) are emitted as a shared
+  `{name}Params` struct (fixed-size `p` vector leaf) exposed through the
+  duck-typed `params()` hook.
 - `tools/plot_solution.py` — plots a solution CSV written by
   `ocp::Solution::to_csv` as a self-contained HTML page (or a static PNG via
   kaleido) with one subplot per variable, using plotly. Python dependencies

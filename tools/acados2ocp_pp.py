@@ -25,7 +25,8 @@ p5probe, p5probe_b):
   * integrator IRK (GAUSS_LEGENDRE / RADAU_IIA, 2..4 stages) or
     ERK (K1..K4), >= 1 sub-step
   * dynamics backend casadi (explicit ODE for ERK, implicit DAE for IRK),
-    nz == 0, np <= 1
+    nz == 0, np >= 0 (the parameter vector becomes a shared {name}Params
+    object exposed through the problem's params() hook)
   * box constraints: stage state (incl. stage-0 idxbx_0), stage control,
     terminal state
   * free or fixed initial state (idxbx_0 with lbx_0 == ubx_0 => fixed)
@@ -37,7 +38,7 @@ p5probe, p5probe_b):
   * terminal time-varying functions (t = N * dt is passed to the C functions)
 
 Not supported (raises Unsupported):
-  * nz > 0 (algebraic states), np > 1 (multiple parameters)
+  * nz > 0 (algebraic states)
   * sparse casadi arguments / outputs
   * stage-0-specific constraint rows (ng_0 / nh_0) or stage-0 soft rows
   * stage-0-specific control box (idxbu_0), terminal x0 box (idxbxe_0)
@@ -304,8 +305,8 @@ def load_spec(path):
     np_ = dim.get("np", 0)
     if nz != 0:
         fail(f"nz = {nz}: algebraic states are not supported")
-    if np_ > 1:
-        fail(f"np = {np_}: more than one parameter is not supported")
+    if np_ < 0:
+        fail(f"np = {np_}: must be >= 0")
     spec["nx"], spec["nu"], spec["np"] = nx, nu, np_
     spec["N"] = dim["N"]
 
@@ -359,7 +360,11 @@ def load_spec(path):
     model_files = [resolve(f) for f in (d.get("external_function_files_model") or [])]
     want = "impl_dae_fun.c" if itype == "IRK" else "expl_ode_fun.c"
     spec["dyn_c"] = _find_cfile(model_files, want, "dynamics")
-    spec["parameter_values"] = d.get("parameter_values", []) or [0.0]
+    pv = d.get("parameter_values") or []
+    if np_ > 0 and len(pv) != np_:
+        fail(f"parameter_values has {len(pv)} entries, expected {np_} "
+             f"(dims.np)")
+    spec["parameter_values"] = [float(v) for v in pv]
 
     # ---- horizon ------------------------------------------------------------
     N = spec["N"]
@@ -791,7 +796,7 @@ def _arg_entry(sym, sz):
     if sym == "z":
         return "nullptr"
     if sym == "p":
-        return "(const double*)&p" if sz == 1 else "nullptr"
+        return "p" if sz > 0 else "nullptr"
     if sym == "t":
         return "(const double*)&t" if sz == 1 else "nullptr"
     fail(f"unknown plan slot {sym!r}")
@@ -804,7 +809,7 @@ def _void_body(plan):
         voids.append("u")
     if not any(s == "xdot" for s, sz in plan):
         voids.append("xdot")
-    if not any(s == "p" and sz == 1 for s, sz in plan):
+    if not any(s == "p" and sz > 0 for s, sz in plan):
         voids.append("p")
     if not any(s == "t" and sz == 1 for s, sz in plan):
         voids.append("t")
@@ -949,7 +954,7 @@ struct {name}{role}
 {ctor_body}    }}
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {{
         {void_body}
         const double* arg[{len(plan)}] = {{ {entries} }};
@@ -985,7 +990,7 @@ def _emit_ode_jac_struct(spec, name, f):
     n_in = f["n_in"]
     if n_in not in (4, 5):
         fail(f"{sym}: expected 4 or 5 inputs, found {n_in}")
-    tail = ", &p" if (n_in == 5 and np_ > 0) else (", nullptr" if n_in == 5 else "")
+    tail = ", p" if (n_in == 5 and np_ > 0) else (", nullptr" if n_in == 5 else "")
     void_p = "        (void)p;\n" if not (n_in == 5 and np_ > 0) else ""
     return f"""
 /// CasADi workspace + evaluator for {sym} (explicit-ODE forward VDE).
@@ -1006,7 +1011,7 @@ struct {name}{role}
         w_.resize(std::size_t(sz_w));
     }}
 
-    void eval(const double* x, const double* u, double p, double t) const
+    void eval(const double* x, const double* u, const double* p, double t) const
     {{
         (void)t;
 {void_p}        double Sx_in[{sx_sz}] = {{ {sx_init} }};
@@ -1030,7 +1035,8 @@ def emit_capi(spec, name, json_path):
 //
 // extern-C ABI + CasADi workspaces for the generated value functions.
 // Argument slots follow the casadi ABI comment in each .c file; the
-// canonical order is (x, [xdot], u, z, p, t) with nz = 0, np <= 1.
+// canonical order is (x, [xdot], u, z, p, t) with nz = 0; the p slot is
+// an np-element parameter vector (nullptr when np = 0).
 
 #pragma once
 
@@ -1087,7 +1093,7 @@ struct {name}{role}
     }}
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {{
         {void_body}
         const double* arg[{len(plan)}] = {{ {entries} }};
@@ -1112,6 +1118,42 @@ def _soft_idx_array(label, values):
             f"{{ {carr(idx)} }};")
 
 
+def emit_params_struct(name, np, values):
+    """Shared model-parameter object for np >= 1.
+
+    The acados JSON carries no parameter names, so the whole casadi
+    parameter vector is a single fixed-size Eigen matrix leaf 'p',
+    exposed through the problem's params() hook and settable / readable
+    by name via the inspect protocol (see include/ocp/utils/inspect.hpp).
+    """
+    if np < 1 or len(values) != np:
+        fail(f"params struct: expected {np} values, found {len(values)}")
+    vals = ", ".join(cnum(v) for v in values)
+    return f"""
+/// Shared model parameters: the {np}-element casadi parameter vector p
+/// (initial values from the acados JSON).  The JSON carries no
+/// parameter names, so p is a single fixed-size Eigen matrix leaf,
+/// shared by the dynamics model and the cost / constraint code, and
+/// exposed through the problem's params() hook (settable by name "p"
+/// via the inspect protocol).
+struct {name}Params
+{{
+    Eigen::Matrix<double, {np}, 1> p;
+
+    {name}Params()
+    {{
+        p << {vals};
+    }}
+
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {{
+        vis("p", &{name}Params::p);
+    }}
+}};
+"""
+
+
 def emit_header(spec, name, json_path):
     nx, nu = spec["nx"], spec["nu"]
     nst = spec["num_stages"]
@@ -1120,7 +1162,6 @@ def emit_header(spec, name, json_path):
     dt = cnum(spec["dt"])
     dt_expr = repr(spec["dt"]) if isinstance(spec["dt"], float) else str(spec["dt"])
     t_end = cnum(spec["t_end"])
-    pval = cnum(spec["parameter_values"][0])
     integ_inc = ("rk_explicit" if spec["integ_kind"] == "ERK"
                   else "rk_implicit")
     std_inc = ""
@@ -1132,6 +1173,15 @@ def emit_header(spec, name, json_path):
     nl, nl_t = spec["nl"], spec["nl_t"]
 
     # ------------------------------------------------------------------ Dims
+    if spec["np"] > 0:
+        np_note = (
+            f"    // (the {spec['np']}-element casadi model parameter vector is the "
+            f"user-managed\n"
+            f"    //  {name}Params object below; it is NOT part of the "
+            f"problem-interface\n"
+            f"    //  sensitivity parameter vector)")
+    else:
+        np_note = "    // (the problem has no casadi model parameters)"
     soft_arrays = "\n".join([
         _soft_idx_array("ineq_soft_idx",
                         spec["h"]["ineq_soft_w"] if spec["h"] else []),
@@ -1160,8 +1210,7 @@ struct {name}Dims
     static constexpr int ne_t = {ne_t};
     static constexpr int nl_t = {nl_t};
     static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
-    // (the casadi model parameter p_ below is a user-managed scalar; it is
-    //  NOT part of the problem-interface sensitivity parameter vector)
+{np_note}
 
     static constexpr bool fixed_initial_state = {str(fixed).lower()};
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -1179,10 +1228,13 @@ struct {name}Dims
 """
 
     # ------------------------------------------------------------------ Model
-    p_use = "p_"
-    # The model struct always carries a p_ member; the problem-class helpers
-    # only do when np > 0 (otherwise they pass 0.0).
-    p_cls = "p_" if spec["np"] > 0 else "0.0"
+    # Expression for the casadi p slot: a pointer into the shared
+    # {name}Params object when np > 0 (the capi workspaces void the unused
+    # parameter when np == 0).
+    p_use = "params_.p.data()" if spec["np"] > 0 else "nullptr"
+    # Same pointer in the problem-class cost / constraint helpers, which
+    # read it through the problem's own params() hook.
+    p_cls = "params().p.data()" if spec["np"] > 0 else "nullptr"
     # IRK adapters expose the DAE residual F(x, xdot, u, t) directly (DAE
     # duck type, dae_model.hpp); ERK adapters expose the explicit ODE
     # right-hand side f(x, u, t) (ODE duck type, ode_model.hpp).
@@ -1266,6 +1318,23 @@ struct {name}Dims
     elif spec.get("ode_jac_c"):
         dyn_jac_mem = f"    detail::{name}OdeJac dyn_vde_;\n"
 
+    if spec["np"] > 0:
+        p_member = f"    {name}Params params_;"
+        p_accessors = (
+            "\n\n"
+            f"    {name}Params& params()\n"
+            f"    {{\n"
+            f"        return params_;\n"
+            f"    }}\n"
+            f"\n"
+            f"    const {name}Params& params() const\n"
+            f"    {{\n"
+            f"        return params_;\n"
+            f"    }}\n")
+    else:
+        p_member = ""
+        p_accessors = ""
+
     model = f"""
 struct {model_name}
 {{
@@ -1276,8 +1345,7 @@ struct {model_name}
     using dyn_df_du_t = typename P::dyn_df_du_t;
 
     detail::{name}Dyn dyn_;
-{dyn_jac_mem}    double {p_use} = {pval};
-
+{dyn_jac_mem}{p_member}{p_accessors}
 {model_body}
 }};
 """
@@ -1291,7 +1359,27 @@ using {name}Integ =
     # ------------------------------------------------------------------ Problem
     members = []
     if spec["np"] > 0:
-        members.append(f"    double p_ = {pval};")
+        params_methods = (
+            "\n"
+            f"    /// Shared model parameters (the {spec['np']}-element "
+            f"casadi parameter\n"
+            "    /// vector), owned by the dynamics model; forwarded so "
+            "host-side / MEX\n"
+            "    /// writes through params() reach the live object the "
+            "dynamics and the\n"
+            "    /// cost / constraint code read.\n"
+            f"    {name}Params& params()\n"
+            "    {\n"
+            "        return Base::ode().params();\n"
+            "    }\n"
+            "\n"
+            f"    const {name}Params& params() const\n"
+            "    {\n"
+            "        return Base::ode().params();\n"
+            "    }\n"
+            "\n")
+    else:
+        params_methods = "\n"
     ctor_lines = []
     data_blocks = []
     helpers = []
@@ -2148,8 +2236,7 @@ public:
     {{
 {ctor_body}
     }}
-
-{init_state}    static constexpr double {INF} =
+{params_methods}{init_state}    static constexpr double {INF} =
         std::numeric_limits<double>::infinity();
 
 {cost_ref}
@@ -2169,6 +2256,9 @@ private:
 {chr(10).join(members)}
 }};
 """
+
+    params_block = (emit_params_struct(name, spec["np"], spec["parameter_values"])
+                    if spec["np"] > 0 else "")
 
     return f"""// {name}.hpp
 // GENERATED by tools/acados2ocp_pp.py from {os.path.basename(json_path)} (hash {spec['hash']}).
@@ -2193,7 +2283,7 @@ private:
 
 namespace ocp
 {{
-{dims}{model}{integ}{class_block}
+{dims}{params_block}{model}{integ}{class_block}
 }}  // namespace ocp
 """
 

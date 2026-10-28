@@ -4,7 +4,8 @@
 //
 // extern-C ABI + CasADi workspaces for the generated value functions.
 // Argument slots follow the casadi ABI comment in each .c file; the
-// canonical order is (x, [xdot], u, z, p, t) with nz = 0, np <= 1.
+// canonical order is (x, [xdot], u, z, p, t) with nz = 0; the p slot is
+// an np-element parameter vector (nullptr when np = 0).
 
 #pragma once
 
@@ -85,7 +86,7 @@ struct UnicycleGenDyn
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t, double* out) const
+              const double* p, double t, double* out) const
     {
         (void)p; (void)t;
         const double* arg[6] = { x, xdot, u, nullptr, nullptr, nullptr };
@@ -129,7 +130,7 @@ struct UnicycleGenDynJac
     }
 
     void eval(const double* x, const double* u, const double* xdot,
-              double p, double t) const
+              const double* p, double t) const
     {
         (void)p; (void)t;
         const double* arg[6] = { x, xdot, u, nullptr, nullptr, nullptr };
