@@ -251,7 +251,7 @@ int main()
     // variant 1: explicit RK4 (AD path: value/jacobian from duals)
     using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                            ocp::K4Tag>;
-    using ErkBase = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
+    using ErkBase = ocp::ContinuousProblem<Erk4>;
     DuffingProblem<ErkBase> erk(ode, 0.05);
     solve_and_print("ERK4", erk);
 
@@ -260,7 +260,7 @@ int main()
     using Dae = ocp::OdeToDae<DuffingOde, DuffingDims>;
     using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae,
                                              ocp::GaussLegendre4Tag>;
-    using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;
+    using IrkBase = ocp::ContinuousProblem<IrkGl4>;
     Dae dae{ode};
     DuffingProblem<IrkBase> irk(dae, 0.05);
     solve_and_print("IRK-GL4", irk);

@@ -66,7 +66,7 @@
 // and the mix-in entry of the same name are both visible and the call is
 // ambiguous:
 //
-//   struct MyProb : ContinuousProblem<Dims, Ode, Integ>,
+//   struct MyProb : ContinuousProblem<Integ>,
 //                   ocp::AutoDiffProblem<MyProb, Dims>
 //   {
 //       // ... value functions (expression-templated as above) ...
