@@ -121,13 +121,13 @@ void test_funnel_width_monotone()
         return;
     }
 
-    const auto& rows = solver.statistics().rows;
+    const auto& stat = solver.statistics();
     double prev_w = 0.0;
     bool first = true;
     int last_w_idx = -1;
-    for (std::size_t i = 0; i < rows.size(); ++i)
+    for (int i = 0; i < stat.n_rows(); ++i)
     {
-        const double w = rows[i].funnel_width;
+        const double w = stat.row(i).funnel_width;
         if (w > 0.0)
         {
             if (!first)
@@ -165,11 +165,11 @@ void test_funnel_iter_type_logged()
         return;
     }
 
-    const auto& rows = solver.statistics().rows;
+    const auto& stat = solver.statistics();
     bool any_logged = false;
-    for (const auto& r : rows)
+    for (int i = 0; i < stat.n_rows(); ++i)
     {
-        if (r.funnel_iter_type >= 0)
+        if (stat.row(i).funnel_iter_type >= 0)
         {
             any_logged = true;
             break;

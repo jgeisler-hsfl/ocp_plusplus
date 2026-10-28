@@ -25,7 +25,7 @@ namespace
 // Warm-start exactly as examples/masses_chain/main.cpp: x0 fixed, u_k = 0,
 // x_k = cost reference (spread config) for k = 1..N.
 template <class P>
-Solution<P> solve(const P& p, int N, AcadosStatistics* stat)
+Solution<P> solve(const P& p, int N, AcadosStatistics<>* stat)
 {
     AcadosOptions opts;
     opts.print_level = 0;
@@ -55,7 +55,7 @@ int main()
     MassesChain a;
     MassesChainGen b;
 
-    AcadosStatistics sa, sb;
+    AcadosStatistics<> sa, sb;
     Solution<MassesChain> sol_a = solve(a, N, &sa);
     Solution<MassesChainGen> sol_b = solve(b, N, &sb);
 

@@ -43,7 +43,7 @@ void check_options_defaults()
           "lam_min / t_min / tau_min = 1e-16");
     check(o.lam0_min == 1e-9 && o.t0_min == 1e-9, "lam0_min / t0_min = 1e-9");
     check(o.m_safe == 0.5, "m_safe = 0.5");
-    check(o.iter_max == 50 && o.stat_max == 50, "iter_max / stat_max = 50 (acados)");
+    check(o.iter_max == 50, "iter_max = 50 (acados)");
     check(o.pred_corr && o.cond_pred_corr, "pred_corr / cond_pred_corr");
     check(o.itref_pred_max == 0 && o.itref_corr_max == 0, "v1: no iterative refinement");
     check(o.warm_start == 0, "warm_start = 0");
@@ -69,10 +69,10 @@ void check_options_inspect()
     check(!o.pred_corr, "set wrote pred_corr");
 
     // set the member -> read via name
-    o.stat_max = 7;
+    o.itref_pred_max = 7;
     int i = 0;
-    check(ocp::inspect::get_field(o, "stat_max", i) && i == 7,
-          "typed get stat_max");
+    check(ocp::inspect::get_field(o, "itref_pred_max", i) && i == 7,
+          "typed get itref_pred_max");
     double d = 0.0;
     o.dual_gap_max = 1e10;
     check(ocp::inspect::get_double(o, "dual_gap_max", d) && d == 1e10,
@@ -85,12 +85,12 @@ void check_options_inspect()
     check(!ocp::inspect::get_double(o, "i_max", d), "get unknown name");
     check(!ocp::inspect::set_double(o, "i_max", 1.0), "set unknown name");
 
-    // names(): all 29 fields, declaration (member) order
+    // names(): all 28 fields, declaration (member) order
     const std::vector<std::string> names =
         ocp::inspect::leaf_names<ocp::HpipmOptions>();
-    check(names.size() == 29, "leaf_names lists all 29 fields");
-    check(names.size() == 29 && names[0] == "mu0" && names[14] == "iter_max" &&
-          names[28] == "update_fact_exit",
+    check(names.size() == 28, "leaf_names lists all 28 fields");
+    check(names.size() == 28 && names[0] == "mu0" && names[14] == "iter_max" &&
+          names[27] == "update_fact_exit",
           "leaf_names order matches the member order");
 
     // copy safety: sets through the copy never touch the original
@@ -103,34 +103,35 @@ void check_options_inspect()
 
 void check_stat_table()
 {
-    ocp::HpipmStatistics st;
-    st.init(2);
-    ocp::HpipmIteration& r = st.row(1);
+    ocp::HpipmStatistics<> st;
+    // one post-iteration ring row (stamped iter = 1) + the pre row
+    ocp::HpipmIteration& r = st.next_row();
     r.alpha_prim = 0.5;
     r.lq_fact = 1;
-    st.iter = 1;
 
     // column names: the HpipmIteration leaves in declaration order
     const std::vector<std::string> cols =
         ocp::inspect::stat_column_names(st);
-    check(cols.size() == 21, "stat_column_names: 21 columns");
-    check(cols[0] == "alpha_prim_aff" && cols[20] == "npd_reg_hess",
+    check(cols.size() == 22, "stat_column_names: 22 columns");
+    check(cols[0] == "iter" && cols[1] == "alpha_prim_aff" &&
+          cols[21] == "npd_reg_hess",
           "stat_column_names order");
 
-    std::vector<double> c(3, 0.0);
+    std::vector<double> c(2, 0.0);
     check(ocp::inspect::stat_column(st, "alpha_prim", c.data()) &&
-          c[1] == 0.5,
-          "stat_column alpha_prim");
+          c[0] == 0.0 && c[1] == 0.5,
+          "stat_column alpha_prim (pre row, row 1)");
     check(!ocp::inspect::stat_column(st, "nope", c.data()),
           "stat_column unknown name");
 
-    std::vector<double> tab(3 * 21, 0.0);
+    std::vector<double> tab(2 * 22, 0.0);
     int n_rows = 0, n_cols = 0;
     check(ocp::inspect::stat_table(st, tab.data(), n_rows, n_cols) &&
-          n_rows == 3 && n_cols == 21,
+          n_rows == 2 && n_cols == 22,
           "stat_table extents");
-    check(tab[1 * 21 + 4] == 0.5 && tab[1 * 21 + 13] == 1.0,
-          "stat_table row 1 (alpha_prim, lq_fact)");
+    check(tab[1 * 22 + 0] == 1.0 && tab[1 * 22 + 5] == 0.5 &&
+          tab[1 * 22 + 14] == 1.0,
+          "stat_table row 1 (iter, alpha_prim, lq_fact)");
 }
 
 template <class P, int NH = Eigen::Dynamic>
@@ -144,13 +145,13 @@ void check_solver_shell(const char* name)
     // options / statistics accessors
     check(solver.options().iter_max == 50, p + " options() accessor");
     const auto& stat = solver.statistics();
-    check(stat.stat_max == 50, p + " statistics().stat_max");
-    check(stat.rows.size() == 51, "HpipmStatistics rows = stat_max + 1");
+    check(stat.n_rows() == 1, p + " statistics(): pre row only before solve");
     check(stat.iter == 0, p + " initial iter = 0");
     check(stat.status == ocp::Status::kUnset, p + " initial status = kUnset");
 
-    // HpipmIteration: all 21 stat columns present and writable
+    // HpipmIteration: all 22 fields (iter + 21 stat columns) writable
     ocp::HpipmIteration it;
+    it.iter = 0;
     it.alpha_prim_aff = 1;
     it.alpha_dual_aff = 2;
     it.mu_aff = 3;
@@ -172,7 +173,7 @@ void check_solver_shell(const char* name)
     it.lin_res_ineq = 19;
     it.lin_res_comp = 20;
     it.npd_reg_hess = 21;
-    check(it.npd_reg_hess == 21, p + " HpipmIteration has 21 writable fields");
+    check(it.npd_reg_hess == 21, p + " HpipmIteration has 22 writable fields");
 
     // solve() is implemented in worklog 1h and covered end-to-end by the 1h
     // test (run_solve_1h_tests); the 1a shell only checks the scaffolding

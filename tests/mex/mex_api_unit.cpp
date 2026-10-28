@@ -111,10 +111,10 @@ void test_options()
 {
     Session s("mex_api_test");
 
-    // discovery: 28 driver + 5 glob leaves (options.*) + 29 HPIPM
+    // discovery: 28 driver + 5 glob leaves (options.*) + 28 HPIPM
     // (qp.options.*) + 4 scaling (scaling.options.*)
     const std::vector<std::string> names = s.option_names();
-    check(names.size() == 66, "66 discoverable option names");
+    check(names.size() == 65, "65 discoverable option names");
     bool has_max_iter = false;
     bool has_glob_alpha_min = false;
     bool has_qp_warm_start = false;
@@ -375,11 +375,12 @@ void test_solve_and_readback()
         }
     }
 
-    // statistics table: one row per recorded iteration, 11 named columns
+    // statistics table: one row per recorded iteration, 12 named columns
+    // (the row's own `iter` label first)
     check(s.stat_iter() >= 1, "iterations recorded");
     const std::vector<std::string> cnames = s.stat_column_names();
-    check(cnames.size() == 11, "11 stat column names");
-    check(cnames.front() == "res_stat" && cnames.back() == "cond_time",
+    check(cnames.size() == 12, "12 stat column names");
+    check(cnames.front() == "iter" && cnames.back() == "cond_time",
           "stat column names first/last");
     const int srows = s.stat_iter();
     const int scols = static_cast<int>(cnames.size());

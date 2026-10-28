@@ -1,9 +1,9 @@
 // Phase 5 sub-step 5d test: statistics CSV output.
 //
 // Checks (SQP_HPIPM_PARITY_PLAN.md sec. 8, "Statistics"):
-//   - HpipmStatistics::write_csv writes the 21-column per-IPM-iteration
-//     table (same quantities / order as print()) plus the row index,
-//     rows 0..iter;
+//   - HpipmStatistics::write_csv writes the 22-column per-IPM-iteration
+//     table (iter label + the same 21 quantities / order as print()),
+//     pre row plus rows 1..iter;
 //   - AcadosStatistics::write_csv writes one row per SQP iteration with
 //     all SqpIteration columns, including the funnel accept type / width
 //     and the condense + expand wall clock (cond_time).
@@ -212,7 +212,7 @@ void hpipm_csv_case()
     {
         return;
     }
-    const HpipmStatistics& stat = solver.statistics();
+    const HpipmStatistics<>& stat = solver.statistics();
     stat.write_csv(path);
 
     const std::vector<std::string> lines = read_lines(path);
@@ -227,16 +227,16 @@ void hpipm_csv_case()
                       "itref_corr,lin_res_stat,lin_res_eq,lin_res_ineq,"
                       "lin_res_comp,npd_reg_hess",
           "5d hpipm csv: header");
-    check(lines.size() == static_cast<std::size_t>(stat.iter) + 2,
+    check(lines.size() == static_cast<std::size_t>(stat.n_rows()) + 1,
           "5d hpipm csv: " + std::to_string(lines.size()) +
-              " lines == iter + 2 (header + " +
-              std::to_string(stat.iter + 1) + " data rows)");
+              " lines == n_rows + 1 (header + " +
+              std::to_string(stat.n_rows()) + " data rows)");
 
     // mu is the 8th field of a data row; compare the last row against the
     // in-memory stat (both %.10e-rounded).
     const std::string& last = lines.back();
     const double mu_csv = field(last, 8);
-    const double mu_stat = stat.row(stat.iter).mu;
+    const double mu_stat = stat.last_row().mu;
     const double rel = (mu_csv - mu_stat) / (std::fabs(mu_stat) + 1e-300);
     check(std::fabs(rel) < 1e-6,
           "5d hpipm csv: last-row mu (" + std::to_string(mu_csv) +
@@ -250,7 +250,7 @@ void hpipm_csv_case()
 void acados_csv_case()
 {
     const char* path = "/tmp/ocp_stats_5d_sqp.csv";
-    AcadosStatistics stat;
+    AcadosStatistics<> stat;
     SqpIteration r0;
     r0.res_stat = 1.5;
     r0.res_eq = 0.25;

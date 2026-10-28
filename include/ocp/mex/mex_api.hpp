@@ -45,8 +45,9 @@ namespace mex
 ///      (dotted leaf paths are the option names);
 ///   2. `Status solve(const Problem&, Solution<Problem, NH>&)`;
 ///   3. `const Stats& statistics() const` where `Stats` has `int iter`,
-///      `Status status`, `std::vector<Row> rows` and `Row` has a
-///      scalar-leaf `inspect`.
+///      `Status status`, a `Row` alias, and the accessors `int n_rows()
+///      const` and `const Row& row(int) const` (fixed-capacity FIFO ring,
+///      docs/plans/finished/STATS_RING_PLAN.md); `Row` has a scalar-leaf `inspect`.
 /// Any NLP driver meeting this contract drops into the session unchanged.
 template <class Problem, class Solver, int NH = Eigen::Dynamic>
 class MexSession
@@ -440,6 +441,10 @@ public:
 
     int stat_iter() const { return solver_.statistics().iter; }
 
+    /// Number of rows currently stored in the statistics ring (the table
+    /// row count; equals stat_iter() unless the ring wrapped).
+    int stat_nrows() const { return solver_.statistics().n_rows(); }
+
     int stat_status() const
     {
         return static_cast<int>(solver_.statistics().status);
@@ -454,21 +459,22 @@ public:
 
     /// Fill the per-iteration statistics table into `out`, row-major:
     /// out[r * cols + c] is row r, column c (column order =
-    /// stat_column_names()). One row per recorded iteration. `rows` must be
-    /// stat_iter() and `cols` stat_column_names().size(); `out` must hold
-    /// rows*cols doubles.
+    /// stat_column_names()). One row per stored statistics row (oldest
+    /// first; rows carry their own iteration number in the `iter` column).
+    /// `rows` must be stat_nrows() and `cols` stat_column_names().size();
+    /// `out` must hold rows*cols doubles.
     void stat_fill(double* out, int rows, int cols) const
     {
         const auto& st = solver_.statistics();
         for (int r = 0; r < rows; ++r)
         {
-            inspect::fill_row(st.rows[r],
+            inspect::fill_row(st.row(r),
                               out + static_cast<std::size_t>(r) * cols);
         }
     }
 
-    /// One named statistics column: `out[i]` is iteration row i's value
-    /// (int/bool coerced to double). `out` must hold stat_iter() doubles.
+    /// One named statistics column: `out[i]` is stored row i's value
+    /// (int/bool coerced to double). `out` must hold stat_nrows() doubles.
     /// False if the column name is unknown.
     bool stat_column(std::string_view name, double* out) const
     {

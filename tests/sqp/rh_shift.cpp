@@ -82,19 +82,19 @@ void check_vec_zero(const Vec& v, const std::string& msg)
 /// warm_start_3c; the last row for a kSolved run carries a stale value
 /// from the prior iteration, but is the same for both sides of the
 /// comparison).
-int total_ipm_iters(const AcadosStatistics& stat)
+int total_ipm_iters(const AcadosStatistics<>& stat)
 {
     int total = 0;
-    for (const auto& row : stat.rows)
+    for (int i = 0; i < stat.n_rows(); ++i)
     {
-        total += row.qp_iter;
+        total += stat.row(i).qp_iter;
     }
     return total;
 }
 
-int sqp_iters(const AcadosStatistics& stat)
+int sqp_iters(const AcadosStatistics<>& stat)
 {
-    return (int)stat.rows.size();
+    return stat.n_rows();
 }
 
 /// Zero-control feasible warm-start trajectory (shared with 2g / 3c).

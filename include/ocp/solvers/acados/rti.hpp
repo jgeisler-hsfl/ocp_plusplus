@@ -89,6 +89,7 @@ struct RtiOptions
 /// One statistics row of an RtiSolver::solve() call.
 struct RtiIteration
 {
+    int iter = 0;  // 0-based call index of this row
     // pre-step NLP residuals (valid when rti_log_residuals; zero otherwise)
     double res_stat = 0.0;
     double res_eq = 0.0;
@@ -538,6 +539,7 @@ private:
                     double step_norm, double alpha)
     {
         auto& r = stat_.last;
+        r.iter = stat_.n_calls;
         r.res_stat = log_pre ? res_pre.res_stat : 0.0;
         r.res_eq = log_pre ? res_pre.res_eq : 0.0;
         r.res_ineq = log_pre ? res_pre.res_ineq : 0.0;

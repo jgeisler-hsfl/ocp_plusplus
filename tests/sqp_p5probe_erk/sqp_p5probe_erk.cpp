@@ -295,11 +295,11 @@ int main()
     check(std::isfinite(sol.cost_value) && sol.cost_value > 0.0,
           "cost finite and positive");
 
-    const auto& rows = solver.statistics().rows;
-    check(!rows.empty(), "statistics non-empty");
-    if (!rows.empty())
+    const auto& stat = solver.statistics();
+    check(stat.n_rows() >= 1, "statistics non-empty");
+    if (stat.n_rows() >= 1)
     {
-        const auto& r = rows.back();
+        const auto& r = stat.row(stat.n_rows() - 1);
         check(r.res_stat < 1e-6, "final res_stat < 1e-6");
         check(r.res_eq < 1e-6, "final res_eq < 1e-6");
         check(r.res_ineq < 1e-6, "final res_ineq < 1e-6");

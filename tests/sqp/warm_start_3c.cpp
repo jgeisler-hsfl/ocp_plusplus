@@ -89,12 +89,12 @@ double terminal_eq_feasible_control(const DI& p, int n_stages)
 /// across all QP solves; the last row for a kSolved run carries a stale
 /// value from the prior iteration's solve but is the same for both
 /// warm/cold so the comparison remains valid).
-int total_ipm_iters(const AcadosStatistics& stat)
+int total_ipm_iters(const AcadosStatistics<>& stat)
 {
     int total = 0;
-    for (const auto& row : stat.rows)
+    for (int i = 0; i < stat.n_rows(); ++i)
     {
-        total += row.qp_iter;
+        total += stat.row(i).qp_iter;
     }
     return total;
 }

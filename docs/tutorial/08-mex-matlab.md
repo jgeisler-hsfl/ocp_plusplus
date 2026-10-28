@@ -64,7 +64,10 @@ namespace ocp_mex
      the dotted leaf paths *are* the option names (chapter 3.3);
   2. `Status solve(const Problem&, Solution<Problem, NH>&)`;
   3. `const Stats& statistics() const` with `int iter`, `Status status`,
-     `std::vector<Row> rows` and a scalar-leaf `inspect` on `Row`.
+     a `Row` alias, the accessors `int n_rows() const` and
+     `const Row& row(int) const` (fixed-capacity FIFO ring, the row's own
+     `iter` field labels its iteration) and a scalar-leaf `inspect` on
+     `Row`.
 
   `ocp::AcadosSolver<P, NH>` satisfies the contract; the RTI driver
   (`ocp::RtiSolver`) does not yet expose its options/statistics in this
@@ -136,7 +139,7 @@ command. All numerics are doubles.
 | `get` | `field` | matrix; column `k+1` = stage `k` (fields below) |
 | `solution` | – | struct with every `get` field |
 | `solve` | – | `[status, cost]` or `cost` (outputs optional); `status` = int value of `ocp::Status` |
-| `stats` | – | `[stats, status]` (`status` optional); `stats` is a `1 x iter` struct array with one field per column name |
+| `stats` | – | `[stats, status]` (`status` optional); `stats` is a `1 x n_rows` struct array (stored rows, oldest first) with one field per column name, incl. `iter` |
 | `stat_col` | `name` | one named statistics column as an `(n x 1)` vector |
 
 Option names are the dotted inspect paths of the live solver

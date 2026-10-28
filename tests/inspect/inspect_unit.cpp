@@ -19,6 +19,7 @@
 #include <Eigen/Core>
 
 #include "ocp/utils/inspect.hpp"
+#include "ocp/utils/ring_buffer.hpp"
 
 namespace
 {
@@ -124,7 +125,7 @@ struct Outer2
     }
 };
 
-struct Row
+struct StatRow
 {
     double r1 = 0.0;
     int r2 = 0;
@@ -132,17 +133,26 @@ struct Row
     template <class V>
     static constexpr void inspect(V&& vis)
     {
-        vis("r1", &Row::r1);
-        vis("r2", &Row::r2);
-        vis("r3", &Row::r3);
+        vis("r1", &StatRow::r1);
+        vis("r2", &StatRow::r2);
+        vis("r3", &StatRow::r3);
     }
 };
 
 struct FakeStats
 {
+    using Row = StatRow;
     int iter = 0;
     int status = 0;
-    std::vector<Row> rows;
+    ocp::RingBuffer<Row, 4> ring_;
+    int n_rows() const { return static_cast<int>(ring_.size()); }
+    const Row& row(int i) const { return ring_.at(i); }
+    void record(const Row& in)
+    {
+        Row& slot = ring_.next();
+        slot = in;
+        ++iter;
+    }
 };
 
 // Bounds fixture: one leaf per bound shape (closed interval, open
@@ -371,8 +381,9 @@ void test_private_member()
 void test_stat()
 {
     FakeStats st;
+    st.record(StatRow{1.5, 3, true});
+    st.record(StatRow{2.5, 5, false});
     st.iter = 2;
-    st.rows = {Row{1.5, 3, true}, Row{2.5, 5, false}};
 
     const std::vector<std::string> names =
         ocp::inspect::stat_column_names(st);
@@ -389,7 +400,7 @@ void test_stat()
 
     // fill_row: one row's leaves in declaration order
     double fbuf[3] = {0.0, 0.0, 0.0};
-    ocp::inspect::fill_row(st.rows[0], fbuf);
+    ocp::inspect::fill_row(st.row(0), fbuf);
     check(fbuf[0] == 1.5 && fbuf[1] == 3.0 && fbuf[2] == 1.0, "fill_row");
 
     std::vector<double> table(6, 0.0);

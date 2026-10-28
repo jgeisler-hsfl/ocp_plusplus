@@ -64,6 +64,7 @@
 #include "qp.hpp"
 #include "seed.hpp"
 #include "../../utils/inspect.hpp"
+#include "../../utils/ring_buffer.hpp"
 
 namespace ocp
 {
@@ -96,7 +97,6 @@ struct HpipmOptions
     double t0_min = 1e-9;        // min t at (warm-)start initialization
     double m_safe = 0.5;         // aggressiveness/robustness trade-off in [0,1]
     int iter_max = 50;           // IPM iteration cap
-    int stat_max = 50;           // iteration records kept
     bool pred_corr = true;       // Mehrotra predictor-corrector
     bool cond_pred_corr = true;  // conditional predictor-corrector
     int itref_pred_max = 0;      // predictor iterative-refinement passes
@@ -143,7 +143,6 @@ struct HpipmOptions
             std::nullopt);
         vis("m_safe", &HpipmOptions::m_safe, 0.0, 1.0);
         vis("iter_max", &HpipmOptions::iter_max, 0, std::nullopt);
-        vis("stat_max", &HpipmOptions::stat_max, 0, std::nullopt);
         vis("pred_corr", &HpipmOptions::pred_corr);
         vis("cond_pred_corr", &HpipmOptions::cond_pred_corr);
         vis("itref_pred_max", &HpipmOptions::itref_pred_max, 0,
@@ -170,6 +169,7 @@ struct HpipmOptions
 /// parameter, residuals, objective and regularization diagnostics.
 struct HpipmIteration
 {
+    int iter = 0;             // 1-based IPM iteration of this row (0 = pre)
     double alpha_prim_aff = 0;  // affine (predictor) primal step length
     double alpha_dual_aff = 0;  // affine (predictor) dual step length
     double mu_aff = 0;          // barrier parameter of the affine step
@@ -197,6 +197,7 @@ struct HpipmIteration
     template <class Visitor>
     static constexpr void inspect(Visitor&& vis)
     {
+        vis("iter", &HpipmIteration::iter);
         vis("alpha_prim_aff", &HpipmIteration::alpha_prim_aff);
         vis("alpha_dual_aff", &HpipmIteration::alpha_dual_aff);
         vis("mu_aff", &HpipmIteration::mu_aff);
@@ -221,33 +222,67 @@ struct HpipmIteration
     }
 };
 
-/// Per-IPM-iteration records: `stat_max + 1` rows; row 0 holds the
-/// pre-iteration residuals, row kk (1..stat_max) the state after IPM
-/// iteration kk - 1.
+/// Per-IPM-iteration records in a fixed-capacity FIFO ring
+/// (docs/plans/finished/STATS_RING_PLAN.md).
+///
+/// `pre` holds the pre-iteration residuals (row with `iter` label 0) and is
+/// kept *outside* the ring (it is the initial-state snapshot and is never
+/// overwritten); the ring holds one row per performed IPM iteration (labels
+/// 1..iter). Once `NSlots` rows have been recorded, further iterations
+/// overwrite the oldest ring row (drop-oldest FIFO); `iter` keeps counting
+/// the total, so every exported row carries its own iteration number and the
+/// table stays self-describing after wrap-around.
+template <int NSlots = 64>
 struct HpipmStatistics
 {
-    int iter = 0;                   // IPM iterations performed
-    int stat_max = 0;               // record capacity
-    Status status = Status::kUnset; // solver status at return
-    std::vector<HpipmIteration> rows;  // size stat_max + 1 after init()
+    using Row = HpipmIteration;
+    int iter = 0;                    // IPM iterations performed
+    Status status = Status::kUnset;  // solver status at return
+    Row pre{};                       // pre-iteration residuals (label 0)
+    RingBuffer<Row, NSlots> ring_;
 
-    /// Allocate stat_max + 1 rows and reset the counters.
-    void init(int n)
+    /// Number of table rows: 1 (pre-iteration) + the ring's valid rows.
+    int n_rows() const { return static_cast<int>(1 + ring_.size()); }
+
+    /// The i-th row, oldest first: i = 0 is the pre-iteration row, i >= 1 the
+    /// row of IPM iteration i (until a wrap-around evicted it; the row's own
+    /// `iter` field is authoritative).
+    const Row& row(int i) const { return (i == 0) ? pre : ring_.at(i - 1); }
+
+    /// The pre-iteration row, for the initial / final-residual fills.
+    Row& pre_row() { return pre; }
+    const Row& pre_row() const { return pre; }
+
+    /// Hand out the row of the next performed IPM iteration: a fresh (zeroed)
+    /// ring slot -- the oldest row is evicted when the ring is full -- stamped
+    /// with its 1-based iteration number. `iter` advances.
+    Row& next_row()
     {
-        stat_max = n;
-        iter = 0;
-        status = Status::kUnset;
-        rows.assign(n + 1, HpipmIteration{});
+        Row& slot = ring_.next();
+        slot = Row{};
+        ++iter;
+        slot.iter = iter;
+        return slot;
     }
 
-    HpipmIteration& row(int i) { return rows[i]; }
-    const HpipmIteration& row(int i) const { return rows[i]; }
+    /// The most recent post-iteration row (final-residuals fill).
+    /// Precondition: iter > 0.
+    Row& last_row() { return ring_.newest(); }
+    const Row& last_row() const { return ring_.newest(); }
+
+    /// Drop all rows and reset the counters (called at solve() entry).
+    void reset()
+    {
+        iter = 0;
+        status = Status::kUnset;
+        pre = Row{};
+        ring_.reset();
+    }
 
     /// Print the per-iteration table to stdout (acados QP `print_level`
-    /// dump, ocp_qp_hpipm.c:367-373): the 21 column names, then one row
-    /// per valid iteration, 0..iter (row 0 = pre-iteration residuals);
-    /// the unused stat_max capacity rows are not printed (acados prints
-    /// stat_m x (iter + 1) via d_print_exp_tran_mat).
+    /// dump, ocp_qp_hpipm.c:367-373): the 21 column names, then one row per
+    /// recorded iteration (the pre-iteration row first); the row's own `iter`
+    /// field is the row label.
     void print() const
     {
         std::printf("\nalpha_prim_aff\talpha_dual_aff\tmu_aff\t\tsigma\t\t"
@@ -255,13 +290,13 @@ struct HpipmStatistics
                     "res_ineq\tres_comp\tdual gap\tobj\t\tlq fact\t\t"
                     "itref pred\titref corr\tlin res stat\tlin res eq\t"
                     "lin res ineq\tlin res comp\tsingular\n");
-        for (std::size_t i = 0; i <= static_cast<std::size_t>(iter); ++i)
+        for (int i = 0; i < n_rows(); ++i)
         {
-            const HpipmIteration& r = rows[i];
-            std::printf("%zu\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t"
+            const Row& r = row(i);
+            std::printf("%d\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t"
                         "%.3e\t%.3e\t%.3e\t%.3e\t%.3e\t%d\t%d\t%d\t"
                         "%.3e\t%.3e\t%.3e\t%.3e\t%d\n",
-                        i, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
+                        r.iter, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
                         r.sigma, r.alpha_prim, r.alpha_dual, r.mu,
                         r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
                         r.dual_gap, r.obj, r.lq_fact, r.itref_pred,
@@ -271,8 +306,9 @@ struct HpipmStatistics
     }
 
     /// Write the per-iteration table to `path` as CSV: the same 21
-    /// quantities as print(), in the same column order (plus the row
-    /// index), rows 0..iter. No-op if the file cannot be opened.
+    /// quantities as print(), in the same column order (plus the row's `iter`
+    /// label), one row per recorded iteration. No-op if the file cannot be
+    /// opened.
     void write_csv(const char* path) const
     {
         std::FILE* f = std::fopen(path, "w");
@@ -285,13 +321,13 @@ struct HpipmStatistics
                         "res_ineq,res_comp,dual_gap,obj,lq_fact,itref_pred,"
                         "itref_corr,lin_res_stat,lin_res_eq,lin_res_ineq,"
                         "lin_res_comp,npd_reg_hess\n");
-        for (std::size_t i = 0; i <= static_cast<std::size_t>(iter); ++i)
+        for (int i = 0; i < n_rows(); ++i)
         {
-            const HpipmIteration& r = rows[i];
-            std::fprintf(f, "%zu,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
+            const Row& r = row(i);
+            std::fprintf(f, "%d,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
                             "%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,%.10e,"
                             "%d,%d,%d,%.10e,%.10e,%.10e,%.10e,%d\n",
-                         i, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
+                         r.iter, r.alpha_prim_aff, r.alpha_dual_aff, r.mu_aff,
                          r.sigma, r.alpha_prim, r.alpha_dual, r.mu,
                          r.res_stat, r.res_eq, r.res_ineq, r.res_comp,
                          r.dual_gap, r.obj, r.lq_fact, r.itref_pred,
@@ -535,7 +571,7 @@ public:
 
     explicit HpipmQpSolver(HpipmOptions opts = HpipmOptions{}) : opts_(opts)
     {
-        stat_.init(opts_.stat_max);
+        stat_.reset();
     }
 
     /// Solves the staged QP via the relative-formulation IPM.
@@ -560,7 +596,7 @@ public:
     {
         const int N = in.N;
         ws_.resize(N);
-        stat_.init(opts_.stat_max);
+        stat_.reset();
         has_factors_ = false;
         ws_.kkt_valid = false;  // 5f: invalidate the block-KKT cache.
         solved_ = false;
@@ -585,7 +621,7 @@ public:
         // pre-iteration residuals (stat row 0)
         compute_residuals(in, out, ws_.res);
         S rm_tau = res_m_tau(in, ws_.res);
-        fill_stat_residuals(stat_.row(0), ws_.res);
+        fill_stat_residuals(stat_.pre_row(), ws_.res);
 
         // 3d: per-solve latches for the reg ladder + LQ auto-switch; 5a:
         // factor-type flag (set by the backward factor passes)
@@ -624,7 +660,6 @@ public:
             const Status fs = delta_factor_solve(in, out, ws_.res, step);
             if (fs != Status::kSolved)
             {
-                stat_.iter = kk;
                 stat_.status = Status::kQpFailure;
                 return Status::kQpFailure;
             }
@@ -637,33 +672,24 @@ public:
 
             // 3) predictor step length
             compute_alpha(in, out, step);
-            HpipmIteration* row = stat_row(kk);
-            if (row)
-            {
-                row->alpha_prim_aff = ws_.alpha_prim;
-                row->alpha_dual_aff = ws_.alpha_dual;
-            }
+            HpipmIteration& row = stat_.next_row();
+            row.alpha_prim_aff = ws_.alpha_prim;
+            row.alpha_dual_aff = ws_.alpha_dual;
 
             // 4) Mehrotra predictor-corrector
             if (opts_.pred_corr)
             {
                 const S mu_aff_pred = compute_mu_aff(in, out, step);
-                if (row)
-                {
-                    row->mu_aff = mu_aff_pred;
-                }
+                row.mu_aff = mu_aff_pred;
                 // corrector: centering target, reuse the stored factors
                 apply_centering(in, ws_.res_bkp, step, /*correction=*/true,
                                 ws_.res);
                 solve_kkt(in, out, ws_.res, step);
                 mask_step(in, step);
                 compute_alpha(in, out, step);
-                if (row)
-                {
-                    row->sigma = ws_.sigma;
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.sigma = ws_.sigma;
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
                 // conditional pure centering
                 if (opts_.cond_pred_corr)
                 {
@@ -675,11 +701,8 @@ public:
                         solve_kkt(in, out, ws_.res, step);
                         mask_step(in, step);
                         compute_alpha(in, out, step);
-                        if (row)
-                        {
-                            row->alpha_prim = ws_.alpha_prim;
-                            row->alpha_dual = ws_.alpha_dual;
-                        }
+                        row.alpha_prim = ws_.alpha_prim;
+                        row.alpha_dual = ws_.alpha_dual;
                     }
                 }
                 // corrector iterative refinement, then re-measure the
@@ -687,41 +710,31 @@ public:
                 itref_corr = refine_step(in, out, step,
                                          opts_.itref_corr_max);
                 compute_alpha(in, out, step);
-                if (row)
-                {
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
             }
             else
             {
-                if (row)
-                {
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
             }
 
             // 5) update the iterate (worklog 1f)
             update_vars(in, out, step);
 
-            // 6) fresh residuals + stat row kk+1
+            // 6) fresh residuals + stat row
             compute_residuals(in, out, ws_.res);
             rm_tau = res_m_tau(in, ws_.res);
-            if (row)
-            {
-                row->mu = ws_.res.res_mu;
-                fill_stat_residuals(*row, ws_.res);
-                row->lq_fact = ws_.last_lq_fact;
-                row->itref_pred = itref_pred;
-                row->itref_corr = itref_corr;
-                row->lin_res_stat = ws_.res_itref.res_g_max;
-                row->lin_res_eq = ws_.res_itref.res_b_max;
-                row->lin_res_ineq = ws_.res_itref.res_d_max;
-                row->lin_res_comp = ws_.res_itref.res_m_max;
-                row->npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
-            }
-            stat_.iter = kk + 1;
+            row.mu = ws_.res.res_mu;
+            fill_stat_residuals(row, ws_.res);
+            row.lq_fact = ws_.last_lq_fact;
+            row.itref_pred = itref_pred;
+            row.itref_corr = itref_corr;
+            row.lin_res_stat = ws_.res_itref.res_g_max;
+            row.lin_res_eq = ws_.res_itref.res_b_max;
+            row.lin_res_ineq = ws_.res_itref.res_d_max;
+            row.lin_res_comp = ws_.res_itref.res_m_max;
+            row.npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
         }
 
         // status mapping
@@ -2125,7 +2138,7 @@ public:
     }
 
     const HpipmOptions& options() const { return opts_; }
-    const HpipmStatistics& statistics() const { return stat_; }
+    const HpipmStatistics<>& statistics() const { return stat_; }
 
     /// inspect children (docs/plans/finished/OPTION_INSPECT_PLAN.md sec. 3): the live
     /// HPIPM options (by-name paths: options.*).
@@ -2160,7 +2173,7 @@ public:
 
 private:
     HpipmOptions opts_;
-    HpipmStatistics stat_;
+    HpipmStatistics<> stat_;
     Workspace ws_;
     // 4b: true when the KKT factors in ws_ correspond to the final iterate
     // of the last successful solve (set by the first sens call, which does
@@ -2991,13 +3004,6 @@ private:
         row.obj = res.obj;
     }
 
-    /// Pointer to the stat row for iteration kk (row index kk+1), or null
-    /// when the row is beyond the stat_max storage.
-    HpipmIteration* stat_row(int kk)
-    {
-        return (kk + 1 < stat_.stat_max) ? &stat_.row(kk + 1) : nullptr;
-    }
-
     /// Unconstrained fast path (HPIPM OCP_QP_IPM_SOLVE unconstr branch,
     /// x_ocp_qp_ipm.c:2908-2950). Zero the iterate, solve the KKT system
     /// once, return iter = 0.
@@ -3032,7 +3038,6 @@ private:
         const Status st = solve_kkt_unconstr(in, ws_.res, step);
         if (st != Status::kSolved)
         {
-            stat_.iter = 0;
             stat_.status = Status::kQpFailure;
             return Status::kQpFailure;
         }
@@ -3047,9 +3052,8 @@ private:
             out.pi[k] = step.pi[k];
         }
 
-        stat_.iter = 0;
         compute_residuals(in, out, ws_.res);
-        fill_stat_residuals(stat_.row(0), ws_.res);
+        fill_stat_residuals(stat_.pre_row(), ws_.res);
         if (!out.ux_first.allFinite() || !out.ux_term.allFinite())
         {
             stat_.status = Status::kNanDetected;
@@ -3184,7 +3188,7 @@ private:
     {
         const int N = in.N;
         ws_.resize(N);
-        stat_.init(opts_.stat_max);
+        stat_.reset();
 
         QpResT abs_rhs(N);
         QpResT abs_bkp(N);
@@ -3201,8 +3205,8 @@ private:
         // pre-iteration residuals (stat row 0) + initial mu
         compute_residuals(in, out, ws_.res);
         S mu = inline_mu(in, out);
-        fill_stat_residuals(stat_.row(0), ws_.res);
-        stat_.row(0).mu = mu;
+        fill_stat_residuals(stat_.pre_row(), ws_.res);
+        stat_.pre_row().mu = mu;
 
         QpSolT step(N);
         for (int kk = 0; kk < opts_.iter_max; ++kk)
@@ -3227,7 +3231,6 @@ private:
             const Status fs = delta_factor_solve(in, out, abs_rhs, step);
             if (fs != Status::kSolved)
             {
-                stat_.iter = kk;
                 stat_.status = Status::kQpFailure;
                 return Status::kQpFailure;
             }
@@ -3235,33 +3238,24 @@ private:
             mask_step(in, step);
 
             compute_alpha(in, out, step);
-            HpipmIteration* row = stat_row(kk);
-            if (row)
-            {
-                row->alpha_prim_aff = ws_.alpha_prim;
-                row->alpha_dual_aff = ws_.alpha_dual;
-            }
+            HpipmIteration& row = stat_.next_row();
+            row.alpha_prim_aff = ws_.alpha_prim;
+            row.alpha_dual_aff = ws_.alpha_dual;
 
             // Mehrotra predictor-corrector (abs: same structure, abs RHS)
             if (opts_.pred_corr)
             {
                 const S mu_aff_pred = compute_mu_aff(in, out, step);
-                if (row)
-                {
-                    row->mu_aff = mu_aff_pred;
-                }
+                row.mu_aff = mu_aff_pred;
                 apply_centering(in, abs_bkp, step, /*correction=*/true,
                                 abs_rhs);
                 solve_kkt(in, out, abs_rhs, step);
                 subtract_iterate(out, step);
                 mask_step(in, step);
                 compute_alpha(in, out, step);
-                if (row)
-                {
-                    row->sigma = ws_.sigma;
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.sigma = ws_.sigma;
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
                 if (opts_.cond_pred_corr)
                 {
                     const S mu_aff_corr = compute_mu_aff(in, out, step);
@@ -3273,39 +3267,29 @@ private:
                         subtract_iterate(out, step);
                         mask_step(in, step);
                         compute_alpha(in, out, step);
-                        if (row)
-                        {
-                            row->alpha_prim = ws_.alpha_prim;
-                            row->alpha_dual = ws_.alpha_dual;
-                        }
+                        row.alpha_prim = ws_.alpha_prim;
+                        row.alpha_dual = ws_.alpha_dual;
                     }
                 }
             }
             else
             {
-                if (row)
-                {
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
             }
 
             update_vars(in, out, step);
             mask_abs_lam(in, out);
 
             mu = inline_mu(in, out);
-            if (row)
-            {
-                row->mu = mu;
-            }
-            stat_.iter = kk + 1;
+            row.mu = mu;
         }
 
         // final residuals + status
         compute_residuals(in, out, ws_.res);
-        if (stat_.iter > 0 && stat_.iter < stat_.stat_max)
+        if (stat_.iter > 0)
         {
-            fill_stat_residuals(stat_.row(stat_.iter), ws_.res);
+            fill_stat_residuals(stat_.last_row(), ws_.res);
         }
 
         if (stat_.iter == opts_.iter_max)
@@ -4814,7 +4798,7 @@ public:
     Status solve(const DenseQp<P, NH>& in, DenseQpSol<P, NH>& out)
     {
         assert(out.N == in.N);
-        stat_.init(opts_.stat_max);
+        stat_.reset();
         ws_.resize(in.N);
         solved_ = false;
         ws_.kkt_valid = false;  // 5g: invalidate the block-KKT cache.
@@ -4833,7 +4817,7 @@ public:
         out.lam = in.d_mask.cwiseProduct(out.lam);
         compute_residuals(in, out, ws_.res);
         S rm_tau = res_m_tau(in, ws_.res);
-        fill_stat_residuals(stat_.row(0), ws_.res);
+        fill_stat_residuals(stat_.pre_row(), ws_.res);
         ws_.preg_last = S(opts_.reg_prim);
         ws_.npd_reg_hess = false;
 
@@ -4869,7 +4853,6 @@ public:
                                        S(opts_.reg_prim));
             if (fs != Status::kSolved)
             {
-                stat_.iter = kk;
                 stat_.status = Status::kQpFailure;
                 return Status::kQpFailure;
             }
@@ -4877,33 +4860,24 @@ public:
 
             // 3) predictor step length
             compute_alpha(in, out, step);
-            HpipmIteration* row = stat_row(kk);
-            if (row)
-            {
-                row->alpha_prim_aff = ws_.alpha_prim;
-                row->alpha_dual_aff = ws_.alpha_dual;
-            }
+            HpipmIteration& row = stat_.next_row();
+            row.alpha_prim_aff = ws_.alpha_prim;
+            row.alpha_dual_aff = ws_.alpha_dual;
 
             // 4) Mehrotra predictor-corrector
             if (opts_.pred_corr)
             {
                 const S mu_aff_pred = compute_mu_aff(in, out, step);
-                if (row)
-                {
-                    row->mu_aff = mu_aff_pred;
-                }
+                row.mu_aff = mu_aff_pred;
                 // corrector: centering target, reuse the stored factor
                 apply_centering(in, ws_.res_bkp, step, /*correction=*/true,
                                 ws_.res);
                 solve_kkt(in, out, ws_.res, step);
                 mask_step(in, step);
                 compute_alpha(in, out, step);
-                if (row)
-                {
-                    row->sigma = ws_.sigma;
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.sigma = ws_.sigma;
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
                 // conditional pure centering
                 if (opts_.cond_pred_corr)
                 {
@@ -4915,36 +4889,26 @@ public:
                         solve_kkt(in, out, ws_.res, step);
                         mask_step(in, step);
                         compute_alpha(in, out, step);
-                        if (row)
-                        {
-                            row->alpha_prim = ws_.alpha_prim;
-                            row->alpha_dual = ws_.alpha_dual;
-                        }
+                        row.alpha_prim = ws_.alpha_prim;
+                        row.alpha_dual = ws_.alpha_dual;
                     }
                 }
             }
             else
             {
-                if (row)
-                {
-                    row->alpha_prim = ws_.alpha_prim;
-                    row->alpha_dual = ws_.alpha_dual;
-                }
+                row.alpha_prim = ws_.alpha_prim;
+                row.alpha_dual = ws_.alpha_dual;
             }
 
             // 5) update the iterate
             update_vars(out, step);
 
-            // 6) fresh residuals + stat row kk+1
+            // 6) fresh residuals + stat row
             compute_residuals(in, out, ws_.res);
             rm_tau = res_m_tau(in, ws_.res);
-            if (row)
-            {
-                row->mu = ws_.res.res_mu;
-                fill_stat_residuals(*row, ws_.res);
-                row->npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
-            }
-            stat_.iter = kk + 1;
+            row.mu = ws_.res.res_mu;
+            fill_stat_residuals(row, ws_.res);
+            row.npd_reg_hess = ws_.npd_reg_hess ? 1 : 0;
         }
 
         // status mapping (mirrors the staged solver)
@@ -5111,7 +5075,7 @@ public:
         return sens_solve<true>(in, sol, seed, sens);
     }
 
-    const HpipmStatistics& statistics() const { return stat_; }
+    const HpipmStatistics<>& statistics() const { return stat_; }
     const HpipmOptions& options() const { return opts_; }
 
     /// Override the warm-start mode for subsequent solve() calls. 0: cold,
@@ -5133,7 +5097,7 @@ public:
 
 private:
     HpipmOptions opts_;
-    HpipmStatistics stat_;
+    HpipmStatistics<> stat_;
     Workspace ws_;
     bool solved_ = false;  // a solve() has converged on the current QP
 
@@ -5858,13 +5822,6 @@ private:
         row.obj = res.obj;
     }
 
-    /// Pointer to the stat row for iteration kk (row index kk+1), or null
-    /// when beyond the stat_max storage.
-    HpipmIteration* stat_row(int kk)
-    {
-        return (kk + 1 < stat_.stat_max) ? &stat_.row(kk + 1) : nullptr;
-    }
-
     /// Unconstrained fast path (HPIPM DENSE_QP_IPM_SOLVE unconstr branch):
     /// zero the iterate, solve (H + reg * I_(x0;u)) v = -g once, stat iter =
     /// 0.
@@ -5885,15 +5842,13 @@ private:
         Eigen::LLT<Mat_t> llt(W);
         if (llt.info() != Eigen::Success)
         {
-            stat_.iter = 0;
             stat_.status = Status::kQpFailure;
             return Status::kQpFailure;
         }
         out.v = llt.solve(-in.g);
 
-        stat_.iter = 0;
         compute_residuals(in, out, ws_.res);
-        fill_stat_residuals(stat_.row(0), ws_.res);
+        fill_stat_residuals(stat_.pre_row(), ws_.res);
         if (!out.v.allFinite())
         {
             stat_.status = Status::kNanDetected;
