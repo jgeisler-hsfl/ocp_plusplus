@@ -27,7 +27,7 @@
 
 ### B. Problem interface / design ergonomics
 
-- [ ] to be examined: how to share parameters between ODE/DAE and cost and constraints
+- [x] to be examined: how to share parameters between ODE/DAE and cost and constraints (done — duck-typed `params()` hook: a user-defined parameter struct read by the model bodies, optional override on `Problem` with an `EmptyParams` base stub, inspect/MEX by-name access; plan in `docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md`, pattern in tutorial ch. 02/06, MEX `param_*` commands in ch. 08)
 - [ ] do we really need the NS number of stage in the integrators, is that not already encoded in the tags?
 - [ ] why does ocp::ContinuousProblem need Dims and ODE as template parameters, can it not access these from the integrator?
 - [ ] make it possible to set the integrator step size per stage from the problem

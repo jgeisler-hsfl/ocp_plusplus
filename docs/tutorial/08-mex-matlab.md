@@ -18,7 +18,7 @@ MATLAB:
 
 | File | Role |
 |------|------|
-| `include/ocp/mex/mex_api.hpp` | `ocp::mex::MexSession<Problem, Solver, NH>` — the host-independent core. Owns one problem instance, one solver and the working solution; exposes option discovery/get/set by name, solution-field access, `solve()` and the per-iteration statistics. Pure C++ (no `mex.h`). |
+| `include/ocp/mex/mex_api.hpp` | `ocp::mex::MexSession<Problem, Solver, NH>` — the host-independent core. Owns one problem instance, one solver and the working solution; exposes option discovery/get/set by name, model-parameter discovery/get/set (duck-typed `params()`), solution-field access, `solve()` and the per-iteration statistics. Pure C++ (no `mex.h`). |
 | `tests/mex/mex_api_unit.cpp` | Unit test for the session core (target `mex_api_unit`); builds and runs without MATLAB. |
 | `mex/ocp_mex_impl.hpp` | Thin `mex.h` adapter: translates MATLAB arrays/strings into session calls and back, and implements the command table (section 8.5). |
 | `mex/ocp_mex_main.cpp` | The single compiled translation unit of *every* MEX binary; `#include OCP_MEX_CONFIG` selects the configuration. |
@@ -127,6 +127,11 @@ command. All numerics are doubles.
 | `opt_set` | `name`, `value` | logical success (optional); writes the live solver, effective on the next `solve` |
 | `opt_set` | `optStruct` | as above; field nesting mirrors the dotted names, partial structs are fine |
 | `opt_dump` | – | prints a flat `name = value` snapshot to the console |
+| `param_names` | – | cell array of all model parameter names from the problem's duck-typed `params()` object (empty cell when the problem declares no parameters) |
+| `param_extent` | `name` | leaf extent as `[rows, cols]` (scalars: `[1 1]`) |
+| `param_get` | `name` | the leaf as a `rows x cols` double matrix (scalars: `1 x 1`) |
+| `param_set` | `name`, `M` | logical success (optional); `M` must have the leaf's extent; writes the live problem parameters, effective on the next `solve` |
+| `param_dump` | – | prints a flat `name = value` parameter snapshot to the console |
 | `set` | `field`, `M` | logical success (optional); warm start; only `x` and `u` are writable |
 | `get` | `field` | matrix; column `k+1` = stage `k` (fields below) |
 | `solution` | – | struct with every `get` field |
@@ -147,7 +152,8 @@ doubles (logicals, ints and singles are rejected); matrices must be
 Errors and warnings:
 
 - Unknown command, unknown option name, out-of-range `opt_set` (name
-  form), or a `set` with wrong extents / read-only field → MATLAB error
+  form), unknown parameter name, out-of-range `param_set`, or a `set` with
+  wrong extents / read-only field → MATLAB error
   via the MEX error channel (the C++ core itself stays
   exception-free).
 - In the *struct* form, bad leaves do not abort the struct: unknown
@@ -190,6 +196,12 @@ assert(ocp_mex_double_integrator('init', N));
 assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 40));
 assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.1));
 
+% live model-parameter tweaking (the problem's duck-typed params() object)
+pn = ocp_mex_double_integrator('param_names');
+assert(ocp_mex_double_integrator('param_set', 'w_stage', [2.0; 0.2; 0.05]));
+assert(isequal(ocp_mex_double_integrator('param_get', 'w_stage'), [2.0; 0.2; 0.05]));
+assert(ocp_mex_double_integrator('param_set', 'w_stage', [1.0; 0.1; 0.01]));  % restore
+
 % or set several at once from a (partial) struct
 opt.options.max_iter = 20;
 opt.qp.options.warm_start = 2;
@@ -216,9 +228,11 @@ assert(isequal(st.alpha, alpha));
 
 `mex/test_mex.m` exercises the full command table end to end on the
 double integrator: `info` / `init`, option discovery and get/set
-(including the struct form and the error/warning paths), warm starts,
-`solve`, field read-back, `solution`, `stats` / `stat_col`, `opt_dump`,
-and the rejection of unknown commands:
+(including the struct form and the error/warning paths), parameter
+discovery and get/set (scalar and matrix leaves, including the
+wrong-extent and out-of-range error paths), warm starts, `solve`, field
+read-back, `solution`, `stats` / `stat_col`, `opt_dump`,
+`param_dump`, and the rejection of unknown commands:
 
 ```bash
 matlab -batch "cd <repo-root>; addpath('mex'); test_mex"

@@ -5,7 +5,7 @@
 // InspectableLeaf no-op children, private member exposure, the closed-
 // interval bounds enforced by the named writers, and the statistics
 // column / table helpers. Plus the matrix-leaf extension
-// (docs/plans/DUCK_TYPED_PARAMS_PLAN.md, Block 1): extent queries,
+// (docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md, Block 1): extent queries,
 // typed and double-flattened (column-major) get/set, name discovery and
 // dump format for fixed-extent Eigen members.
 
@@ -531,8 +531,8 @@ void test_limits()
           "set_field int in range");
 }
 
-// Block 1: fixed-extent Eigen matrix leaves (docs/plans/
-// DUCK_TYPED_PARAMS_PLAN.md).
+// Block 1: fixed-extent Eigen matrix leaves
+// (docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md).
 void test_matrix_leaves()
 {
     MatBox b;

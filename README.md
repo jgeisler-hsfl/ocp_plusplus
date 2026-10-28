@@ -26,7 +26,11 @@ the first (reference) solver implementations.
 ## What is here
 
 - `include/ocp/problem.hpp` — the problem interface: `Problem<Dims, Scalar>`
-  (CRTP), `Trajectory`, `Solution`, box / linear / terminal constraint specs.
+  (CRTP), `Trajectory`, `Solution`, box / linear / terminal constraint
+  specs, plus an optional duck-typed `params()` hook that lets a problem
+  share a user-defined parameter object (scalars and Eigen matrices)
+  between its model functions — by-name discovery and setting via the
+  inspect protocol.
 - `include/ocp/integrators/` — continuous-time support: ODE models and a
   continuous-problem interface wrapped by explicit, implicit and multistep
   Runge-Kutta integrators to produce a discrete-time problem.

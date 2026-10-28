@@ -1,5 +1,5 @@
 // Duck-typed params() hook unit test
-// (docs/plans/DUCK_TYPED_PARAMS_PLAN.md, block 5):
+// (docs/plans/finished/DUCK_TYPED_PARAMS_PLAN.md, block 5):
 //   (a) read params by member and by name (scalar and matrix leaves),
 //   (b) mutate a param by name through inspect::set_* and confirm a model
 //       call reflects the change,

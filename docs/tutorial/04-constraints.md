@@ -214,8 +214,8 @@ costs `0.5 * 100 * s^2`, so the solver prefers to slow down rather than
 violate — but a violent maneuver that cannot respect the cap within the
 horizon pays the slack instead of failing.
 
-To see a soft row in action, raise `v_max_` above what the maneuver
-requires and watch the velocity hit `v_max_` exactly (multiplier positive,
+To see a soft row in action, raise the cap `v_max` above what the maneuver
+requires and watch the velocity hit it exactly (multiplier positive,
 slack zero); then lower it below the attainable range and watch the slack
 take over.
 

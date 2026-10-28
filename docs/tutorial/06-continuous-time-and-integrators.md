@@ -269,6 +269,58 @@ time-varying ODE needs no extra machinery — just use `t`. A
 time-invariant ODE ignores it. See `tests/integrators/time_varying_4h.cpp`
 for a complete example.
 
+## 6.9 Shared model parameters (optional)
+
+If the ODE/DAE right-hand side has tunable model parameters, they follow
+the same duck-typed `params()` pattern as the discrete case (chapter 2,
+§2.4), with one twist: `ContinuousProblem` holds the ODE user class **by
+value**, so the parameter object cannot live inside the ODE. The user owns
+it and the ODE (and, optionally, the problem class) hold references to the
+same live object:
+
+```cpp
+struct DuffingParams
+{
+    double alpha = 1.0;
+    double beta  = 0.5;
+    // optional: a static inspect() exposing the leaves by name,
+    // as in chapter 2, §2.4
+};
+
+struct DuffingOde
+{
+    const DuffingParams& p;          // reference to the user's live object
+
+    template <class D>
+    Eigen::Matrix<D, 2, 1> f(const Eigen::Matrix<D, 2, 1>& x,
+                             const Eigen::Matrix<D, 1, 1>& u, double t) const
+    {
+        Eigen::Matrix<D, 2, 1> xd;
+        xd(0) = x(1);
+        xd(1) = -p.alpha * x(0) - p.beta * x(0) * x(0) * x(0) + u(0);
+        return xd;
+    }
+    // jacobian / hess_prod read p.alpha / p.beta likewise
+};
+
+int main()
+{
+    DuffingParams params;            // user-owned; keep alive
+    DuffingOde ode{params};
+    using Erk4  = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde, 4,
+                                            ocp::K4Tag>;
+    using Base  = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
+    DuffingProblem<Base> problem(ode, 0.05);
+    params.beta = 0.25;              // live: the next solve picks it up
+}
+```
+
+Because the ODE only holds a reference, the user must keep the parameter
+object alive for the lifetime of the problem. If the problem class also
+holds a reference to the same object and overrides `params()` to return
+it, host-side and MEX `param_*` writes (chapter 8) reach the one live
+object that dynamics, cost and constraints all read from.
+
 ## What's next
 
 Chapter 7 covers the remaining advanced features: compile-time horizons,
