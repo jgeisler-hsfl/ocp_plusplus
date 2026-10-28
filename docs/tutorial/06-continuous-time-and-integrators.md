@@ -10,14 +10,15 @@ example is `examples/tutorial/continuous.cpp` (target
 
 ## 6.1 The adapter pattern
 
-`ocp::ContinuousProblem<Dims, Ode, Integ>` (in
+`ocp::ContinuousProblem<Integ>` (in
 `include/ocp/integrators/continuous_problem.hpp`) derives from
 `ocp::Problem<Dims>` and provides the dynamics entries by delegating to
 the integrator. You only implement what is *yours*: cost, constraints,
-initial state. The class template parameters:
+initial state. The dimensions and the ODE/DAE model type are not separate
+template parameters: the integrator is itself templated on both and
+re-exposes them as `Integ::dims_t` / `Integ::model_t`, which the adapter
+derives. The class template parameters:
 
-- `Dims` — the same tag struct as in chapter 2,
-- `Ode` (or `Dae`) — your continuous-time model,
 - `Integ` — the integrator (section 6.3),
 - `Derived` — the step-size hook (section 6.10); leave it at the
   default (`ocp::ConstantStepSize`) for the uniform grid,
@@ -127,14 +128,14 @@ ways:
 // variant 1: explicit RK4, automatic differentiation path
 using Erk4 = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                        ocp::K4Tag>;
-using ErkBase = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
+using ErkBase = ocp::ContinuousProblem<Erk4>;
 DuffingProblem<ErkBase> erk(ode, 0.05);
 
 // variant 2: implicit RK, Gauss-Legendre 4-stage collocation
 using Dae = ocp::OdeToDae<DuffingOde, DuffingDims>;
 using IrkGl4 = ocp::ImplicitRkIntegrator<DuffingDims, Dae,
                                          ocp::GaussLegendre4Tag>;
-using IrkBase = ocp::ContinuousProblem<DuffingDims, Dae, IrkGl4>;
+using IrkBase = ocp::ContinuousProblem<IrkGl4>;
 DuffingProblem<IrkBase> irk(dae, 0.05);
 ```
 
@@ -229,7 +230,7 @@ struct DuffingDae : ocp::AutoDiffDae<DuffingDae, DuffingDims>
 
 using IrkDae  = ocp::ImplicitRkIntegrator<DuffingDims, DuffingDae,
                                           ocp::GaussLegendre4Tag>;
-using DaeBase = ocp::ContinuousProblem<DuffingDims, DuffingDae, IrkDae>;
+using DaeBase = ocp::ContinuousProblem<IrkDae>;
 DuffingDae dae;
 DuffingProblem<DaeBase> irk_ad(dae, 0.05);   // same problem class as 6.4
 ```
@@ -319,7 +320,7 @@ int main()
     DuffingOde ode{params};
     using Erk4  = ocp::ExplicitRkIntegrator<DuffingDims, DuffingOde,
                                             ocp::K4Tag>;
-    using Base  = ocp::ContinuousProblem<DuffingDims, DuffingOde, Erk4>;
+    using Base  = ocp::ContinuousProblem<Erk4>;
     DuffingProblem<Base> problem(ode, 0.05);
     params.beta = 0.25;              // live: the next solve picks it up
 }
@@ -340,9 +341,9 @@ around a transient and coarse steps elsewhere — the per-stage grid is
 supplied by the problem through the CRTP hook `get_step_size`:
 
 ```cpp
-struct MyProb : ocp::ContinuousProblem<Dims, Ode, Erk, MyProb>
+struct MyProb : ocp::ContinuousProblem<Erk, MyProb>
 {
-    using Base = ocp::ContinuousProblem<Dims, Ode, Erk, MyProb>;
+    using Base = ocp::ContinuousProblem<Erk, MyProb>;
     MyParams params_;              // duck-typed params() SSOT (section 6.9)
 
     MyProb() : Base(Ode{}, 0.1) {} // constructor h = fallback grid only
@@ -358,7 +359,7 @@ struct MyProb : ocp::ContinuousProblem<Dims, Ode, Erk, MyProb>
 };
 ```
 
-Naming the problem's own type as the `Derived` template argument (4th
+Naming the problem's own type as the `Derived` template argument (2nd
 position, before `NH`) switches the base hook from the constant-`h`
 fallback to this override; leaving `Derived` at its default
 (`ocp::ConstantStepSize`) keeps the uniform grid. The hook is consumed
