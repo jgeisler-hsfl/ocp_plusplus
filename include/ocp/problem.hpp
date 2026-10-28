@@ -76,7 +76,10 @@
 #include <cassert>
 #include <cstddef>
 #include <type_traits>
+#include <utility>
 #include <vector>
+
+#include <Eigen/Dense>
 
 #include <Eigen/Dense>
 
@@ -377,6 +380,15 @@ struct LinearSensP
 ///   initial state (fixed x_0; required only when Dims::fixed_initial_state)
 ///     state_t initial_state() const;
 ///
+///   shared parameters (optional; only when the problem shares a
+///   parameter object between dynamics, cost and constraints; the
+///   stubs stay in place otherwise):
+///     Params& params();
+///     const Params& params() const;
+///   where `Params` is a user-defined plain struct exposing the inspect
+///   protocol (include/ocp/utils/inspect.hpp) with scalar and/or
+///   fixed-size Eigen matrix leaves.
+///
 ///   dynamics (k = 0..N-1); fused evaluation entries
 ///     state_t dynamics_next_state(int k, const state_t& x,
 ///                                 const control_t& u) const;
@@ -504,6 +516,16 @@ struct LinearSensP
 ///   variable (the stage-0 state box need not pin it). When it is false
 ///   (e.g. moving-horizon estimation), x_0 is a decision variable and
 ///   `initial_state()` is not part of the interface.
+/// - The parameter hook (`params()`) is optional and is a *separate*
+///   concern from the `np` parameter-vector sensitivity interface
+///   (`*_sens_p`): it is a live, user-managed model parameter object
+///   that the model code reads (a single object can be shared by the
+///   dynamics ODE/DAE class, the cost and the constraints), whereas
+///   `np` declares a vector used for NLP-level sensitivity
+///   derivatives. When the concrete problem overrides `params()`, both
+///   overloads must return a reference to persistent storage, so that
+///   host-side writes (e.g. the MEX wrapper) take effect on the live
+///   object the model reads.
 /// - Soft constraint rows are selected per group at compile time by the
 ///   `*_soft_idx` index sets in `Dims` (their size is the number of soft
 ///   rows in that group). Each soft row i carries a `SoftPenalty` with a
@@ -551,6 +573,26 @@ struct LinearSensP
 ///    mirror acados `hessian_approx` EXACT / GAUSS_NEWTON and the runtime
 ///    gates `exact_hess_dyn` / `exact_hess_constr`; `SoftPenalty` mirrors
 ///    the per-slack `Z` (Hessian) and `z` (gradient) weights.
+
+/// Default parameter object returned by the `params()` stubs of
+/// ocp::Problem when a problem does not declare shared parameters.
+/// It exposes no leaves (no-op inspect protocol), so by-name access
+/// via the inspect protocol degrades to "unknown" rather than failing
+/// to compile.
+///
+/// Concrete problems with parameters instead hide the stubs with a
+/// user-defined plain struct (duck-typed; see the "shared parameters"
+/// entry of the interface contract above).
+struct EmptyParams
+{
+    /// No leaves: satisfies the duck-typed inspect protocol (a static
+    /// `inspect(Visitor)` taking the leaf-visitor calls) with zero
+    /// fields, so the generic walkers find nothing.
+    template <class Visitor>
+    static constexpr void inspect(Visitor&&)
+    {
+    }
+};
 
 template <class Dims, class Scalar = double>
 class Problem
@@ -1438,7 +1480,51 @@ public:
         // unreachable; the static_assert above fires first
         return {};
     }
+
+    // ---------------------------------------------------------------
+    // Optional parameter hook
+    //
+    // Unlike the stubs above, this stub succeeds when left in place: a
+    // problem without shared parameters inherits it and gets a leaf-free
+    // ocp::EmptyParams, so by-name access degrades to "unknown". A
+    // concrete problem with parameters hides both overloads by declaring
+    // its own `Params& params()` / `const Params& params() const`
+    // returning a reference to persistent storage.
+    // ---------------------------------------------------------------
+
+    /// Shared model parameters (optional): a user-defined plain struct
+    /// exposing the inspect protocol (include/ocp/utils/inspect.hpp)
+    /// with scalar and/or fixed-size Eigen matrix leaves. A single
+    /// object can thereby be shared by the dynamics (including ODE/DAE
+    /// classes behind an integrator), the cost and the constraints.
+    ///
+    /// @return reference to the persistent parameter object; the base
+    ///         stubs return the leaf-free EmptyParams, so by-name reads
+    ///         report "unknown" and writes are no-ops
+    EmptyParams& params() { return params_; }
+    const EmptyParams& params() const { return params_; }
+
+private:
+    /// Persistent storage backing the `params()` stubs; leaf-free, so
+    /// by-name reads/writes through it are always "unknown" / no-ops.
+    EmptyParams params_{};
 };
+
+namespace detail
+{
+/// Detection of the duck-typed parameter hook: true iff `P`'s `params()`
+/// resolves to a user-defined parameter type, i.e. `P` hides the base
+/// stub (which returns ocp::EmptyParams). Every problem derives a
+/// `params()` from ocp::Problem, so the detection reduces to comparing
+/// the decayed return type against the stub type.
+template <class P>
+struct has_params
+    : std::bool_constant<!std::is_same_v<
+          std::decay_t<decltype(std::declval<P&>().params())>,
+          EmptyParams>>
+{
+};
+}  // namespace detail
 
 // =========================================================================
 //  Solution
