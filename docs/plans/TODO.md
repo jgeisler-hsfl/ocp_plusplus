@@ -39,7 +39,7 @@
 
 - [ ] add FD class and "check wrapper" to quickly verify user supplied jecobians and hessians
 - [x] does ocp::Solution have a to_csv? if not, add it and add a simple mecanism to plot it png or preferably html (probably best use python and plotly, leave it to the user to install) (done — `ocp::Solution::to_csv` in `problem.hpp` with optional `Dims::state_names` / `control_names` column headers via `Problem::state_name` / `control_name`, `tools/plot_solution.py` for HTML/PNG plotting via plotly (user-installed); `tests/problem/solution_unit.cpp`, tutorial 02 + 03 §3.9)
-- [ ] add support for more than one parameter in acados2ocp_pp.py
+- [x] add support for more than one parameter in acados2ocp_pp.py (done — `np >= 0` accepted; the generator emits a shared `{name}Params` struct with a fixed-size `p` vector leaf exposed via the duck-typed `params()` hook, shared by dynamics and cost/constraints; the old `np == 1` scalar path was unified onto it; end-to-end fixture in `tests/params/np2/` + `params_np2` test, plan in `docs/plans/finished/MULTI_PARAM_PLAN.md`)
 
 ### D. Docs / tutorial / README / license
 

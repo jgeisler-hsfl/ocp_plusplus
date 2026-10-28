@@ -432,11 +432,17 @@ Supported (validated on the `masses_chain`, `pendulum_on_cart`,
 - nonlinear (in)equality stage/terminal constraints,
 - soft constraints (nonlinear rows with per-side weights; box/linear rows
   require equal weights per side),
-- time-varying functions.
+- time-varying functions,
+- model parameters (`np >= 1`): the generator emits a `{name}Params` struct
+  holding the whole parameter vector as a fixed-size `p` leaf (initial values
+  from the JSON `parameter_values`), shared by the dynamics model and the
+  cost/constraint code and exposed through the duck-typed `params()` hook —
+  so it is settable by name via the inspect protocol and the MEX `param_*`
+  commands.
 
-Not supported: algebraic states (`nz > 0`), more than one parameter
-(`np > 1`), sparse CasADi arguments, stage-0-specific constraint rows, and
-a few rare acados features (the tool raises a descriptive error).
+Not supported: algebraic states (`nz > 0`), sparse CasADi arguments,
+stage-0-specific constraint rows, and a few rare acados features (the tool
+raises a descriptive error).
 
 The generated problems are exactly the examples of chapters 5–6 in
 generated form: `examples/pendulum_on_cart/generated/PendulumGen.hpp` is

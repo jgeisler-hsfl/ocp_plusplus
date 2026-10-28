@@ -320,7 +320,7 @@ add_executable(params_unit tests/params/params_unit.cpp)
 target_include_directories(params_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(params_unit PRIVATE ${OCP_WARN_FLAGS})
 
-# np >= 2 generator fixture (docs/plans/MULTI_PARAM_PLAN.md, block 6):
+# np >= 2 generator fixture (docs/plans/finished/MULTI_PARAM_PLAN.md, block 6):
 # end-to-end test of the multi-parameter path. The value function is a
 # hand-written casadi-ABI explicit ODE with a 2-element p slot; the problem
 # class is emitted by tools/acados2ocp_pp.py. Regenerate with:

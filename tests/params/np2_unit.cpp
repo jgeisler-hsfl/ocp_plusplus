@@ -1,4 +1,4 @@
-// np=2 generator fixture test (docs/plans/MULTI_PARAM_PLAN.md, block 6).
+// np=2 generator fixture test (docs/plans/finished/MULTI_PARAM_PLAN.md, block 6).
 //
 // The NP2 problem class is emitted by tools/acados2ocp_pp.py from
 // tests/params/np2/acados_codegen/acados_ocp_nlp.json (dims.np = 2) with a
