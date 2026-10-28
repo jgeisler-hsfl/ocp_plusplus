@@ -47,6 +47,11 @@ struct MinimalDims
     // soft constraint rows (all empty here; chapter 4)
     static constexpr std::array<int, 0> ineq_soft_idx   = {};
     // ... (seven more `*_soft_idx` sets, all empty here)
+
+    // optional: component names used for CSV headers and plot labels
+    // (defaults "x_0", "x_1", ... / "u_0", ... when omitted; see 3.9)
+    // static constexpr std::array<const char*, 2> state_names   = {"q", "v"};
+    // static constexpr std::array<const char*, 1> control_names = {"a"};
 };
 ```
 
@@ -62,10 +67,13 @@ What each field means:
 | `has_constr_hess` | `true`: the constraint `*_value_jac_hess` methods are implemented; `false`: constraint Hessian terms omitted (valid exactly when the constraint maps are linear, chapter 5) |
 | `state_box_idx`, `control_box_idx`, `terminal_state_box_idx` | which state / control components are box-bounded; the array *size* is the number of active box rows (chapter 4) |
 | `*_soft_idx` (nine sets) | which constraint rows of each group are *soft* (may be violated by a solver slack; chapter 4) |
+| `state_names`, `control_names` *(optional)* | component names for the state / control vectors, e.g. `{"q", "v"}` and `{"a"}`; used for CSV headers and plot labels (3.9) |
 
 Note that **all fields must be present** even if a feature is unused (zero
 dimensions, empty index sets): the base class reads them all at compile
-time.
+time. The name arrays are the exception: they may be omitted entirely, in
+which case the defaults `x_0, x_1, ...` / `u_0, u_1, ...` apply
+(`Problem::state_name(i)` / `Problem::control_name(i)` resolve either way).
 
 ## 2.2 Step 2: the concrete problem class
 

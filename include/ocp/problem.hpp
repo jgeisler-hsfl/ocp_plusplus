@@ -36,6 +36,9 @@
 //            static constexpr int np = 0;                 // sensitivity
 //                                                          // parameter-vector
 //                                                          // length (0: none)
+//            // optional component names (default "x_0", ... / "u_0", ...):
+//            static constexpr std::array<const char*, 2> state_names   = {"q", "v"};
+//            static constexpr std::array<const char*, 1> control_names = {"a"};
 //            static constexpr std::array<int, 1> state_box_idx   = {0};
 //            static constexpr std::array<int, 1> control_box_idx = {0};
 //            static constexpr std::array<int, 2> terminal_state_box_idx = {0, 1};
@@ -62,6 +65,10 @@
 //  - has_constr_hess: true - the multiplier-contracted constraint
 //    Hessians are added to the QP Hessian; false - omitted (valid when
 //    the constraint maps are linear).
+//  - state_names / control_names (optional): std::array<const char*, nx> /
+//    std::array<const char*, nu> naming the state / control components
+//    (used for CSV headers and plot labels via Problem::state_name /
+//    control_name); when omitted, the defaults "x_i" / "u_i" apply.
 //
 // All model calls dispatch statically on the concrete problem type. The
 // base class re-exposes the dimensions, derives all fixed-size Eigen
@@ -75,6 +82,8 @@
 #include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdio>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -170,6 +179,51 @@ constexpr int dims_np()
         return 0;
     }
 }
+
+/// Detection of the optional `state_names` / `control_names` arrays in a
+/// Dims tag. Dims tags that do not declare them fall back to the default
+/// component names "x_0", "x_1", ... / "u_0", "u_1", ... (see
+/// Problem::state_name / Problem::control_name).
+template <class D, class = void>
+struct has_state_names : std::false_type
+{
+};
+template <class D>
+struct has_state_names<D, std::void_t<decltype(D::state_names)>> : std::true_type
+{
+};
+template <class D, class = void>
+struct has_control_names : std::false_type
+{
+};
+template <class D>
+struct has_control_names<D, std::void_t<decltype(D::control_names)>>
+    : std::true_type
+{
+};
+
+/// Entry count of the optional name arrays (0 when not declared); used
+/// by Problem for the compile-time size checks.
+template <class D, class = void>
+struct state_names_size
+{
+    static constexpr int value = 0;
+};
+template <class D>
+struct state_names_size<D, std::void_t<decltype(D::state_names)>>
+{
+    static constexpr int value = D::state_names.size();
+};
+template <class D, class = void>
+struct control_names_size
+{
+    static constexpr int value = 0;
+};
+template <class D>
+struct control_names_size<D, std::void_t<decltype(D::control_names)>>
+{
+    static constexpr int value = D::control_names.size();
+};
 }  // namespace detail
 
 template <class T, int NSlots = Eigen::Dynamic>
@@ -361,6 +415,10 @@ struct LinearSensP
 ///    [H_xx H_xu; H_ux H_uu].
 ///  - All model functions are `const` and take no parameter argument;
 ///    parameters are user-managed state of the concrete class.
+///  - Component naming: the `Dims` tag may optionally declare
+///    `state_names` / `control_names` (`std::array<const char*, nx/nu>`);
+///    `state_name(i)` / `control_name(i)` return those names, falling back
+///    to the defaults "x_i" / "u_i" when not declared.
 ///  - The `*_value_jac_hess` entries return the multiplier-contracted
 ///    Hessian in one call: `hess * v = sum_i lam_i * D^2(·)_i * v`,
 ///    where `lam` is the net KKT multiplier of the corresponding group
@@ -599,6 +657,53 @@ public:
     // The terms may additionally be dropped at runtime via
     // AcadosOptions::compute_hess_constr.
     static constexpr bool has_constr_hess = Dims::has_constr_hess;
+
+    // Optional component names (for CSV headers, plot labels, ...): the
+    // Dims tag may declare `state_names` (nx entries) and/or
+    // `control_names` (nu entries) as
+    // std::array<const char*, ...>. When absent, the defaults "x_0", ...,
+    // "x_{nx-1}" / "u_0", ..., "u_{nu-1}" are used (see state_name /
+    // control_name below).
+    static constexpr bool has_state_names =
+        detail::has_state_names<Dims>::value;
+    static constexpr bool has_control_names =
+        detail::has_control_names<Dims>::value;
+    static_assert(!has_state_names ||
+                        detail::state_names_size<Dims>::value == nx,
+                  "Dims::state_names must have exactly nx entries.");
+    static_assert(!has_control_names ||
+                        detail::control_names_size<Dims>::value == nu,
+                  "Dims::control_names must have exactly nu entries.");
+
+    /// Name of state component i (0 <= i < nx): the entry of
+    /// `Dims::state_names` when the Dims tag declares the array, otherwise
+    /// the default "x_i" (e.g. "x_0", "x_1", ...).
+    static std::string state_name(int i)
+    {
+        if constexpr (has_state_names)
+        {
+            return std::string(Dims::state_names[i]);
+        }
+        else
+        {
+            return "x_" + std::to_string(i);
+        }
+    }
+
+    /// Name of control component i (0 <= i < nu): the entry of
+    /// `Dims::control_names` when the Dims tag declares the array,
+    /// otherwise the default "u_i".
+    static std::string control_name(int i)
+    {
+        if constexpr (has_control_names)
+        {
+            return std::string(Dims::control_names[i]);
+        }
+        else
+        {
+            return "u_" + std::to_string(i);
+        }
+    }
 
     // active box-constraint rows: the const index sets select which
     // state/control components are bounded; their size *is* the number of
@@ -1573,6 +1678,61 @@ struct Solution
             assert(n_stages == NH);
             N = NH;
         }
+    }
+
+    /// Write the primal trajectories (x, u) to a CSV file.
+    ///
+    /// Header: "k", then one column per state component and one per
+    /// control component, named via P::state_name / P::control_name
+    /// (the Dims names, or the defaults "x_i" / "u_i"). One row per
+    /// stage k = 0..N; the terminal row (k = N) leaves the control
+    /// fields blank since no u_N exists. Values are written as %.12e.
+    /// Component names are written verbatim; avoid commas in them.
+    ///
+    /// @param  path  output file path
+    /// @return true on success, false if the file could not be opened
+    bool to_csv(const char* path) const
+    {
+        std::FILE* f = std::fopen(path, "w");
+        if (f == nullptr)
+        {
+            return false;
+        }
+        std::fprintf(f, "k");
+        for (int i = 0; i < P::nx; ++i)
+        {
+            std::fprintf(f, ",%s", P::state_name(i).c_str());
+        }
+        for (int i = 0; i < P::nu; ++i)
+        {
+            std::fprintf(f, ",%s", P::control_name(i).c_str());
+        }
+        std::fprintf(f, "\n");
+        for (int k = 0; k <= N; ++k)
+        {
+            std::fprintf(f, "%d", k);
+            for (int i = 0; i < P::nx; ++i)
+            {
+                std::fprintf(f, ",%.12e", x[k](i));
+            }
+            if (k < N)
+            {
+                for (int i = 0; i < P::nu; ++i)
+                {
+                    std::fprintf(f, ",%.12e", u[k](i));
+                }
+            }
+            else
+            {
+                for (int i = 0; i < P::nu; ++i)
+                {
+                    std::fprintf(f, ",");
+                }
+            }
+            std::fprintf(f, "\n");
+        }
+        std::fclose(f);
+        return true;
     }
 };
 
