@@ -320,6 +320,23 @@ add_executable(params_unit tests/params/params_unit.cpp)
 target_include_directories(params_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(params_unit PRIVATE ${OCP_WARN_FLAGS})
 
+# np >= 2 generator fixture (docs/plans/MULTI_PARAM_PLAN.md, block 6):
+# end-to-end test of the multi-parameter path. The value function is a
+# hand-written casadi-ABI explicit ODE with a 2-element p slot; the problem
+# class is emitted by tools/acados2ocp_pp.py. Regenerate with:
+#   python3 tools/acados2ocp_pp.py \
+#     --json tests/params/np2/acados_codegen/acados_ocp_nlp.json \
+#     --name NP2 --out tests/params/np2/generated \
+#     --csrc tests/params/np2/acados_codegen/np2_model/np2_expl_ode_fun.c
+set(NP2_MODEL_C tests/params/np2/acados_codegen/np2_model/np2_expl_ode_fun.c)
+set_source_files_properties(${NP2_MODEL_C} PROPERTIES
+  COMPILE_OPTIONS "-O2;-w" LANGUAGE C)
+add_executable(params_np2 tests/params/np2_unit.cpp ${NP2_MODEL_C})
+target_include_directories(params_np2
+                           PRIVATE include tests/params/np2/generated
+                                   ${EIGEN3_INCLUDE_DIR})
+target_compile_options(params_np2 PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(mex_api_unit tests/mex/mex_api_unit.cpp)
 target_include_directories(mex_api_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mex_api_unit PRIVATE ${OCP_WARN_FLAGS})

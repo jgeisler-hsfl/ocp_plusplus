@@ -1,0 +1,80 @@
+{
+    "hash": "np2fixture",
+    "name": "np2fixture",
+    "problem_class": "casadi",
+    "dims": {
+        "N": 3,
+        "nbu": 1,
+        "nbx": 0,
+        "nbx_0": 0,
+        "nbx_e": 0,
+        "ng": 0,
+        "ng_e": 0,
+        "nh": 0,
+        "nh_0": 0,
+        "nh_e": 0,
+        "np": 2,
+        "nu": 1,
+        "nx": 2,
+        "ny": 2,
+        "ny_0": 0,
+        "ny_e": 2,
+        "nz": 0,
+        "ns": 0,
+        "ns_e": 0
+    },
+    "model": {
+        "name": "np2",
+        "dyn_ext_fun_type": "casadi"
+    },
+    "parameter_values": [1.0, 0.5],
+    "external_function_files_model": [
+        "np2_model/np2_expl_ode_fun.c"
+    ],
+    "external_function_files_ocp": [],
+    "constraints": {
+        "constr_type": "NONE"
+    },
+    "cost": {
+        "cost_type": "LINEAR_LS",
+        "cost_type_e": "LINEAR_LS",
+        "Vx": [
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ],
+        "Vu": [
+            [0.0],
+            [0.0]
+        ],
+        "W": [
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ],
+        "yref": [0.0, 0.0],
+        "Vx_e": [
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ],
+        "W_e": [
+            [1.0, 0.0],
+            [0.0, 1.0]
+        ],
+        "yref_e": [0.0, 0.0],
+        "Zl": [],
+        "Zu": [],
+        "Zl_e": [],
+        "Zu_e": []
+    },
+    "solver_options": {
+        "integrator_type": "ERK",
+        "collocation_type": "GAUSS_LEGENDRE",
+        "sim_method_num_stages": [4, 4, 4],
+        "sim_method_num_steps": [1, 1, 1],
+        "time_steps": [0.1, 0.1, 0.1],
+        "Tsim": 0.3,
+        "nlp_solver_max_iter": 100,
+        "sim_method_newton_iter": 3,
+        "sim_method_newton_tol": 1.0e-08,
+        "hessian_approx": "GAUSS_NEWTON"
+    }
+}

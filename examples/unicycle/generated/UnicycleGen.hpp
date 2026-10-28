@@ -33,8 +33,7 @@ struct UnicycleGenDims
     static constexpr int ne_t = 0;
     static constexpr int nl_t = 0;
     static constexpr int np   = 0;  // no NLP parameter-vector sensitivity
-    // (the casadi model parameter p_ below is a user-managed scalar; it is
-    //  NOT part of the problem-interface sensitivity parameter vector)
+    // (the problem has no casadi model parameters)
 
     static constexpr bool fixed_initial_state = true;
     static constexpr bool has_dynamics_hess = false;  // Gauss-Newton QP Hessian
@@ -68,7 +67,6 @@ struct UnicycleGenDae
 
     detail::UnicycleGenDyn dyn_;
     detail::UnicycleGenDynJac dyn_j_;
-    double p_ = 0.0;
 
     // DAE residual F(x, xdot, u, t) = 0, directly from the generated
     // CasADi residual code (no pseudo-ODE, no coefficient calibration).
@@ -76,7 +74,7 @@ struct UnicycleGenDae
               double t) const
     {
         state_t r;
-        dyn_.eval(x.data(), u.data(), xdot.data(), p_, t, r.data());
+        dyn_.eval(x.data(), u.data(), xdot.data(), nullptr, t, r.data());
         return r;
     }
 
@@ -86,7 +84,7 @@ struct UnicycleGenDae
                double t, dyn_df_dx_t& dFdx, dyn_df_dx_t& dFxdot,
                dyn_df_du_t& dFdu) const
     {
-        dyn_j_.eval(x.data(), u.data(), xdot.data(), p_, t);
+        dyn_j_.eval(x.data(), u.data(), xdot.data(), nullptr, t);
         for (int i = 0; i < P::nx; ++i)
             for (int j = 0; j < P::nx; ++j)
                 dFdx(i, j) = dyn_j_.dFdx_[j * P::nx + i];
