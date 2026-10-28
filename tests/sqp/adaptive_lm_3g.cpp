@@ -281,7 +281,7 @@ void test_solve_converges()
 {
     DI prob;
     const int N = 10;
-    const double Ts = prob.Ts_;
+    const double Ts = prob.params().Ts;
     const double q0 = prob.initial_state()(0);
     const double v0 = prob.initial_state()(1);
     const double den =

@@ -306,6 +306,10 @@ add_executable(status_unit tests/problem/status_unit.cpp)
 target_include_directories(status_unit PRIVATE include ${EIGEN3_INCLUDE_DIR})
 target_compile_options(status_unit PRIVATE ${OCP_WARN_FLAGS})
 
+add_executable(params_unit tests/params/params_unit.cpp)
+target_include_directories(params_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
+target_compile_options(params_unit PRIVATE ${OCP_WARN_FLAGS})
+
 add_executable(mex_api_unit tests/mex/mex_api_unit.cpp)
 target_include_directories(mex_api_unit PRIVATE include examples ${EIGEN3_INCLUDE_DIR})
 target_compile_options(mex_api_unit PRIVATE ${OCP_WARN_FLAGS})

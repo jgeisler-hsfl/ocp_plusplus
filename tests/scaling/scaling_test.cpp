@@ -273,7 +273,7 @@ void test_initial_state()
 // exactly (same warm-start strategy as the sqp_double_integrator test).
 double terminal_eq_feasible_control(const DoubleIntegrator& p)
 {
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * N * (N - 1) / 2.0 + Ts * N;

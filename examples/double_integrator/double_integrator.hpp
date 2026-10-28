@@ -23,10 +23,49 @@
 // constraints (ng_t = nl_t = 0) and no stage equality constraints
 // (ne = 0), so the corresponding interface functions stay unimplemented
 // on purpose.
+//
+// All model parameters live in a single shared DiParams object, exposed
+// through the duck-typed params() hook (ocp/problem.hpp, "shared
+// parameters"): Ts feeds the dynamics, v_max the velocity cap, w_stage
+// the stage cost weights and wf the terminal cost. The object exposes
+// the inspect protocol, so every leaf is enumerable and settable by name
+// (e.g. from the MEX wrapper) while the model code reads the same live
+// object.
 
 #pragma once
 
+#include <optional>
+
 #include "ocp/problem.hpp"
+#include "ocp/utils/inspect.hpp"
+
+/// Shared model parameters of the double integrator (duck-typed params()
+/// hook, see ocp/problem.hpp "shared parameters"). A single object is
+/// read by all model evaluations: Ts by the dynamics, v_max by the
+/// velocity-cap constraint, w_stage by the stage cost and wf by the
+/// terminal cost. The inspect protocol exposes every leaf by name (Ts
+/// is bounded to stay strictly positive, like the step sizes).
+struct DiParams
+{
+    double Ts = 0.1;                    // time step (dynamics)
+    double v_max = 2.0;                 // velocity cap (inequality row)
+    Eigen::Matrix<double, 3, 1> w_stage;  // stage cost weights [wq; wv; wa]
+    double wf = 10.0;                   // terminal cost weight
+
+    DiParams()
+    {
+        w_stage << 1.0, 0.1, 0.01;
+    }
+
+    template <class Visitor>
+    static constexpr void inspect(Visitor&& vis)
+    {
+        vis("Ts", &DiParams::Ts, ocp::inspect::kMinPositive, std::nullopt);
+        vis("v_max", &DiParams::v_max);
+        vis("w_stage", &DiParams::w_stage);
+        vis("wf", &DiParams::wf);
+    }
+};
 
 /// Dims tag for the double integrator: structural dimensions and box index sets.
 struct DoubleIntegratorDims
@@ -63,13 +102,15 @@ class DoubleIntegrator : public ocp::Problem<DoubleIntegratorDims>
 public:
     DoubleIntegrator() = default;
 
-    // user-managed problem parameters (not part of the interface)
-    double Ts_    = 0.1;
-    double v_max_ = 2.0;
-    double wq_    = 1.0;
-    double wv_    = 0.1;
-    double wa_    = 0.01;
-    double wf_    = 10.0;
+    /// User-managed shared model parameters (not part of the interface);
+    /// the single live object read by all model evaluations.
+    DiParams params_;
+
+    // ---------------------------------------------------------------
+    // shared parameters (duck-typed params() hook)
+    // ---------------------------------------------------------------
+    DiParams& params() { return params_; }
+    const DiParams& params() const { return params_; }
 
     // ---------------------------------------------------------------
     // initial state
@@ -87,8 +128,8 @@ public:
     state_t dynamics_next_state(int, const state_t& x, const control_t& u) const
     {
         state_t xn;
-        xn(0) = x(0) + Ts_ * x(1);
-        xn(1) = x(1) + Ts_ * u(0);
+        xn(0) = x(0) + params_.Ts * x(1);
+        xn(1) = x(1) + params_.Ts * u(0);
         return xn;
     }
 
@@ -99,10 +140,10 @@ public:
         x_next = dynamics_next_state(0, x, u);
         df_dx.setZero();
         df_dx(0, 0) = 1.0;
-        df_dx(0, 1) = Ts_;
+        df_dx(0, 1) = params_.Ts;
         df_dx(1, 1) = 1.0;
         df_du.setZero();
-        df_du(1, 0) = Ts_;
+        df_du(1, 0) = params_.Ts;
     }
 
     void dynamics_value_jac_hess(int k, const state_t& x, const control_t& u,
@@ -120,16 +161,16 @@ public:
     // ---------------------------------------------------------------
     double stage_cost_value(int, const state_t& x, const control_t& u) const
     {
-        return 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1) + wa_ * u(0) * u(0));
+        return 0.5 * (params_.w_stage(0) * x(0) * x(0) + params_.w_stage(1) * x(1) * x(1) + params_.w_stage(2) * u(0) * u(0));
     }
 
     void stage_cost_value_grad(int, const state_t& x, const control_t& u,
                                double& value, stage_grad_t& g) const
     {
-        value = 0.5 * (wq_ * x(0) * x(0) + wv_ * x(1) * x(1) + wa_ * u(0) * u(0));
-        g(0) = wq_ * x(0);
-        g(1) = wv_ * x(1);
-        g(2) = wa_ * u(0);
+        value = 0.5 * (params_.w_stage(0) * x(0) * x(0) + params_.w_stage(1) * x(1) * x(1) + params_.w_stage(2) * u(0) * u(0));
+        g(0) = params_.w_stage(0) * x(0);
+        g(1) = params_.w_stage(1) * x(1);
+        g(2) = params_.w_stage(2) * u(0);
     }
 
     void stage_cost_value_grad_hess(int, const state_t& x, const control_t& u,
@@ -138,9 +179,9 @@ public:
     {
         stage_cost_value_grad(0, x, u, value, g);
         H.setZero();
-        H(0, 0) = wq_;
-        H(1, 1) = wv_;
-        H(2, 2) = wa_;
+        H(0, 0) = params_.w_stage(0);
+        H(1, 1) = params_.w_stage(1);
+        H(2, 2) = params_.w_stage(2);
     }
 
     // ---------------------------------------------------------------
@@ -148,15 +189,15 @@ public:
     // ---------------------------------------------------------------
     double terminal_cost_value(const state_t& x) const
     {
-        return wf_ * (x(0) * x(0) + x(1) * x(1));
+        return params_.wf * (x(0) * x(0) + x(1) * x(1));
     }
 
     void terminal_cost_value_grad(const state_t& x, double& value,
                                   term_grad_t& g) const
     {
-        value = wf_ * (x(0) * x(0) + x(1) * x(1));
-        g(0) = 2.0 * wf_ * x(0);
-        g(1) = 2.0 * wf_ * x(1);
+        value = params_.wf * (x(0) * x(0) + x(1) * x(1));
+        g(0) = 2.0 * params_.wf * x(0);
+        g(1) = 2.0 * params_.wf * x(1);
     }
 
     void terminal_cost_value_grad_hess(const state_t& x, double& value,
@@ -164,8 +205,8 @@ public:
     {
         terminal_cost_value_grad(x, value, g);
         H.setZero();
-        H(0, 0) = 2.0 * wf_;
-        H(1, 1) = 2.0 * wf_;
+        H(0, 0) = 2.0 * params_.wf;
+        H(1, 1) = 2.0 * params_.wf;
     }
 
     // ---------------------------------------------------------------
@@ -174,7 +215,7 @@ public:
     ineq_t stage_inequality_value(int, const state_t& x, const control_t&) const
     {
         ineq_t g;
-        g(0) = x(1) - v_max_;
+        g(0) = x(1) - params_.v_max;
         return g;
     }
 

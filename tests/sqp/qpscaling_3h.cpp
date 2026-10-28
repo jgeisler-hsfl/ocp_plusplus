@@ -232,7 +232,7 @@ Solution<DI> make_warm_start(const DI& p, int n_stages)
 {
     // Constant control that keeps the terminal equality q_N + v_N = 1
     // exactly feasible at the warm start (mirrors the 2h DI test).
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * n_stages * (n_stages - 1) / 2.0 +

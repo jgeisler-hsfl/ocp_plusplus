@@ -45,7 +45,7 @@ make_warm_start(const DoubleIntegrator& p, int n_stages)
 {
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double den =
         Ts * Ts * n_stages * (n_stages - 1) / 2.0 + Ts * n_stages;
     const double a = (1.0 - (q0 + v0) - Ts * n_stages * v0) / den;

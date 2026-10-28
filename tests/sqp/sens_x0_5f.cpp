@@ -49,7 +49,7 @@ struct DiSens : DoubleIntegrator
 
 double di_feasible_control(const DiSens& p, int n_stages)
 {
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * n_stages * (n_stages - 1) / 2.0 + Ts * n_stages;

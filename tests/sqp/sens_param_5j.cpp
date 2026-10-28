@@ -51,17 +51,17 @@ double get_p(const DoubleIntegrator& p, int j)
     switch (j)
     {
     case 0:
-        return p.Ts_;
+        return p.params().Ts;
     case 1:
-        return p.v_max_;
+        return p.params().v_max;
     case 2:
-        return p.wq_;
+        return p.params().w_stage(0);
     case 3:
-        return p.wv_;
+        return p.params().w_stage(1);
     case 4:
-        return p.wa_;
+        return p.params().w_stage(2);
     case 5:
-        return p.wf_;
+        return p.params().wf;
     }
     return 0.0;
 }
@@ -71,22 +71,22 @@ void set_p(DoubleIntegrator& p, int j, double v)
     switch (j)
     {
     case 0:
-        p.Ts_ = v;
+        p.params().Ts = v;
         break;
     case 1:
-        p.v_max_ = v;
+        p.params().v_max = v;
         break;
     case 2:
-        p.wq_ = v;
+        p.params().w_stage(0) = v;
         break;
     case 3:
-        p.wv_ = v;
+        p.params().w_stage(1) = v;
         break;
     case 4:
-        p.wa_ = v;
+        p.params().w_stage(2) = v;
         break;
     case 5:
-        p.wf_ = v;
+        p.params().wf = v;
         break;
     default:
         break;
@@ -97,7 +97,7 @@ Solution<DoubleIntegrator> make_start(const DoubleIntegrator& p, int N)
 {
     // Constant control that lands exactly on q_N + v_N = 1 (feasible for
     // |u| <= 1 at N >= 10); same construction as sens_param_5i.
-    const double Ts = p.Ts_;
+    const double Ts = p.params().Ts;
     const double q0 = p.initial_state()(0);
     const double v0 = p.initial_state()(1);
     const double den = Ts * Ts * N * (N - 1) / 2.0 + Ts * N;
