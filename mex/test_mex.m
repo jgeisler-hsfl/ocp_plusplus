@@ -102,6 +102,62 @@ assert(strcmp(wid, 'ocp_mex:OptionOutOfRange'), ...
 assert(ocp_mex_double_integrator('opt_get', 'qp.options.warm_start') == 0, ...
        'out-of-range struct field must be skipped');
 
+% ---- parameters (duck-typed params() hook on DoubleIntegrator) --------
+pn = ocp_mex_double_integrator('param_names');
+assert(iscell(pn) && numel(pn) == 4, 'param_names must list 4 leaves');
+assert(any(strcmp(pn, 'Ts')) && any(strcmp(pn, 'w_stage')), ...
+       'param names incomplete');
+
+e_ts = ocp_mex_double_integrator('param_extent', 'Ts');
+assert(isequal(e_ts, [1 1]), 'Ts extent must be 1 x 1');
+e_w = ocp_mex_double_integrator('param_extent', 'w_stage');
+assert(isequal(e_w, [3 1]), 'w_stage extent must be 3 x 1');
+
+ts = ocp_mex_double_integrator('param_get', 'Ts');
+assert(abs(ts - 0.1) < 1e-15, 'Ts default mismatch');
+w = ocp_mex_double_integrator('param_get', 'w_stage');
+assert(isequal(w, [1.0; 0.1; 0.01]), 'w_stage default mismatch');
+
+assert(ocp_mex_double_integrator('param_set', 'Ts', 0.2), 'param_set Ts');
+assert(abs(ocp_mex_double_integrator('param_get', 'Ts') - 0.2) < 1e-15, ...
+       'param_set Ts not live');
+assert(ocp_mex_double_integrator('param_set', 'Ts', 0.1), 'restore Ts');
+
+% matrix leaf round-trip
+assert(ocp_mex_double_integrator('param_set', 'w_stage', [4.0; 0.5; 0.25]), ...
+       'param_set w_stage');
+w2 = ocp_mex_double_integrator('param_get', 'w_stage');
+assert(isequal(w2, [4.0; 0.5; 0.25]), 'w_stage round-trip');
+assert(ocp_mex_double_integrator('param_set', 'w_stage', [1.0; 0.1; 0.01]), ...
+       'restore w_stage');
+
+% wrong extent must raise a MEX error
+try
+    ocp_mex_double_integrator('param_set', 'w_stage', [1; 2]);
+    error('wrong-extent param_set must fail');
+catch
+end
+% unknown name must raise a MEX error
+try
+    ocp_mex_double_integrator('param_get', 'nope');
+    error('unknown param must fail');
+catch
+end
+% out-of-range param_set (Ts is bounded to stay strictly positive):
+% distinct error id, leaf untouched
+try
+    ocp_mex_double_integrator('param_set', 'Ts', 0.0);
+    error('out-of-range param_set must fail');
+catch ME
+    assert(strcmp(ME.identifier, 'ocp_mex:ParamOutOfRange'), ...
+           'expected ParamOutOfRange error id');
+end
+assert(abs(ocp_mex_double_integrator('param_get', 'Ts') - 0.1) < 1e-15, ...
+       'rejected param_set must leave the leaf untouched');
+
+% param_dump must print without error
+ocp_mex_double_integrator('param_dump');
+
 % ---- warm start (forward simulation of the constant-acceleration input
 %      that satisfies the terminal equality q_N + v_N = 1 exactly) ------
 den = Ts^2 * N * (N - 1) / 2 + Ts * N;

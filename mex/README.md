@@ -56,6 +56,11 @@ All calls take a char-string command as the first argument.
 | `opt_get` | `name` | double (int/bool options coerced; bools are 1.0/0.0) |
 | `opt_set` | `name`, `value` **or** `optStruct` | logical success (optional output); the value is written to the live solver, effective on the next `solve`. Values are checked against the option's declared bounds; a violation raises `ocp_mex:OptionOutOfRange` (name/value form) or warns and skips (struct form). Struct form: field nesting mirrors the dotted names (`opt.options.max_iter`, `opt.qp.options.warm_start`); unknown fields warn (`ocp_mex:UnknownOption`) and are skipped, so partial structs are fine |
 | `opt_dump` | – | prints a flat `name = value` snapshot to the console |
+| `param_names` | – | cell of all model parameter names from the problem's duck-typed `params()` object (empty cell when the problem declares no parameters) |
+| `param_extent` | `name` | leaf extent as `[rows, cols]` (scalars: `[1, 1]`); error on unknown name |
+| `param_get` | `name` | the leaf as a `rows x cols` double matrix (scalars: `1 x 1`); error on unknown name |
+| `param_set` | `name`, `M` | logical success (optional output); `M` must have the leaf's extent. Live: the write reaches the problem's parameter object and is effective on the next `solve`. Out-of-bounds scalar values raise `ocp_mex:ParamOutOfRange` |
+| `param_dump` | – | prints a flat `name = value` parameter snapshot to the console |
 | `set` | `field`, `M` | logical success (optional output); warm start; only `x` (`nx x (N+1)`) and `u` (`nu x N`) are writable |
 | `get` | `field` | matrix; column `k+1` = stage `k` (see field list below) |
 | `solution` | – | struct with every `get` field |
@@ -84,6 +89,12 @@ assert(ocp_mex_double_integrator('init', N));
 % live option tweaking (dotted names reach the globalization group)
 assert(ocp_mex_double_integrator('opt_set', 'options.max_iter', 40));
 assert(ocp_mex_double_integrator('opt_set', 'options.glob.alpha_min', 0.1));
+
+% live parameter tweaking (duck-typed params() on the problem)
+pn = ocp_mex_double_integrator('param_names');          % {'Ts','v_max','w_stage','wf'}
+assert(ocp_mex_double_integrator('param_set', 'Ts', 0.1));
+w = ocp_mex_double_integrator('param_get', 'w_stage');  % 3 x 1
+assert(ocp_mex_double_integrator('param_set', 'w_stage', [1.0; 0.1; 0.01]));
 
 % or set several at once from a (partial) struct
 opt.options.max_iter = 20;

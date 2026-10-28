@@ -2,8 +2,9 @@
 // host-independent core of the MATLAB MEX wrapper, exercised without
 // MATLAB on the DoubleIntegrator. Checks: info extents, option discovery /
 // get / set (flat and dotted, int/bool coercion, live inspect-based path),
-// warm-start field set/get with extent validation, a full solve, solution
-// read-back and the statistics rows.
+// parameter discovery / get / set (scalar + matrix leaves, bounds,
+// wrong-extent rejection, dump), warm-start field set/get with extent
+// validation, a full solve, solution read-back and the statistics rows.
 
 #include <cmath>
 #include <cstdio>
@@ -185,6 +186,84 @@ void test_options()
           "dump contains bool scaling option");
 }
 
+void test_params()
+{
+    Session s("mex_api_test");
+
+    // discovery: DoubleIntegrator's DiParams exposes four leaves
+    const std::vector<std::string> names = s.param_names();
+    check(names.size() == 4, "4 discoverable parameter names");
+    bool has_ts = false;
+    bool has_vmax = false;
+    bool has_wstage = false;
+    bool has_wf = false;
+    for (const std::string& n : names)
+    {
+        has_ts = has_ts || (n == "Ts");
+        has_vmax = has_vmax || (n == "v_max");
+        has_wstage = has_wstage || (n == "w_stage");
+        has_wf = has_wf || (n == "wf");
+    }
+    check(has_ts && has_vmax && has_wstage && has_wf,
+          "names include Ts, v_max, w_stage and wf");
+
+    // extents: scalars are 1 x 1, the matrix leaf is 3 x 1
+    int rows = 0, cols = 0;
+    check(s.param_extent("Ts", rows, cols) && rows == 1 && cols == 1,
+          "Ts extent 1 x 1");
+    check(s.param_extent("w_stage", rows, cols) && rows == 3 && cols == 1,
+          "w_stage extent 3 x 1");
+    check(!s.param_extent("nope", rows, cols), "unknown param extent rejected");
+
+    // scalar read
+    std::vector<double> buf(4, 0.0);
+    check(s.param_get("Ts", buf.data()) && buf[0] == 0.1, "get Ts");
+    check(s.param_get("v_max", buf.data()) && buf[0] == 2.0, "get v_max");
+
+    // matrix read: column-major, three elements
+    check(s.param_get("w_stage", buf.data()), "get w_stage");
+    check_close(buf[0], 1.0, 1e-15, "w_stage(0)");
+    check_close(buf[1], 0.1, 1e-15, "w_stage(1)");
+    check_close(buf[2], 0.01, 1e-15, "w_stage(2)");
+    check(!s.param_get("nope", buf.data()), "get unknown name rejected");
+
+    // live scalar write round-trip (the session's own problem object)
+    const double ts_new = 0.2;
+    check(s.param_set("Ts", &ts_new, 1).ok(), "set Ts");
+    check(s.param_get("Ts", buf.data()) && buf[0] == 0.2, "get Ts after set");
+
+    // bound enforcement: Ts is strictly positive, so 0 is out of range and
+    // the rejected write leaves the leaf untouched
+    const double ts_bad = 0.0;
+    const auto oor = s.param_set("Ts", &ts_bad, 1);
+    check(oor.status == ocp::inspect::SetResult::Status::kOutOfRange,
+          "Ts = 0 -> kOutOfRange");
+    check(s.param_get("Ts", buf.data()) && buf[0] == 0.2,
+          "rejected Ts write leaves the leaf untouched");
+
+    // unknown name and wrong element count both report kUnknownPath
+    check(s.param_set("nope", &ts_new, 1).status ==
+              ocp::inspect::SetResult::Status::kUnknownPath,
+          "set unknown name -> kUnknownPath");
+    const double two[2] = {1.0, 1.0};
+    check(s.param_set("w_stage", two, 2).status ==
+              ocp::inspect::SetResult::Status::kUnknownPath,
+          "w_stage with wrong element count -> kUnknownPath");
+
+    // live matrix write round-trip
+    const double w_new[3] = {4.0, 0.5, 0.25};
+    check(s.param_set("w_stage", w_new, 3).ok(), "set w_stage");
+    check(s.param_get("w_stage", buf.data()), "get w_stage after set");
+    check_close(buf[0], 4.0, 1e-15, "w_stage(0) after set");
+    check_close(buf[1], 0.5, 1e-15, "w_stage(1) after set");
+    check_close(buf[2], 0.25, 1e-15, "w_stage(2) after set");
+
+    // flat "name = value" dump (what the MEX 'param_dump' prints)
+    const std::string dump = s.param_dump_str();
+    check(dump.find("Ts =") != std::string::npos, "dump contains Ts");
+    check(dump.find("w_stage =") != std::string::npos, "dump contains w_stage");
+}
+
 void test_live_options()
 {
     Session s("mex_api_test");
@@ -336,6 +415,7 @@ int main()
 {
     test_info();
     test_options();
+    test_params();
     test_live_options();
     test_fields();
     test_solve_and_readback();
